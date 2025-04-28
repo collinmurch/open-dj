@@ -1,13 +1,7 @@
 <script lang="ts">
-    import FileSelector from "$lib/components/FileSelector.svelte";
     import AudioPlayer from "$lib/components/AudioPlayer.svelte";
-    import { audioUrl, selectedFile } from "$lib/stores/audioStore";
-
-    // Debug store values
-    $effect(() => {
-        console.log("Main page - Audio URL:", $audioUrl);
-        console.log("Main page - Selected file:", $selectedFile);
-    });
+    import FileSelector from "$lib/components/FileSelector.svelte";
+    import VolumeAnalysis from "$lib/components/VolumeAnalysis.svelte";
 </script>
 
 <main class="container">
@@ -16,6 +10,7 @@
     <div class="player-container">
         <FileSelector />
         <AudioPlayer />
+        <VolumeAnalysis />
     </div>
 </main>
 
@@ -49,8 +44,6 @@
         flex-direction: column;
         align-items: center;
         gap: 1rem;
-        width: 80%;
-        max-width: 500px;
         margin-left: auto;
         margin-right: auto;
     }

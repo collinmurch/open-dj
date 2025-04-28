@@ -1,21 +1,25 @@
 <script lang="ts">
     import {
-        selectedFile,
-        audioUrl,
         audioError,
+        selectedFile,
         selectMp3File,
+        audioUrl,
     } from "$lib/stores/audioStore";
 
-    // Debug store values
+    // Add debug logging
     $effect(() => {
-        console.log("FileSelector - Selected file:", $selectedFile);
-        console.log("FileSelector - Audio URL:", $audioUrl);
-        console.log("FileSelector - Audio error:", $audioError);
+        console.log("FileSelector - selectedFile:", $selectedFile);
+        console.log("FileSelector - audioUrl:", $audioUrl);
     });
+
+    async function handleSelectFile() {
+        console.log("Select button clicked");
+        await selectMp3File();
+    }
 </script>
 
 <div class="file-selector">
-    <button class="select-button" onclick={selectMp3File}>
+    <button class="select-button" onclick={handleSelectFile}>
         Select MP3 File
     </button>
 

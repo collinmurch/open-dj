@@ -11,19 +11,39 @@
         seekBySeconds,
         togglePlay,
         updateProgress,
+        onAudioLoaded,
     } from "$lib/stores/audioStore";
 
     // Local reference to the audio element
     let audioElement: HTMLAudioElement;
 
+    // Debug logging
+    $effect(() => {
+        console.log("AudioPlayer - audioUrl:", $audioUrl);
+        console.log("AudioPlayer - audioDuration:", $audioDuration);
+    });
+
     // Update the store when the audio element changes
     $effect(() => {
         if (audioElement && $audioUrl) {
-            audioElement.src = $audioUrl;
-            $audioStore = audioElement;
-            console.log("Audio element set in store:", audioElement);
+            console.log("Setting audio source to:", $audioUrl);
 
-            // Set up event listeners directly on the element
+            // Important: Load the new audio source
+            audioElement.src = $audioUrl;
+            audioElement.load();
+            $audioStore = audioElement;
+
+            // Set up event listeners
+            audioElement.addEventListener("loadedmetadata", () => {
+                // This is crucial for updating duration
+                console.log(
+                    "Audio metadata loaded, duration:",
+                    audioElement.duration,
+                );
+                onAudioLoaded();
+                updateProgress();
+            });
+
             audioElement.addEventListener("timeupdate", () => {
                 updateProgress();
             });
@@ -35,15 +55,11 @@
             audioElement.addEventListener("pause", () => {
                 $isPlaying = false;
             });
-        }
-    });
 
-    // Debug store values
-    $effect(() => {
-        console.log("Audio URL:", $audioUrl);
-        console.log("Audio element in store:", $audioStore);
-        console.log("Is playing:", $isPlaying);
-        console.log("Audio progress:", $audioProgress);
+            audioElement.addEventListener("error", (e) => {
+                console.error("Audio error:", e);
+            });
+        }
     });
 
     function handleSeekBackward() {
@@ -73,7 +89,7 @@
 </script>
 
 <div class="audio-player">
-    <audio bind:this={audioElement}>
+    <audio bind:this={audioElement} preload="auto">
         <track kind="captions" />
     </audio>
 
@@ -169,11 +185,13 @@
                     aria-label="Audio progress"
                     aria-valuemin="0"
                     aria-valuemax="100"
-                    aria-valuenow={($audioProgress / $audioDuration) * 100}
+                    aria-valuenow={($audioProgress / ($audioDuration || 1)) *
+                        100}
                 >
                     <div
                         class="progress"
-                        style="width: {($audioProgress / $audioDuration) *
+                        style="width: {($audioProgress /
+                            ($audioDuration || 1)) *
                             100}%"
                     ></div>
                 </div>
