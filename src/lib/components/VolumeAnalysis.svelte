@@ -1,87 +1,128 @@
 <script lang="ts">
-    import {
-        analysisResults,
-        type VolumeInterval,
-        audioProgress,
+    import type { VolumeInterval } from "$lib/types";
+
+    // --- Props --- Accepted from parent (TrackPlayer)
+    let {
+        results,
         audioDuration,
-    } from "$lib/stores/audioStore";
+        currentTime,
+        seekAudio, // Callback function provided by parent
+        maxRms, // Accept maxRms from parent
+    }: {
+        results: VolumeInterval[] | null;
+        audioDuration: number;
+        currentTime: number;
+        seekAudio: (event: MouseEvent) => void;
+        maxRms: number; // Define prop type
+    } = $props();
 
-    // Reactive assignment for analysis results
-    $: results = $analysisResults;
-
-    // Reactive assignment for current playback time
-    $: currentTime = $audioProgress;
-
-    // Reactive assignment for audio duration, ensuring it's never zero
-    $: duration = $audioDuration > 0 ? $audioDuration : 1;
+    // --- Derived State ---
+    // Ensure duration is never zero for calculations
+    const duration = $derived(audioDuration > 0 ? audioDuration : 1);
 
     // Calculate the maximum RMS value for scaling
-    $: maxRms = results
-        ? Math.max(0.0001, ...results.map((r) => r.rms_amplitude))
-        : 0.0001;
+    // const maxRms = $derived(...);
 
     // --- SVG Path Calculation ---
     const SVG_WIDTH = 1000; // Internal resolution width
     const SVG_HEIGHT = 100; // Internal resolution height (amplitude range)
 
-    $: svgPathData = (() => {
-        if (!results || results.length === 0) {
-            return "";
+    // --- Event Handlers ---
+    function handleWaveformClick(event: MouseEvent) {
+        if (!results || results.length === 0) return; // Don't seek if no waveform
+        seekAudio(event); // Call the provided seek function
+    }
+
+    function handleWaveformKeyDown(event: KeyboardEvent) {
+        if (!results || results.length === 0) return;
+        if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            const target = event.currentTarget as HTMLElement;
+            const rect = target.getBoundingClientRect();
+            const fakeEvent = new MouseEvent("click", {
+                clientX: rect.left + rect.width / 2,
+                clientY: rect.top + rect.height / 2,
+                bubbles: true,
+            });
+            seekAudio(fakeEvent);
         }
+    }
 
-        // Start path at bottom-left
-        let path = `M 0 ${SVG_HEIGHT}`;
-
-        // Add points for each interval
-        for (const interval of results) {
-            // Map time to X coordinate (0 to SVG_WIDTH)
-            const x = (interval.start_time / duration) * SVG_WIDTH;
-
-            // Map RMS to Y coordinate (SVG_HEIGHT is 0 RMS, 0 is max RMS)
-            // Clamp RMS between 0 and maxRms
-            const rmsClamped = Math.max(
-                0,
-                Math.min(interval.rms_amplitude, maxRms),
-            );
-            const y = SVG_HEIGHT - (rmsClamped / maxRms) * SVG_HEIGHT;
-
-            // Add line segment to the point
-            path += ` L ${x.toFixed(2)} ${y.toFixed(2)}`;
-        }
-
-        // Add final point at the end time of the last interval
-        const lastX =
-            (results[results.length - 1].end_time / duration) * SVG_WIDTH;
-        path += ` L ${lastX.toFixed(2)} ${SVG_HEIGHT}`;
-
-        // Close the path to create a filled shape
-        path += " Z";
-
-        return path;
-    })();
-    // --- End SVG Path Calculation ---
+    // --- Derived values for template ---
+    const progressPercent = $derived(
+        duration > 0 ? (currentTime / duration) * 100 : 0,
+    );
+    const canInteract = $derived(results && results.length > 0 && duration > 0);
 </script>
 
 {#if results && results.length > 0}
-    {@const progressPercent = (currentTime / duration) * 100}
+    {@const ariaValueNow = progressPercent}
     <div class="analysis-container" aria-label="Audio Volume Waveform">
-        <div class="waveform-container">
+        <div
+            class:waveform-container={true}
+            class:interactive={canInteract}
+            onclick={handleWaveformClick}
+            onkeydown={handleWaveformKeyDown}
+            role="slider"
+            tabindex={canInteract ? 0 : -1}
+            aria-label="Audio waveform progress"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow={ariaValueNow}
+            aria-disabled={!canInteract}
+        >
             <svg
                 class="waveform-svg"
                 viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`}
                 preserveAspectRatio="none"
             >
-                <path class="waveform-path" d={svgPathData}></path>
+                {#if results && results.length > 0}
+                    {@const pathData = (() => {
+                        let path = `M 0 ${SVG_HEIGHT}`;
+                        const currentDuration = duration;
+                        const currentMaxRms = maxRms > 0 ? maxRms : 0.0001; // Ensure non-zero
+                        for (const interval of results) {
+                            const x =
+                                (interval.start_time / currentDuration) *
+                                SVG_WIDTH;
+                            const rmsClamped = Math.max(
+                                0,
+                                Math.min(interval.rms_amplitude, currentMaxRms),
+                            );
+                            const y =
+                                SVG_HEIGHT -
+                                (rmsClamped / currentMaxRms) * SVG_HEIGHT;
+                            path += ` L ${x.toFixed(2)} ${y.toFixed(2)}`;
+                        }
+                        const lastInterval = results[results.length - 1];
+                        const lastX =
+                            (lastInterval.end_time / currentDuration) *
+                            SVG_WIDTH;
+                        path += ` L ${lastX.toFixed(2)} ${SVG_HEIGHT}`;
+                        path += ` L ${SVG_WIDTH} ${SVG_HEIGHT}`;
+                        path += " Z";
+                        return path;
+                    })()}
+                    <path class="waveform-path" d={pathData}></path>
+                {/if}
             </svg>
+            <!-- Simple progress line overlay -->
             <div
                 class="progress-indicator"
-                style={`left: ${progressPercent}%;`}
+                style:left={`${progressPercent}%`}
                 aria-hidden="true"
             ></div>
         </div>
     </div>
-{:else if results === null && $audioDuration > 0}
+{:else if !results && audioDuration > 0}
     <p class="analysis-status">Processing audio analysis...</p>
+{:else}
+    <!-- Optional: Placeholder when no audio is loaded/no results -->
+    <div class="analysis-container placeholder" aria-hidden="true">
+        <div class="waveform-container">
+            <span class="placeholder-text">Load audio to see waveform</span>
+        </div>
+    </div>
 {/if}
 
 <style>
@@ -91,15 +132,39 @@
         max-width: 1200px;
         margin: 10px 0;
     }
+    .analysis-container.placeholder {
+        opacity: 0.5;
+    }
 
     .waveform-container {
         position: relative;
         display: block;
-        height: 100px; /* Increased height */
-        background-color: #e0e0e0;
+        height: 100px;
+        background-color: var(--waveform-bg, #e0e0e0);
         border-radius: 3px;
         overflow: hidden;
-        cursor: default;
+        outline: none;
+        cursor: default; /* Default non-interactive */
+    }
+    .waveform-container.interactive {
+        cursor: pointer;
+    }
+    .waveform-container:not(.interactive) {
+        /* Style for non-interactive state if needed */
+        background-color: var(--waveform-bg-disabled, #eee);
+    }
+
+    .placeholder-text {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        font-style: italic;
+        color: var(--placeholder-text-color, #888);
+    }
+
+    .waveform-container.interactive:focus-visible {
+        box-shadow: 0 0 0 2px var(--accent-color, #4a9eff);
     }
 
     .waveform-svg {
@@ -109,8 +174,8 @@
     }
 
     .waveform-path {
-        fill: #6488ac;
-        stroke-width: 0; /* No border */
+        fill: var(--waveform-fill, #6488ac);
+        stroke-width: 0;
     }
 
     .progress-indicator {
@@ -118,30 +183,35 @@
         top: 0;
         bottom: 0;
         width: 2px;
-        background-color: #d9534f;
-        pointer-events: none;
-        z-index: 10;
+        background-color: var(--progress-indicator-color, #d9534f);
+        pointer-events: none; /* Click goes through to the container */
+        transition: left 0.1s linear; /* Smooth progress movement */
     }
 
     .analysis-status {
         font-style: italic;
-        color: #666;
+        color: var(--status-text-color, #666);
         margin-top: 10px;
         text-align: center;
     }
 
     @media (prefers-color-scheme: dark) {
         .waveform-container {
-            background-color: #4f4f4f;
+            --waveform-bg: #4f4f4f;
+            --waveform-bg-disabled: #404040;
+        }
+        .placeholder-text {
+            --placeholder-text-color: #aaa;
         }
         .waveform-path {
-            fill: #8ab4f8;
+            --waveform-fill: #8ab4f8;
         }
         .progress-indicator {
-            background-color: #f48481;
+            --progress-indicator-color: #f48481;
         }
         .analysis-status {
-            color: #bbb;
+            --status-text-color: #bbb;
         }
     }
+    /* Light mode defaults are mostly fine */
 </style>

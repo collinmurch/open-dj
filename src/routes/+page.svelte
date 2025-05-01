@@ -1,57 +1,216 @@
 <script lang="ts">
-    import AudioPlayer from "$lib/components/AudioPlayer.svelte";
-    import FileSelector from "$lib/components/FileSelector.svelte";
-    import VolumeAnalysis from "$lib/components/VolumeAnalysis.svelte";
+    import TrackPlayer from "$lib/components/TrackPlayer.svelte";
+    import MusicLibrary from "$lib/components/MusicLibrary.svelte";
+    import { libraryStore } from "$lib/stores/libraryStore";
+
+    // State for file paths loaded into each deck
+    let deckAFilePath = $state<string | null>(null);
+    let deckBFilePath = $state<string | null>(null);
+
+    // Get reactive access to the selected track & folder state
+    const selectedTrack = $derived($libraryStore.selectedTrack);
+    const isFolderSelected = $derived(!!$libraryStore.selectedFolder);
+
+    function loadToDeckA() {
+        if (selectedTrack) {
+            deckAFilePath = selectedTrack.path;
+            console.log(`[Page] Loading ${selectedTrack.name} to Deck A`);
+        }
+    }
+
+    function loadToDeckB() {
+        if (selectedTrack) {
+            deckBFilePath = selectedTrack.path;
+            console.log(`[Page] Loading ${selectedTrack.name} to Deck B`);
+        }
+    }
 </script>
 
 <main class="container">
-    <h1>Open DJ</h1>
+    {#if !isFolderSelected}
+        <!-- Initial State: Only show Library Section (containing just the button initially) -->
+        <section class="library-section library-section-initial">
+            <h2>Music Library</h2>
+            <MusicLibrary />
+        </section>
+    {/if}
 
-    <div class="player-container">
-        <FileSelector />
-        <AudioPlayer />
-        <VolumeAnalysis />
-    </div>
+    {#if isFolderSelected}
+        <!-- State After Folder Selection: Decks first, then Library -->
+        <section class="decks-section">
+            <h2>Decks</h2>
+            <div class="decks-container">
+                <div class="deck">
+                    <h3>Deck A</h3>
+                    <TrackPlayer filePath={deckAFilePath} />
+                </div>
+                <div class="deck">
+                    <h3>Deck B</h3>
+                    <TrackPlayer filePath={deckBFilePath} />
+                </div>
+            </div>
+        </section>
+
+        <section class="library-section">
+            <h2>Music Library</h2>
+            <MusicLibrary />
+            <!-- Load controls are shown inside the library section when folder selected -->
+            <div class="load-controls">
+                <button onclick={loadToDeckA} disabled={!selectedTrack}
+                    >Load Selected to Deck A</button
+                >
+                <button onclick={loadToDeckB} disabled={!selectedTrack}
+                    >Load Selected to Deck B</button
+                >
+                {#if selectedTrack}
+                    <span class="selected-track-info"
+                        >Selected: {selectedTrack.name}</span
+                    >
+                {:else}
+                    <span class="selected-track-info"
+                        >No track selected in library</span
+                    >
+                {/if}
+            </div>
+        </section>
+    {/if}
 </main>
 
 <style>
+    /* Add specific style for initial library view if needed */
+    .library-section-initial {
+        /* Maybe less padding or different alignment if desired */
+        /* Example: center the button */
+        align-items: center;
+    }
+    /* Container and Title */
+    .container {
+        margin: 0 auto;
+        padding: 2rem;
+        padding-top: 3vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2rem; /* Gap between sections */
+        max-width: 1600px;
+    }
+
+    /* Section Styling */
+    .library-section,
+    .decks-section {
+        width: 100%;
+        border: 1px solid var(--section-border, #ddd);
+        border-radius: 8px;
+        padding: 1.5rem;
+        background-color: var(--section-bg, #fff);
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+    }
+    h2 {
+        margin-top: 0;
+        margin-bottom: 1rem;
+        border-bottom: 1px solid var(--section-border, #ddd);
+        padding-bottom: 0.5rem;
+        text-align: center;
+    }
+
+    .load-controls {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        align-items: center;
+        gap: 1rem;
+        margin-top: 1rem;
+        padding-top: 1rem;
+        border-top: 1px solid var(--section-border-light, #eee);
+    }
+    .load-controls button {
+        padding: 0.5em 1em;
+        font-size: 0.9em;
+        background-color: #e0e0e0;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: background-color 0.2s;
+    }
+    .load-controls button:hover:not(:disabled) {
+        background-color: #d0d0d0;
+    }
+    .load-controls button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+    .selected-track-info {
+        font-size: 0.9em;
+        font-style: italic;
+        color: var(--text-muted, #555);
+        text-align: center;
+        flex-basis: 100%;
+        margin-top: 0.5rem;
+    }
+
+    /* Decks Specific */
+
+    .decks-container {
+        width: 100%;
+        display: flex;
+        flex-direction: row;
+        justify-content: space-around;
+        align-items: flex-start;
+        gap: 2rem;
+        flex-wrap: wrap;
+    }
+    .deck {
+        flex: 1;
+        min-width: 300px;
+        max-width: 650px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 0.5rem;
+    }
+    .deck h3 {
+        margin-bottom: 0.5rem;
+        font-size: 1.1em;
+    }
+
+    /* Dark Mode */
+    @media (prefers-color-scheme: dark) {
+        :root {
+            --text-color: #f6f6f6;
+            --bg-color: #2f2f2f;
+            --section-border: #555;
+            --section-border-light: #444;
+            --section-bg: #3a3a3a;
+            --text-muted: #bbb;
+        }
+        .load-controls button {
+            background-color: #555;
+            border-color: #777;
+            color: #eee;
+        }
+        .load-controls button:hover:not(:disabled) {
+            background-color: #666;
+        }
+    }
+
     :root {
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+        }
         font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
         font-size: 16px;
         line-height: 24px;
         font-weight: 400;
-        color: #0f0f0f;
-        background-color: #f6f6f6;
+        color: var(--text-color, #0f0f0f);
+        background-color: var(--bg-color, #f6f6f6);
         font-synthesis: none;
         text-rendering: optimizeLegibility;
         -webkit-font-smoothing: antialiased;
         -moz-osx-font-smoothing: grayscale;
         -webkit-text-size-adjust: 100%;
-    }
-
-    .container {
-        margin: 0;
-        padding-top: 10vh;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        text-align: center;
-    }
-
-    .player-container {
-        margin-top: 2rem;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 1rem;
-        margin-left: auto;
-        margin-right: auto;
-    }
-
-    @media (prefers-color-scheme: dark) {
-        :root {
-            color: #f6f6f6;
-            background-color: #2f2f2f;
-        }
     }
 </style>

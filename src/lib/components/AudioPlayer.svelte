@@ -1,105 +1,161 @@
 <script lang="ts">
-    import {
-        audioDuration,
-        audioProgress,
-        audioStore,
-        audioUrl,
-        formattedDuration,
-        formattedProgress,
-        isPlaying,
-        seekAudio,
-        seekBySeconds,
-        togglePlay,
-        updateProgress,
-        onAudioLoaded,
-    } from "$lib/stores/audioStore";
+    let {
+        audioUrl: urlProp,
+        isLoading = false,
+    }: { audioUrl: string | null; isLoading?: boolean } = $props();
 
-    // Local reference to the audio element
-    let audioElement: HTMLAudioElement;
+    let audioElement = $state<HTMLAudioElement | null>(null);
+    let isPlaying = $state(false);
+    let currentTime = $state(0);
+    let duration = $state(0);
+    let error = $state<string | null>(null);
 
-    // Debug logging
+    function formatTime(timeSeconds: number): string {
+        const validTime =
+            timeSeconds > 0 && isFinite(timeSeconds) ? timeSeconds : 0;
+        const minutes = Math.floor(validTime / 60);
+        const seconds = Math.floor(validTime % 60);
+        return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+    }
+
+    const progressPercent = $derived(
+        duration > 0 && isFinite(duration) ? (currentTime / duration) * 100 : 0,
+    );
+    const canInteract = $derived(duration > 0 && isFinite(duration));
+
     $effect(() => {
-        console.log("AudioPlayer - audioUrl:", $audioUrl);
-        console.log("AudioPlayer - audioDuration:", $audioDuration);
-    });
-
-    // Update the store when the audio element changes
-    $effect(() => {
-        if (audioElement && $audioUrl) {
-            console.log("Setting audio source to:", $audioUrl);
-
-            // Important: Load the new audio source
-            audioElement.src = $audioUrl;
-            audioElement.load();
-            $audioStore = audioElement;
-
-            // Set up event listeners
-            audioElement.addEventListener("loadedmetadata", () => {
-                // This is crucial for updating duration
-                console.log(
-                    "Audio metadata loaded, duration:",
-                    audioElement.duration,
-                );
-                onAudioLoaded();
-                updateProgress();
-            });
-
-            audioElement.addEventListener("timeupdate", () => {
-                updateProgress();
-            });
-
-            audioElement.addEventListener("play", () => {
-                $isPlaying = true;
-            });
-
-            audioElement.addEventListener("pause", () => {
-                $isPlaying = false;
-            });
-
-            audioElement.addEventListener("error", (e) => {
-                console.error("Audio error:", e);
-            });
+        if (audioElement) {
+            const currentSrc = audioElement.currentSrc;
+            if (urlProp && urlProp !== currentSrc) {
+                currentTime = 0;
+                duration = 0;
+                isPlaying = false;
+                error = null;
+                audioElement.src = urlProp;
+                audioElement.load();
+            } else if (!urlProp && audioElement.hasAttribute("src")) {
+                currentTime = 0;
+                duration = 0;
+                isPlaying = false;
+                error = null;
+                audioElement.removeAttribute("src");
+                audioElement.load();
+            }
         }
     });
 
+    function onLoadedMetadata() {
+        if (!audioElement) return;
+        const newDuration = audioElement.duration;
+        duration = newDuration && isFinite(newDuration) ? newDuration : 0;
+        currentTime = audioElement.currentTime;
+        isPlaying = !audioElement.paused;
+    }
+    function onTimeUpdate() {
+        if (audioElement) currentTime = audioElement.currentTime;
+    }
+    function onPlay() {
+        isPlaying = true;
+        error = null;
+    }
+    function onPause() {
+        isPlaying = false;
+    }
+    function onEnded() {
+        isPlaying = false;
+        if (audioElement) currentTime = duration;
+    }
+    function onError() {
+        if (!audioElement) return;
+        error = `Playback error: ${audioElement.error?.message || "Unknown error"}`;
+        isPlaying = false;
+    }
+
+    function handleTogglePlay() {
+        if (!canInteract) return;
+        togglePlay();
+    }
     function handleSeekBackward() {
+        if (!canInteract) return;
         seekBySeconds(-10);
     }
-
     function handleSeekForward() {
+        if (!canInteract) return;
         seekBySeconds(10);
     }
-
     function handleProgressClick(event: MouseEvent) {
+        if (!canInteract) return;
         seekAudio(event);
     }
-
     function handleProgressKeyDown(event: KeyboardEvent) {
+        if (!canInteract) return;
         if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
             const target = event.currentTarget as HTMLElement;
             const rect = target.getBoundingClientRect();
             const fakeEvent = new MouseEvent("click", {
                 clientX: rect.left + rect.width / 2,
+                clientY: rect.top + rect.height / 2,
                 bubbles: true,
             });
-            seekAudio(fakeEvent);
+            target.dispatchEvent(fakeEvent);
         }
     }
+
+    export function togglePlay() {
+        if (!audioElement || !canInteract) return;
+        if (audioElement.paused)
+            audioElement.play().catch((err) => {
+                error = `Playback error: ${err.message}`;
+                isPlaying = false;
+            });
+        else audioElement.pause();
+    }
+    export function seekAudio(event: MouseEvent) {
+        if (!audioElement || !canInteract) return;
+        const target = event.currentTarget as HTMLElement;
+        const rect = target.getBoundingClientRect();
+        audioElement.currentTime = Math.max(
+            0,
+            Math.min(
+                ((event.clientX - rect.left) / rect.width) * duration,
+                duration,
+            ),
+        );
+    }
+    export function seekBySeconds(seconds: number) {
+        if (!audioElement || !canInteract) return;
+        audioElement.currentTime = Math.max(
+            0,
+            Math.min(audioElement.currentTime + seconds, duration),
+        );
+    }
+
+    export { audioElement, currentTime, duration };
 </script>
 
 <div class="audio-player">
-    <audio bind:this={audioElement} preload="auto">
+    <audio
+        bind:this={audioElement}
+        preload="metadata"
+        onloadedmetadata={onLoadedMetadata}
+        ontimeupdate={onTimeUpdate}
+        onplay={onPlay}
+        onpause={onPause}
+        onended={onEnded}
+        onerror={onError}
+    >
         <track kind="captions" />
     </audio>
 
-    {#if $audioUrl}
+    {#if urlProp}
         <div class="controls">
             <div class="audio-controls">
                 <button
                     class="control-button"
                     onclick={handleSeekBackward}
                     aria-label="Rewind 10 seconds"
+                    disabled={!canInteract}
                 >
                     <svg
                         xmlns="http://www.w3.org/2000/svg"
@@ -118,10 +174,11 @@
                 </button>
                 <button
                     class="control-button"
-                    onclick={togglePlay}
-                    aria-label={$isPlaying ? "Pause" : "Play"}
+                    onclick={handleTogglePlay}
+                    aria-label={isPlaying ? "Pause" : "Play"}
+                    disabled={!canInteract}
                 >
-                    {#if $isPlaying}
+                    {#if isPlaying}
                         <svg
                             xmlns="http://www.w3.org/2000/svg"
                             width="24"
@@ -156,6 +213,7 @@
                     class="control-button"
                     onclick={handleSeekForward}
                     aria-label="Forward 10 seconds"
+                    disabled={!canInteract}
                 >
                     <svg
                         xmlns="http://www.w3.org/2000/svg"
@@ -175,46 +233,51 @@
             </div>
 
             <div class="time-display">
-                <span>{$formattedProgress}</span>
+                <span>{formatTime(currentTime)}</span>
                 <div
-                    class="progress-bar"
+                    class:progress-bar={true}
+                    class:disabled={!canInteract}
                     onclick={handleProgressClick}
                     onkeydown={handleProgressKeyDown}
                     role="slider"
-                    tabindex="0"
+                    tabindex={canInteract ? 0 : -1}
                     aria-label="Audio progress"
                     aria-valuemin="0"
                     aria-valuemax="100"
-                    aria-valuenow={($audioProgress / ($audioDuration || 1)) *
-                        100}
+                    aria-valuenow={progressPercent}
+                    aria-disabled={!canInteract}
                 >
                     <div
                         class="progress"
-                        style="width: {($audioProgress /
-                            ($audioDuration || 1)) *
-                            100}%"
+                        style:width={`${progressPercent}%`}
                     ></div>
                 </div>
-                <span>{$formattedDuration}</span>
+                <span>{formatTime(duration)}</span>
             </div>
+            {#if error}
+                <p class="error-message">{error}</p>
+            {/if}
         </div>
+    {:else if isLoading}
+        <p class="placeholder-message loading">Loading track...</p>
     {:else}
-        <p class="no-audio">No audio file selected</p>
+        <p class="placeholder-message no-audio">No audio loaded</p>
     {/if}
 </div>
 
 <style>
     .audio-player {
-        width: 100%;
-        max-width: 600px;
-        margin: 0 auto;
         padding: 1rem;
-        background: var(--background-color);
+        background: var(--background-color, #f9f9f9);
         border-radius: 8px;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        min-height: 100px;
+        display: flex;
+        justify-content: center;
+        align-items: center;
     }
 
     .controls {
+        width: 100%;
         display: flex;
         flex-direction: column;
         gap: 1rem;
@@ -231,12 +294,25 @@
         border: none;
         cursor: pointer;
         padding: 0.5rem;
-        color: var(--text-color);
-        transition: color 0.2s;
+        color: var(--text-color, #333);
+        transition:
+            color 0.2s,
+            opacity 0.2s;
     }
-
-    .control-button:hover {
-        color: var(--accent-color);
+    .control-button:hover:not(:disabled) {
+        color: var(--accent-color, #0066cc);
+    }
+    .control-button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+    .control-button:focus {
+        outline: none;
+    }
+    .control-button:focus-visible {
+        outline: 2px solid var(--accent-color, #0066cc);
+        outline-offset: 2px;
+        border-radius: 4px;
     }
 
     .time-display {
@@ -248,28 +324,48 @@
     .progress-bar {
         flex-grow: 1;
         height: 4px;
-        background-color: var(--progress-bg);
+        background-color: var(--progress-bg, rgba(0, 0, 0, 0.1));
         cursor: pointer;
         position: relative;
         border-radius: 2px;
         outline: none;
     }
+    .progress-bar.disabled {
+        cursor: not-allowed;
+        opacity: 0.7;
+    }
 
     .progress-bar:focus {
-        box-shadow: 0 0 0 2px var(--accent-color);
+        outline: none;
+    }
+    .progress-bar:focus-visible:not(.disabled) {
+        box-shadow: 0 0 0 2px var(--accent-color, #0066cc);
     }
 
     .progress {
         height: 100%;
-        background-color: var(--accent-color);
+        background-color: var(--accent-color, #0066cc);
         border-radius: 2px;
         transition: width 0.1s linear;
+        pointer-events: none;
     }
 
-    .no-audio {
+    .placeholder-message {
         text-align: center;
-        color: var(--text-color);
+        color: var(--text-color, #555);
         opacity: 0.7;
+        padding: 1rem 0;
+        font-style: italic;
+    }
+    .placeholder-message.loading {
+        opacity: 1;
+    }
+
+    .error-message {
+        color: #d9534f;
+        font-size: 0.9em;
+        text-align: center;
+        margin-top: 0.5rem;
     }
 
     @media (prefers-color-scheme: dark) {
@@ -277,16 +373,25 @@
             --background-color: #2a2a2a;
             --progress-bg: rgba(255, 255, 255, 0.1);
             --accent-color: #4a9eff;
-            --text-color: #fff;
+            --text-color: #eee;
+        }
+        .placeholder-message {
+            color: var(--text-color, #aaa);
+        }
+        .error-message {
+            color: #f48481;
         }
     }
 
     @media (prefers-color-scheme: light) {
         .audio-player {
-            --background-color: #fff;
+            --background-color: #f9f9f9;
             --progress-bg: rgba(0, 0, 0, 0.1);
             --accent-color: #0066cc;
-            --text-color: #000;
+            --text-color: #333;
+        }
+        .placeholder-message {
+            color: var(--text-color, #555);
         }
     }
 </style>

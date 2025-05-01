@@ -1,35 +1,65 @@
+# ──────────────────────────────────────────────────────────────
+[workspace]
+resolver = "2" # prevents transitive default-feature creep
+
 [package]
 name = "open-dj"
 version = "0.1.0"
+edition = "2024"
 description = "A Tauri App"
 authors = ["you"]
-edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
-# The `_lib` suffix may seem redundant but it is necessary
-# to make the lib name unique and wouldn't conflict with the bin name.
-# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "open_dj_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+path = "src/lib.rs"
+crate-type = ["rlib", "cdylib", "staticlib"]
 
-[build-dependencies]
-tauri-build = { version = "2", features = [] }
+# ── core ──────────────────────────────────────────────────────
+[dependencies.tauri]
+version = "2.5.1"
+default-features = false
+features = ["wry"]
 
+# `tauri-build` is still at 2.2.x on crates.io
+[build-dependencies.tauri-build]
+version = "2.2"
+default-features = false
+features = []
+
+# ── plugins ───────────────────────────────────────────────────
+[dependencies.tauri-plugin-opener]
+version = "2.2"
+default-features = false
+
+[dependencies.tauri-plugin-dialog]
+version = "2.2"
+default-features = false
+
+[dependencies.tauri-plugin-fs]
+version = "2.2"
+default-features = false
+
+# ── audio ─────────────────────────────────────────────────────
+[dependencies.symphonia]
+version = "0.5.4"
+default-features = false
+features = [
+    # containers
+    "wav",
+    "ogg",
+    "isomp4",
+    # codecs
+    "mp3",
+    "vorbis",
+    "aac",
+    "flac",
+]
+
+# ── misc ──────────────────────────────────────────────────────
 [dependencies]
-tauri = { version = "2", features = [] }
-tauri-plugin-opener = "2"
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1"
-tauri-plugin-dialog = "2"
-tauri-plugin-fs = "2"
-symphonia = { version = "0.5.4", features = ["all-formats", "all-codecs"] }
+serde_json = "1.0"
 log = "0.4"
-# tauri-plugin-log = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "v2.0.0-beta", features = ["colored"] }
 
 [profile.dev]
-opt-level = 1 # Otherwise loading audio takes too long
-
-[features]
-# ... existing code ...
+opt-level = 1
