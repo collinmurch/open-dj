@@ -2,7 +2,7 @@
     import { libraryStore } from "$lib/stores/libraryStore";
     import type { TrackInfo } from "$lib/types";
 
-    // Directly access store functions
+    // Access store functions for event handlers
     const { selectLibraryFolder, setSelectedTrack } = libraryStore;
 
     // Access store state reactively using $ prefix
@@ -12,9 +12,8 @@
         setSelectedTrack(track);
     }
 
-    // Function to check if a track is currently selected
+    // Check if a track is currently selected using the reactive store value
     function isSelected(track: TrackInfo): boolean {
-        // Access state properties via $libraryStore
         return $libraryStore.selectedTrack?.path === track.path;
     }
 </script>
@@ -54,6 +53,19 @@
                                 aria-label={`Select track ${track.name}`}
                             >
                                 <span class="track-name">{track.name}</span>
+                                {#if track.bpm === undefined}
+                                    <span class="track-bpm track-bpm-loading"
+                                        >Calculating...</span
+                                    >
+                                {:else if track.bpm === null}
+                                    <span class="track-bpm track-bpm-error"
+                                        >Error</span
+                                    >
+                                {:else if typeof track.bpm === "number"}
+                                    <span class="track-bpm"
+                                        >{track.bpm.toFixed(1)} BPM</span
+                                    >
+                                {/if}
                             </button>
                         </li>
                     {/each}
@@ -139,10 +151,9 @@
     }
 
     .track-list li button {
-        /* display: flex; Now using block as it's just the name */
-        /* justify-content: space-between; */
-        /* align-items: center; */
-        display: block; /* Simpler layout */
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
         width: 100%;
         padding: 0.5rem 0.75rem;
         border: 1px solid var(--border-color, #ddd);
@@ -156,9 +167,30 @@
         text-align: left;
         font-family: inherit;
         font-size: inherit;
-        white-space: nowrap; /* Prevent wrapping */
+    }
+
+    .track-name {
+        flex-grow: 1;
+        white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+        margin-right: 0.5rem;
+    }
+
+    .track-bpm {
+        font-size: 0.85em;
+        font-style: italic;
+        color: var(--text-muted, #666);
+        flex-shrink: 0;
+    }
+
+    .track-bpm-loading {
+        color: var(--text-muted-light, #999);
+    }
+
+    .track-bpm-error {
+        color: var(--error-text-light, #e74c3c);
+        font-weight: bold;
     }
 
     .track-list li button:hover {
@@ -230,6 +262,15 @@
         .track-list li button.selected {
             background-color: var(--track-item-selected-bg, #0a2d57);
             border-color: #2a6bba;
+        }
+        .track-bpm {
+            color: var(--text-muted, #aaa);
+        }
+        .track-bpm-loading {
+            color: var(--text-muted-light, #777);
+        }
+        .track-bpm-error {
+            color: var(--error-text-light, #ff7f7f);
         }
     }
 </style>

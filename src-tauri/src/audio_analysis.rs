@@ -7,6 +7,8 @@ use symphonia::core::formats::{FormatOptions, FormatReader, Track};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
+use rayon::prelude::*;
+use std::collections::HashMap;
 
 #[derive(serde::Serialize, Debug, Clone)]
 pub struct VolumeInterval {
@@ -182,12 +184,12 @@ fn calculate_rms_intervals(samples: &[f32], sample_rate: u32) -> (Vec<VolumeInte
     (intervals, max_rms_amplitude)
 }
 
-#[tauri::command]
-pub fn process_audio_file(path: String) -> Result<AudioAnalysis, String> {
-    log::info!("Processing audio file: {}", path);
+// Make process_audio_file reusable and non-command
+fn analyze_audio_for_volume(path: &str) -> Result<AudioAnalysis, String> {
+    log::debug!("Volume Analysis: Processing file: {}", path);
 
     // 1. Probe and find track
-    let (mut format_reader, track) = probe_audio_track(&path)?;
+    let (mut format_reader, track) = probe_audio_track(path)?;
 
     let sample_rate = track
         .codec_params
@@ -208,4 +210,33 @@ pub fn process_audio_file(path: String) -> Result<AudioAnalysis, String> {
     };
 
     Ok(analysis)
+}
+
+// Old command, now calls the internal function
+#[tauri::command]
+pub fn process_audio_file(path: String) -> Result<AudioAnalysis, String> {
+    log::warn!("process_audio_file command is potentially slow and called synchronously from TrackPlayer. Consider using pre-analysis.");
+    analyze_audio_for_volume(&path)
+}
+
+// New batch command
+#[tauri::command(async)] // Mark as async for potential long-running tasks
+pub fn analyze_volume_batch(
+    paths: Vec<String>,
+) -> HashMap<String, Result<AudioAnalysis, String>> {
+    log::info!("Starting batch volume analysis for {} files", paths.len());
+
+    let results: HashMap<String, Result<AudioAnalysis, String>> = paths
+        .par_iter() // Process paths in parallel using Rayon
+        .map(|path| {
+            let analysis_result = analyze_audio_for_volume(path);
+            if let Err(e) = &analysis_result {
+                log::error!("Volume Analysis Error for '{}': {}", path, e);
+            }
+            (path.clone(), analysis_result)
+        })
+        .collect();
+
+    log::info!("Finished batch volume analysis.");
+    results
 }

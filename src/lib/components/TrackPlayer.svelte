@@ -1,196 +1,120 @@
 <script lang="ts">
     import AudioPlayer from "./AudioPlayer.svelte";
     import VolumeAnalysis from "./VolumeAnalysis.svelte";
-    import type { AudioAnalysis } from "$lib/types";
+    import { libraryStore } from "$lib/stores/libraryStore";
     import { readFile } from "@tauri-apps/plugin-fs";
-    import { invoke } from "@tauri-apps/api/core";
+    import {
+        createPlayerStore,
+        type PlayerStore,
+    } from "$lib/stores/playerStore";
 
     // --- Props ---
-    // Changed from component ref to filePath prop
     let { filePath = null }: { filePath: string | null } = $props();
 
     // --- Component References ---
-    // No longer need FileSelector ref
-    let audioPlayer: AudioPlayer;
+    let audioPlayer: AudioPlayer; // Still needed for seek callback
 
-    // --- Internal State for the loaded track ---
+    // --- Create Player Store Instance ---
+    // IMPORTANT: We need this store to persist across filePath changes if the component instance itself doesn't change.
+    // Svelte 5 doesn't have explicit onMount/onDestroy in <script> like Svelte 4.
+    // We can use $effect.root for a one-time setup or simply declare it here.
+    // Declaring it here means a new store is created *if the TrackPlayer instance is recreated*.
+    // If TrackPlayer *persists* and only filePath changes, this same store instance is reused.
+    const playerStore: PlayerStore = createPlayerStore();
+
+    // --- Internal State ---
     let audioUrl = $state<string | null>(null);
-    let analysisResult = $state<AudioAnalysis | null>(null);
-    let isLoading = $state(false);
-    let error = $state<string | null>(null);
-
-    // State mirrored from AudioPlayer (remains the same)
-    let currentTime = $state(0);
-    let duration = $state(0);
+    // Analysis result still derived from libraryStore based on filePath
+    let analysisResult = $derived(
+        $libraryStore.volumeAnalysisResults?.get(filePath ?? "") ?? undefined,
+    );
+    // REMOVED: isLoading, error - now part of playerStore
+    // REMOVED: playerCurrentTime, playerDuration - now read from playerStore
 
     // --- Effects ---
 
-    // Effect to load audio data and analysis when filePath prop changes
+    // Effect to load audio data when filePath prop changes
     $effect(() => {
-        const currentFilePath = filePath; // Capture prop value for async operations
-        let currentAudioUrl: string | null = null; // To manage object URL cleanup
+        const currentFilePath = filePath;
+        let createdAudioUrl: string | null = null;
 
-        // Cleanup function for the effect
         const cleanup = () => {
-            if (currentAudioUrl) {
-                console.log(
-                    `[TrackPlayer Effect Cleanup] Revoking URL: ${currentAudioUrl}`,
-                );
-                URL.revokeObjectURL(currentAudioUrl);
+            if (createdAudioUrl) {
+                URL.revokeObjectURL(createdAudioUrl);
             }
         };
 
-        // Run loading logic only if filePath is not null
         if (currentFilePath) {
-            isLoading = true;
-            error = null;
-            analysisResult = null;
-            audioUrl = null; // Clear previous URL before loading new one
+            playerStore.setIsLoading(true); // Update store state
+            playerStore.setError(null);
+            audioUrl = null;
 
-            console.log(
-                `[TrackPlayer Effect] Loading file: ${currentFilePath}`,
-            );
-
-            const loadAndAnalyze = async () => {
-                // Reset loading state *before* starting async analysis promise chain,
-                // but *after* setting the initial isLoading = true.
-                // Analysis sets isLoading = false in its finally block.
-                let analysisStarted = false;
+            const loadFile = async () => {
                 try {
-                    // 1. Read file bytes
                     const fileBytes = await readFile(currentFilePath);
                     const blob = new Blob([fileBytes], { type: "audio/mpeg" });
-                    currentAudioUrl = URL.createObjectURL(blob); // Assign to temporary var
+                    createdAudioUrl = URL.createObjectURL(blob);
 
-                    // Only update state if the filePath hasn't changed again
                     if (filePath === currentFilePath) {
-                        audioUrl = currentAudioUrl;
-                        console.log(
-                            `[TrackPlayer Effect] Created blob URL: ${audioUrl}`,
-                        );
+                        audioUrl = createdAudioUrl;
+                        // isLoading is set to false inside AudioPlayer's onLoadedMetadata via the store
                     } else {
-                        // If filePath changed while loading, revoke immediately
                         cleanup();
-                        return; // Abort further processing
                     }
-
-                    // 2. Trigger analysis (don't block UI)
-                    analysisStarted = true;
-                    invoke<AudioAnalysis>("process_audio_file", {
-                        path: currentFilePath,
-                    })
-                        .then((result) => {
-                            // Only update state if the filePath hasn't changed again
-                            if (filePath === currentFilePath) {
-                                console.log(
-                                    `[TrackPlayer Effect] Analysis complete. Max RMS: ${result.max_rms_amplitude}`,
-                                );
-                                analysisResult = result;
-                            } else {
-                                console.log(
-                                    `[TrackPlayer Effect] Analysis result ignored, filePath changed.`,
-                                );
-                            }
-                        })
-                        .catch((invokeError) => {
-                            // Only update state if the filePath hasn't changed again
-                            if (filePath === currentFilePath) {
-                                console.error(
-                                    `[TrackPlayer Effect] Rust analysis error:`,
-                                    invokeError,
-                                );
-                                error = `Backend analysis failed: ${invokeError instanceof Error ? invokeError.message : String(invokeError)}`;
-                                analysisResult = null;
-                            }
-                        })
-                        .finally(() => {
-                            // Only update loading state if the filePath hasn't changed again
-                            // (Analysis might finish after a new file started loading)
-                            if (filePath === currentFilePath) {
-                                isLoading = false; // Loading finishes after analysis completes or fails
-                            }
-                        });
                 } catch (err) {
-                    // Only update state if the filePath hasn't changed again
                     if (filePath === currentFilePath) {
-                        console.error(
-                            `[TrackPlayer Effect] File loading error:`,
-                            err,
-                        );
-                        error = `Failed to load audio: ${err instanceof Error ? err.message : String(err)}`;
-                        if (currentAudioUrl)
-                            URL.revokeObjectURL(currentAudioUrl); // Clean up if URL was created before error
+                        console.error(`[TrackPlayer] File loading error:`, err);
+                        const message = `Failed to load audio: ${err instanceof Error ? err.message : String(err)}`;
+                        playerStore.setError(message); // Update store state
+                        cleanup();
                         audioUrl = null;
-                        analysisResult = null;
-                        if (!analysisStarted) isLoading = false; // Ensure loading stops if file read failed before analysis
+                        playerStore.setIsLoading(false); // Update store state
                     }
                 }
             };
 
-            loadAndAnalyze();
+            loadFile();
         } else {
-            // If filePath is null, reset everything
-            isLoading = false;
-            error = null;
-            analysisResult = null;
-            // Revoke previous URL if it exists
+            // filePath is null, reset via store
+            playerStore.reset();
             const previousUrl = audioUrl;
+            audioUrl = null;
             if (previousUrl) {
                 URL.revokeObjectURL(previousUrl);
             }
-            audioUrl = null;
-            console.log(
-                "[TrackPlayer Effect] filePath is null, cleared state.",
-            );
         }
 
-        // Return the cleanup function to revoke the URL when the effect re-runs or component unmounts
         return cleanup;
     });
 
-    // Effect to sync state FROM AudioPlayer TO this component's state (currentTime, duration)
-    $effect(() => {
-        if (audioPlayer) {
-            currentTime = audioPlayer.currentTime;
-            duration = audioPlayer.duration;
-            // No need to link audio element to FileSelector anymore
-        } else {
-            currentTime = 0;
-            duration = 0;
-        }
-    });
+    // REMOVED: Effect to sync state FROM AudioPlayer
 
-    // Callback for VolumeAnalysis (remains the same)
-    function seekAudioCallback(event: MouseEvent) {
+    // Callback passed TO VolumeAnalysis for seeking the AudioPlayer
+    function seekAudioCallback(time: number) {
         if (audioPlayer) {
-            audioPlayer.seekAudio(event);
+            audioPlayer.seekAudio(time); // Still call method on instance
         }
     }
 </script>
 
 <div class="track-player-wrapper">
-    {#if error && !isLoading}
-        <!-- Only show error if not currently loading -->
-        <p class="error-message">Error: {error}</p>
+    {#if $playerStore.error && !$playerStore.isLoading}
+        <p class="error-message">Error: {$playerStore.error}</p>
     {/if}
 
-    <!-- Pass the local reactive state `audioUrl` down -->
-    <!-- AudioPlayer handles the case where audioUrl is null -->
-    <AudioPlayer bind:this={audioPlayer} {audioUrl} {isLoading} />
+    <AudioPlayer bind:this={audioPlayer} store={playerStore} {audioUrl} />
 
-    <!-- Pass parts of analysisResult and other state down -->
-    <!-- VolumeAnalysis should handle null results gracefully -->
     <VolumeAnalysis
         results={analysisResult?.intervals ?? null}
         maxRms={analysisResult?.max_rms_amplitude ?? 0}
-        audioDuration={duration}
-        {currentTime}
+        isAnalysisPending={analysisResult === undefined}
+        audioDuration={$playerStore.duration}
+        currentTime={$playerStore.currentTime}
         seekAudio={seekAudioCallback}
     />
 </div>
 
 <style>
-    /* Add styles for loading/error messages */
     .error-message {
         text-align: center;
         padding: 1rem;
@@ -210,10 +134,10 @@
         border-radius: 8px;
         background-color: var(--track-bg, #f9f9f9);
         width: 100%;
-        max-width: 600px; /* Consistent max-width */
-        margin-bottom: 1rem; /* Space between multiple tracks */
-        position: relative; /* For potential absolute positioning of overlays if needed */
-        min-height: 200px; /* Give it some minimum height */
+        max-width: 600px;
+        margin-bottom: 1rem;
+        position: relative;
+        min-height: 200px;
     }
 
     @media (prefers-color-scheme: dark) {

@@ -1,15 +1,23 @@
 <script lang="ts">
+    import type { PlayerStore } from "$lib/stores/playerStore";
+
+    // Accept the store instance and audioUrl as props in a single call
     let {
-        audioUrl: urlProp,
-        isLoading = false,
-    }: { audioUrl: string | null; isLoading?: boolean } = $props();
+        store,
+        audioUrl: urlProp = null,
+    }: { store: PlayerStore; audioUrl?: string | null } = $props();
 
+    // --- Component State ---
     let audioElement = $state<HTMLAudioElement | null>(null);
-    let isPlaying = $state(false);
-    let currentTime = $state(0);
-    let duration = $state(0);
-    let error = $state<string | null>(null);
+    // State is now managed by the passed 'store' prop
+    // urlProp is used to trigger loading in the effect below
 
+    // --- State for RAF Loop (internal) ---
+    let rafId: number | null = $state(null);
+    let lastKnownCurrentTime = $state(0);
+    let lastTimeUpdateTimestamp = $state(0);
+
+    // --- Utility Functions ---
     function formatTime(timeSeconds: number): string {
         const validTime =
             timeSeconds > 0 && isFinite(timeSeconds) ? timeSeconds : 0;
@@ -18,59 +26,134 @@
         return `${minutes}:${seconds.toString().padStart(2, "0")}`;
     }
 
+    // --- Derived State (read directly from store) ---
     const progressPercent = $derived(
-        duration > 0 && isFinite(duration) ? (currentTime / duration) * 100 : 0,
+        $store.duration > 0 && isFinite($store.duration)
+            ? ($store.currentTime / $store.duration) * 100
+            : 0,
     );
-    const canInteract = $derived(duration > 0 && isFinite(duration));
+    const canInteract = $derived(
+        $store.duration > 0 && isFinite($store.duration),
+    );
 
+    // --- Effects ---
+    // Effect to handle changes in the audioUrl prop
     $effect(() => {
         if (audioElement) {
             const currentSrc = audioElement.currentSrc;
             if (urlProp && urlProp !== currentSrc) {
-                currentTime = 0;
-                duration = 0;
-                isPlaying = false;
-                error = null;
+                // New URL: Reset store, load
+                stopAnimationLoop();
+                store.reset();
+                store.setIsLoading(true);
+                lastKnownCurrentTime = 0;
+                lastTimeUpdateTimestamp = performance.now();
                 audioElement.src = urlProp;
                 audioElement.load();
             } else if (!urlProp && audioElement.hasAttribute("src")) {
-                currentTime = 0;
-                duration = 0;
-                isPlaying = false;
-                error = null;
+                // URL removed: Reset store, unload
+                stopAnimationLoop();
+                store.reset();
+                lastKnownCurrentTime = 0;
+                lastTimeUpdateTimestamp = performance.now();
                 audioElement.removeAttribute("src");
                 audioElement.load();
             }
         }
     });
 
+    // Cleanup effect to stop loop on component destroy
+    $effect(() => {
+        return () => {
+            stopAnimationLoop();
+        };
+    });
+
+    // --- Animation Loop ---
+    function animationLoop() {
+        if (!$store.isPlaying || !audioElement || !$store.duration) {
+            stopAnimationLoop();
+            return;
+        }
+
+        const now = performance.now();
+        const elapsedSinceUpdate = (now - lastTimeUpdateTimestamp) / 1000;
+        const predictedTime = lastKnownCurrentTime + elapsedSinceUpdate;
+
+        const newTime = Math.max(0, Math.min(predictedTime, $store.duration));
+        store.setCurrentTime(newTime); // Update store
+
+        rafId = requestAnimationFrame(animationLoop);
+    }
+
+    function stopAnimationLoop() {
+        if (rafId !== null) {
+            // console.log(`[AudioPlayer RAF] Cancelling RAF ID: ${rafId}`);
+            cancelAnimationFrame(rafId);
+            rafId = null;
+        }
+    }
+
+    // --- HTMLAudioElement Event Handlers ---
     function onLoadedMetadata() {
         if (!audioElement) return;
         const newDuration = audioElement.duration;
-        duration = newDuration && isFinite(newDuration) ? newDuration : 0;
-        currentTime = audioElement.currentTime;
-        isPlaying = !audioElement.paused;
-    }
-    function onTimeUpdate() {
-        if (audioElement) currentTime = audioElement.currentTime;
-    }
-    function onPlay() {
-        isPlaying = true;
-        error = null;
-    }
-    function onPause() {
-        isPlaying = false;
-    }
-    function onEnded() {
-        isPlaying = false;
-        if (audioElement) currentTime = duration;
-    }
-    function onError() {
-        if (!audioElement) return;
-        error = `Playback error: ${audioElement.error?.message || "Unknown error"}`;
-        isPlaying = false;
+        const validDuration =
+            newDuration && isFinite(newDuration) ? newDuration : 0;
+        store.setDuration(validDuration); // Update store
+
+        lastKnownCurrentTime = audioElement.currentTime;
+        lastTimeUpdateTimestamp = performance.now();
+        store.setCurrentTime(lastKnownCurrentTime); // Update store
+
+        const playing = !audioElement.paused;
+        store.setIsPlaying(playing); // Update store
+        store.setIsLoading(false); // Finished loading metadata
+
+        if (playing) {
+            animationLoop();
+        }
     }
 
+    function onTimeUpdate() {
+        if (audioElement) {
+            const newKnownTime = audioElement.currentTime;
+            lastKnownCurrentTime = newKnownTime;
+            lastTimeUpdateTimestamp = performance.now();
+        }
+    }
+
+    function onPlay() {
+        store.setIsPlaying(true);
+        store.setError(null);
+        lastTimeUpdateTimestamp = performance.now();
+        lastKnownCurrentTime = audioElement?.currentTime ?? 0;
+        store.setCurrentTime(lastKnownCurrentTime);
+        animationLoop();
+    }
+
+    function onPause() {
+        store.setIsPlaying(false);
+        stopAnimationLoop();
+        if (audioElement) store.setCurrentTime(audioElement.currentTime);
+    }
+
+    function onEnded() {
+        store.setIsPlaying(false);
+        stopAnimationLoop();
+        if (audioElement) store.setCurrentTime($store.duration);
+    }
+
+    function onError() {
+        if (!audioElement) return;
+        const message = `Playback error: ${audioElement.error?.message || "Unknown error"}`;
+        store.setError(message);
+        store.setIsPlaying(false);
+        store.setIsLoading(false); // Ensure loading stops on error
+        stopAnimationLoop();
+    }
+
+    // --- Control Event Handlers (Logic using store state) ---
     function handleTogglePlay() {
         if (!canInteract) return;
         togglePlay();
@@ -84,9 +167,22 @@
         seekBySeconds(10);
     }
     function handleProgressClick(event: MouseEvent) {
-        if (!canInteract) return;
-        seekAudio(event);
+        if (
+            !canInteract ||
+            !$store.duration ||
+            !(event.currentTarget instanceof HTMLElement)
+        )
+            return;
+
+        const progressBar = event.currentTarget;
+        const rect = progressBar.getBoundingClientRect();
+        const clickX = event.clientX - rect.left;
+        const percentage = Math.max(0, Math.min(clickX / rect.width, 1));
+        const seekTime = percentage * $store.duration;
+
+        seekAudio(seekTime);
     }
+    // handleProgressKeyDown remains the same structure, just relies on handleProgressClick
     function handleProgressKeyDown(event: KeyboardEvent) {
         if (!canInteract) return;
         if (event.key === "Enter" || event.key === " ") {
@@ -102,38 +198,39 @@
         }
     }
 
+    // --- Public API Methods (Interact with audioElement and store) ---
     export function togglePlay() {
         if (!audioElement || !canInteract) return;
         if (audioElement.paused)
             audioElement.play().catch((err) => {
-                error = `Playback error: ${err.message}`;
-                isPlaying = false;
+                const message = `Playback error: ${err.message}`;
+                store.setError(message);
+                store.setIsPlaying(false);
+                stopAnimationLoop();
             });
-        else audioElement.pause();
+        else audioElement.pause(); // This will trigger onPause handler which updates store
     }
-    export function seekAudio(event: MouseEvent) {
-        if (!audioElement || !canInteract) return;
-        const target = event.currentTarget as HTMLElement;
-        const rect = target.getBoundingClientRect();
-        audioElement.currentTime = Math.max(
-            0,
-            Math.min(
-                ((event.clientX - rect.left) / rect.width) * duration,
-                duration,
-            ),
-        );
+    export function seekAudio(time: number) {
+        if (!audioElement || !$store.duration) return;
+        const clampedTime = Math.max(0, Math.min(time, $store.duration));
+        audioElement.currentTime = clampedTime;
+
+        // Update baseline time used by RAF loop
+        lastKnownCurrentTime = clampedTime;
+        lastTimeUpdateTimestamp = performance.now();
+
+        // Force update the reactive store state immediately, regardless of play state
+        store.setCurrentTime(clampedTime);
     }
     export function seekBySeconds(seconds: number) {
         if (!audioElement || !canInteract) return;
-        audioElement.currentTime = Math.max(
-            0,
-            Math.min(audioElement.currentTime + seconds, duration),
-        );
+        // Use store's current time as basis for calculation
+        const targetTime = $store.currentTime + seconds;
+        seekAudio(targetTime);
     }
-
-    export { audioElement, currentTime, duration };
 </script>
 
+<!-- Template uses store values -->
 <div class="audio-player">
     <audio
         bind:this={audioElement}
@@ -149,6 +246,7 @@
     </audio>
 
     {#if urlProp}
+        <!-- Still depends on urlProp to show controls -->
         <div class="controls">
             <div class="audio-controls">
                 <button
@@ -157,6 +255,7 @@
                     aria-label="Rewind 10 seconds"
                     disabled={!canInteract}
                 >
+                    <!-- SVG -->
                     <svg
                         xmlns="http://www.w3.org/2000/svg"
                         width="24"
@@ -167,18 +266,22 @@
                         stroke-width="2"
                         stroke-linecap="round"
                         stroke-linejoin="round"
+                        ><polygon points="19 20 9 12 19 4 19 20"></polygon><line
+                            x1="5"
+                            y1="19"
+                            x2="5"
+                            y2="5"
+                        ></line></svg
                     >
-                        <polygon points="19 20 9 12 19 4 19 20"></polygon>
-                        <line x1="5" y1="19" x2="5" y2="5"></line>
-                    </svg>
                 </button>
                 <button
                     class="control-button"
                     onclick={handleTogglePlay}
-                    aria-label={isPlaying ? "Pause" : "Play"}
+                    aria-label={$store.isPlaying ? "Pause" : "Play"}
                     disabled={!canInteract}
                 >
-                    {#if isPlaying}
+                    {#if $store.isPlaying}
+                        <!-- SVG Pause -->
                         <svg
                             xmlns="http://www.w3.org/2000/svg"
                             width="24"
@@ -189,11 +292,12 @@
                             stroke-width="2"
                             stroke-linecap="round"
                             stroke-linejoin="round"
+                            ><rect x="6" y="4" width="4" height="16"
+                            ></rect><rect x="14" y="4" width="4" height="16"
+                            ></rect></svg
                         >
-                            <rect x="6" y="4" width="4" height="16"></rect>
-                            <rect x="14" y="4" width="4" height="16"></rect>
-                        </svg>
                     {:else}
+                        <!-- SVG Play -->
                         <svg
                             xmlns="http://www.w3.org/2000/svg"
                             width="24"
@@ -204,9 +308,9 @@
                             stroke-width="2"
                             stroke-linecap="round"
                             stroke-linejoin="round"
+                            ><polygon points="5 3 19 12 5 21 5 3"
+                            ></polygon></svg
                         >
-                            <polygon points="5 3 19 12 5 21 5 3"></polygon>
-                        </svg>
                     {/if}
                 </button>
                 <button
@@ -215,6 +319,7 @@
                     aria-label="Forward 10 seconds"
                     disabled={!canInteract}
                 >
+                    <!-- SVG Forward -->
                     <svg
                         xmlns="http://www.w3.org/2000/svg"
                         width="24"
@@ -225,15 +330,18 @@
                         stroke-width="2"
                         stroke-linecap="round"
                         stroke-linejoin="round"
+                        ><polygon points="5 4 15 12 5 20 5 4"></polygon><line
+                            x1="19"
+                            y1="5"
+                            x2="19"
+                            y2="19"
+                        ></line></svg
                     >
-                        <polygon points="5 4 15 12 5 20 5 4"></polygon>
-                        <line x1="19" y1="5" x2="19" y2="19"></line>
-                    </svg>
                 </button>
             </div>
 
             <div class="time-display">
-                <span>{formatTime(currentTime)}</span>
+                <span>{formatTime($store.currentTime)}</span>
                 <div
                     class:progress-bar={true}
                     class:disabled={!canInteract}
@@ -252,13 +360,14 @@
                         style:width={`${progressPercent}%`}
                     ></div>
                 </div>
-                <span>{formatTime(duration)}</span>
+                <span>{formatTime($store.duration)}</span>
             </div>
-            {#if error}
-                <p class="error-message">{error}</p>
+            {#if $store.error}
+                <p class="error-message">{$store.error}</p>
             {/if}
         </div>
-    {:else if isLoading}
+    {:else if $store.isLoading}
+        <!-- Use store isLoading -->
         <p class="placeholder-message loading">Loading track...</p>
     {:else}
         <p class="placeholder-message no-audio">No audio loaded</p>
@@ -266,6 +375,7 @@
 </div>
 
 <style>
+    /* Styles remain largely the same */
     .audio-player {
         padding: 1rem;
         background: var(--background-color, #f9f9f9);

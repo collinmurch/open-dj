@@ -3,32 +3,32 @@
     import MusicLibrary from "$lib/components/MusicLibrary.svelte";
     import { libraryStore } from "$lib/stores/libraryStore";
 
-    // State for file paths loaded into each deck
+    // File paths for tracks loaded into each deck
     let deckAFilePath = $state<string | null>(null);
     let deckBFilePath = $state<string | null>(null);
 
-    // Get reactive access to the selected track & folder state
+    // Reactive access to the selected track and folder state from the store
     const selectedTrack = $derived($libraryStore.selectedTrack);
     const isFolderSelected = $derived(!!$libraryStore.selectedFolder);
 
     function loadToDeckA() {
         if (selectedTrack) {
             deckAFilePath = selectedTrack.path;
-            console.log(`[Page] Loading ${selectedTrack.name} to Deck A`);
+            // console.log(`[Page] Loading ${selectedTrack.name} to Deck A`);
         }
     }
 
     function loadToDeckB() {
         if (selectedTrack) {
             deckBFilePath = selectedTrack.path;
-            console.log(`[Page] Loading ${selectedTrack.name} to Deck B`);
+            // console.log(`[Page] Loading ${selectedTrack.name} to Deck B`);
         }
     }
 </script>
 
 <main class="container">
     {#if !isFolderSelected}
-        <!-- Initial State: Only show Library Section (containing just the button initially) -->
+        <!-- Initial State: Show only the Music Library selection button -->
         <section class="library-section library-section-initial">
             <h2>Music Library</h2>
             <MusicLibrary />
@@ -36,7 +36,7 @@
     {/if}
 
     {#if isFolderSelected}
-        <!-- State After Folder Selection: Decks first, then Library -->
+        <!-- After Folder Selection: Show Decks and expanded Library -->
         <section class="decks-section">
             <h2>Decks</h2>
             <div class="decks-container">
@@ -54,7 +54,6 @@
         <section class="library-section">
             <h2>Music Library</h2>
             <MusicLibrary />
-            <!-- Load controls are shown inside the library section when folder selected -->
             <div class="load-controls">
                 <button onclick={loadToDeckA} disabled={!selectedTrack}
                     >Load Selected to Deck A</button
@@ -77,13 +76,10 @@
 </main>
 
 <style>
-    /* Add specific style for initial library view if needed */
     .library-section-initial {
-        /* Maybe less padding or different alignment if desired */
-        /* Example: center the button */
         align-items: center;
     }
-    /* Container and Title */
+
     .container {
         margin: 0 auto;
         padding: 2rem;
@@ -91,11 +87,10 @@
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: 2rem; /* Gap between sections */
+        gap: 2rem;
         max-width: 1600px;
     }
 
-    /* Section Styling */
     .library-section,
     .decks-section {
         width: 100%;
@@ -150,8 +145,6 @@
         margin-top: 0.5rem;
     }
 
-    /* Decks Specific */
-
     .decks-container {
         width: 100%;
         display: flex;
@@ -175,7 +168,6 @@
         font-size: 1.1em;
     }
 
-    /* Dark Mode */
     @media (prefers-color-scheme: dark) {
         :root {
             --text-color: #f6f6f6;

@@ -3,6 +3,7 @@
 export interface TrackInfo {
     path: string;
     name: string;
+    bpm?: number | null;
 }
 
 // Represents a single interval from the analysis
