@@ -14,14 +14,12 @@
     function loadToDeckA() {
         if (selectedTrack) {
             deckAFilePath = selectedTrack.path;
-            // console.log(`[Page] Loading ${selectedTrack.name} to Deck A`);
         }
     }
 
     function loadToDeckB() {
         if (selectedTrack) {
             deckBFilePath = selectedTrack.path;
-            // console.log(`[Page] Loading ${selectedTrack.name} to Deck B`);
         }
     }
 </script>

@@ -1,12 +1,12 @@
 <script lang="ts">
-    import AudioPlayer from "./AudioPlayer.svelte";
-    import VolumeAnalysis from "./VolumeAnalysis.svelte";
     import { libraryStore } from "$lib/stores/libraryStore";
-    import { readFile } from "@tauri-apps/plugin-fs";
     import {
         createPlayerStore,
         type PlayerStore,
     } from "$lib/stores/playerStore";
+    import { readFile } from "@tauri-apps/plugin-fs";
+    import AudioPlayer from "./AudioPlayer.svelte";
+    import VolumeAnalysis from "./VolumeAnalysis.svelte";
 
     // --- Props ---
     let { filePath = null }: { filePath: string | null } = $props();
@@ -24,12 +24,21 @@
 
     // --- Internal State ---
     let audioUrl = $state<string | null>(null);
-    // Analysis result still derived from libraryStore based on filePath
-    let analysisResult = $derived(
-        $libraryStore.volumeAnalysisResults?.get(filePath ?? "") ?? undefined,
+
+    // --- Derived analysis result based on filePath ---
+    // Find the track info corresponding to the current filePath
+    const trackInfo = $derived(
+        $libraryStore.audioFiles.find((track) => track.path === filePath),
     );
-    // REMOVED: isLoading, error - now part of playerStore
-    // REMOVED: playerCurrentTime, playerDuration - now read from playerStore
+    // Get the analysis features from the track info
+    const analysisFeatures = $derived(trackInfo?.features);
+    // Extract volume analysis specifically for the VolumeAnalysis component
+    // Handle states: undefined (pending), null (error), or actual VolumeAnalysis object
+    const volumeAnalysisResult = $derived(
+        analysisFeatures === undefined
+            ? undefined
+            : (analysisFeatures?.volume ?? null),
+    );
 
     // --- Effects ---
 
@@ -39,9 +48,7 @@
         let createdAudioUrl: string | null = null;
 
         const cleanup = () => {
-            if (createdAudioUrl) {
-                URL.revokeObjectURL(createdAudioUrl);
-            }
+            if (createdAudioUrl) URL.revokeObjectURL(createdAudioUrl);
         };
 
         if (currentFilePath) {
@@ -75,19 +82,14 @@
 
             loadFile();
         } else {
-            // filePath is null, reset via store
             playerStore.reset();
             const previousUrl = audioUrl;
             audioUrl = null;
-            if (previousUrl) {
-                URL.revokeObjectURL(previousUrl);
-            }
+            if (previousUrl) URL.revokeObjectURL(previousUrl);
         }
 
         return cleanup;
     });
-
-    // REMOVED: Effect to sync state FROM AudioPlayer
 
     // Callback passed TO VolumeAnalysis for seeking the AudioPlayer
     function seekAudioCallback(time: number) {
@@ -105,9 +107,9 @@
     <AudioPlayer bind:this={audioPlayer} store={playerStore} {audioUrl} />
 
     <VolumeAnalysis
-        results={analysisResult?.intervals ?? null}
-        maxRms={analysisResult?.max_rms_amplitude ?? 0}
-        isAnalysisPending={analysisResult === undefined}
+        results={volumeAnalysisResult?.intervals ?? null}
+        maxRms={volumeAnalysisResult?.max_rms_amplitude ?? 0}
+        isAnalysisPending={analysisFeatures === undefined}
         audioDuration={$playerStore.duration}
         currentTime={$playerStore.currentTime}
         seekAudio={seekAudioCallback}

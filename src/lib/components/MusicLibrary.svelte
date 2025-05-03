@@ -2,24 +2,18 @@
     import { libraryStore } from "$lib/stores/libraryStore";
     import type { TrackInfo } from "$lib/types";
 
-    // Access store functions for event handlers
     const { selectLibraryFolder, setSelectedTrack } = libraryStore;
-
-    // Access store state reactively using $ prefix
-    // Note: $libraryStore gives the *value* of the store, which is our LibraryState object.
 
     function handleTrackClick(track: TrackInfo) {
         setSelectedTrack(track);
     }
 
-    // Check if a track is currently selected using the reactive store value
     function isSelected(track: TrackInfo): boolean {
         return $libraryStore.selectedTrack?.path === track.path;
     }
 </script>
 
 <div class="music-library">
-    <!-- Button is always visible -->
     <button onclick={selectLibraryFolder} disabled={$libraryStore.isLoading}>
         {#if $libraryStore.isLoading}
             Loading Folder...
@@ -30,7 +24,6 @@
         {/if}
     </button>
 
-    <!-- Show general error -->
     {#if $libraryStore.error}
         <p class="error-message">Error: {$libraryStore.error}</p>
     {/if}

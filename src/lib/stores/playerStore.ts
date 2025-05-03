@@ -1,12 +1,5 @@
 import { writable } from 'svelte/store';
-
-export interface PlayerState {
-    currentTime: number;
-    duration: number;
-    isPlaying: boolean;
-    isLoading: boolean; // Added to reflect player loading state
-    error: string | null;
-}
+import type { PlayerState } from '$lib/types';
 
 export function createPlayerStore() {
     const { subscribe, set, update } = writable<PlayerState>({

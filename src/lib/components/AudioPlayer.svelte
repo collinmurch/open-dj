@@ -62,7 +62,6 @@
         }
     });
 
-    // Cleanup effect to stop loop on component destroy
     $effect(() => {
         return () => {
             stopAnimationLoop();
@@ -81,14 +80,13 @@
         const predictedTime = lastKnownCurrentTime + elapsedSinceUpdate;
 
         const newTime = Math.max(0, Math.min(predictedTime, $store.duration));
-        store.setCurrentTime(newTime); // Update store
+        store.setCurrentTime(newTime);
 
         rafId = requestAnimationFrame(animationLoop);
     }
 
     function stopAnimationLoop() {
         if (rafId !== null) {
-            // console.log(`[AudioPlayer RAF] Cancelling RAF ID: ${rafId}`);
             cancelAnimationFrame(rafId);
             rafId = null;
         }
@@ -100,15 +98,15 @@
         const newDuration = audioElement.duration;
         const validDuration =
             newDuration && isFinite(newDuration) ? newDuration : 0;
-        store.setDuration(validDuration); // Update store
+        store.setDuration(validDuration);
 
         lastKnownCurrentTime = audioElement.currentTime;
         lastTimeUpdateTimestamp = performance.now();
-        store.setCurrentTime(lastKnownCurrentTime); // Update store
+        store.setCurrentTime(lastKnownCurrentTime);
 
         const playing = !audioElement.paused;
-        store.setIsPlaying(playing); // Update store
-        store.setIsLoading(false); // Finished loading metadata
+        store.setIsPlaying(playing);
+        store.setIsLoading(false);
 
         if (playing) {
             animationLoop();
@@ -149,7 +147,7 @@
         const message = `Playback error: ${audioElement.error?.message || "Unknown error"}`;
         store.setError(message);
         store.setIsPlaying(false);
-        store.setIsLoading(false); // Ensure loading stops on error
+        store.setIsLoading(false);
         stopAnimationLoop();
     }
 
@@ -182,7 +180,6 @@
 
         seekAudio(seekTime);
     }
-    // handleProgressKeyDown remains the same structure, just relies on handleProgressClick
     function handleProgressKeyDown(event: KeyboardEvent) {
         if (!canInteract) return;
         if (event.key === "Enter" || event.key === " ") {
@@ -246,7 +243,6 @@
     </audio>
 
     {#if urlProp}
-        <!-- Still depends on urlProp to show controls -->
         <div class="controls">
             <div class="audio-controls">
                 <button
@@ -255,7 +251,6 @@
                     aria-label="Rewind 10 seconds"
                     disabled={!canInteract}
                 >
-                    <!-- SVG -->
                     <svg
                         xmlns="http://www.w3.org/2000/svg"
                         width="24"
@@ -367,7 +362,6 @@
             {/if}
         </div>
     {:else if $store.isLoading}
-        <!-- Use store isLoading -->
         <p class="placeholder-message loading">Loading track...</p>
     {:else}
         <p class="placeholder-message no-audio">No audio loaded</p>
@@ -375,7 +369,6 @@
 </div>
 
 <style>
-    /* Styles remain largely the same */
     .audio-player {
         padding: 1rem;
         background: var(--background-color, #f9f9f9);

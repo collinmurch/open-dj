@@ -1,8 +1,6 @@
-// use std::fs::File; // Removed unused import
-// use std::io::Read; // Removed unused import
-
-mod audio_analysis; // Declare the module
-mod bpm_analyzer;   // <-- Add this line
+mod audio_analysis;
+mod audio_processor;
+mod bpm_analyzer;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -16,10 +14,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            greet, 
-            audio_analysis::process_audio_file,
-            bpm_analyzer::analyze_bpm_for_file,
-            audio_analysis::analyze_volume_batch
+            greet,
+            audio_processor::analyze_features_batch
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

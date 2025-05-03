@@ -1,7 +1,6 @@
 <script lang="ts">
     import type { VolumeInterval } from "$lib/types";
 
-    // --- Props ---
     let {
         results = null,
         audioDuration = 0,
@@ -19,11 +18,11 @@
     } = $props();
 
     // --- Element References & State ---
-    let containerElement: HTMLDivElement | null = $state(null); // Renamed for clarity
-    let waveformInnerElement: HTMLDivElement | null = $state(null); // NEW: Ref for inner div
+    let containerElement: HTMLDivElement | null = $state(null);
+    let waveformInnerElement: HTMLDivElement | null = $state(null);
     let containerWidth = $state(0);
-    const SVG_WIDTH_MULTIPLIER = 5; // Make SVG 5 times wider than container
-    const SVG_HEIGHT = 100; // Internal resolution height (amplitude range)
+    const SVG_WIDTH_MULTIPLIER = 5;
+    const SVG_HEIGHT = 100;
 
     // --- Derived State ---
     const duration = $derived(audioDuration > 0 ? audioDuration : 1);
@@ -91,6 +90,7 @@
                 SVG_HEIGHT,
             );
         }
+
         return "M 0 0 Z"; // Default empty path
     });
 
