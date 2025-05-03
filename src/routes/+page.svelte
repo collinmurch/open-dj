@@ -1,26 +1,24 @@
 <script lang="ts">
-    import TrackPlayer from "$lib/components/TrackPlayer.svelte";
     import MusicLibrary from "$lib/components/MusicLibrary.svelte";
+    import TrackPlayer from "$lib/components/TrackPlayer.svelte";
     import { libraryStore } from "$lib/stores/libraryStore";
 
-    // File paths for tracks loaded into each deck
     let deckAFilePath = $state<string | null>(null);
     let deckBFilePath = $state<string | null>(null);
 
-    // Reactive access to the selected track and folder state from the store
     const selectedTrack = $derived($libraryStore.selectedTrack);
     const isFolderSelected = $derived(!!$libraryStore.selectedFolder);
 
+    // Explicitly type the deck IDs for clarity
+    const deckAId: string = "A";
+    const deckBId: string = "B";
+
     function loadToDeckA() {
-        if (selectedTrack) {
-            deckAFilePath = selectedTrack.path;
-        }
+        if (selectedTrack) deckAFilePath = selectedTrack.path;
     }
 
     function loadToDeckB() {
-        if (selectedTrack) {
-            deckBFilePath = selectedTrack.path;
-        }
+        if (selectedTrack) deckBFilePath = selectedTrack.path;
     }
 </script>
 
@@ -40,11 +38,11 @@
             <div class="decks-container">
                 <div class="deck">
                     <h3>Deck A</h3>
-                    <TrackPlayer filePath={deckAFilePath} />
+                    <TrackPlayer filePath={deckAFilePath} deckId={deckAId} />
                 </div>
                 <div class="deck">
                     <h3>Deck B</h3>
-                    <TrackPlayer filePath={deckBFilePath} />
+                    <TrackPlayer filePath={deckBFilePath} deckId={deckBId} />
                 </div>
             </div>
         </section>

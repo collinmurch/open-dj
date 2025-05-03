@@ -8,6 +8,7 @@
         seekAudio = (time: number) => {},
         maxRms = 0,
         isAnalysisPending = false,
+        isTrackLoaded = false,
     }: {
         results: VolumeInterval[] | null;
         audioDuration: number;
@@ -15,6 +16,7 @@
         seekAudio: (time: number) => void;
         maxRms: number;
         isAnalysisPending?: boolean;
+        isTrackLoaded?: boolean;
     } = $props();
 
     // --- Element References & State ---
@@ -26,11 +28,19 @@
 
     // --- Derived State ---
     const duration = $derived(audioDuration > 0 ? audioDuration : 1);
-    const waveformVisualWidth = $derived(containerWidth * SVG_WIDTH_MULTIPLIER);
+    const roundedContainerWidth = $derived(Math.round(containerWidth));
+    const waveformVisualWidth = $derived(
+        roundedContainerWidth * SVG_WIDTH_MULTIPLIER,
+    );
+
     const translateX = $derived(() => {
-        if (containerWidth > 0 && duration > 0 && waveformVisualWidth > 0) {
+        if (
+            roundedContainerWidth > 0 &&
+            duration > 0 &&
+            waveformVisualWidth > 0
+        ) {
             const targetSvgX = (currentTime / duration) * waveformVisualWidth;
-            const translation = containerWidth / 2 - targetSvgX;
+            const translation = roundedContainerWidth / 2 - targetSvgX;
             return translation;
         }
         return 0;
@@ -50,26 +60,38 @@
             currentDuration <= 0 ||
             svgWidth <= 0
         ) {
-            return "M 0 0 Z"; // Return a minimal path if invalid input
+            return "M 0 0 Z";
         }
 
-        let path = `M 0 ${svgHeight}`;
-        const effectiveMaxRms = currentMaxRms > 0 ? currentMaxRms : 0.0001; // Avoid division by zero
+        // Round the constant height for path start/end
+        const roundedSvgHeight = Math.round(svgHeight);
+        let path = `M 0 ${roundedSvgHeight}`;
+        const effectiveMaxRms = currentMaxRms > 0 ? currentMaxRms : 0.0001;
 
         for (const interval of intervals) {
-            const x = (interval.start_time / currentDuration) * svgWidth;
+            // Round calculated x and y coordinates
+            const x = Math.round(
+                (interval.start_time / currentDuration) * svgWidth,
+            );
             const rmsClamped = Math.max(
                 0,
                 Math.min(interval.rms_amplitude, effectiveMaxRms),
             );
-            const y = svgHeight - (rmsClamped / effectiveMaxRms) * svgHeight;
-            path += ` L ${x.toFixed(2)} ${y.toFixed(2)}`;
+            const y = Math.round(
+                svgHeight - (rmsClamped / effectiveMaxRms) * svgHeight,
+            );
+            // Use integer values in the path string
+            path += ` L ${x} ${y}`;
         }
 
         const lastInterval = intervals[intervals.length - 1];
-        const lastX = (lastInterval.end_time / currentDuration) * svgWidth;
-        path += ` L ${lastX.toFixed(2)} ${svgHeight}`;
-        path += ` L ${svgWidth.toFixed(2)} ${svgHeight}`;
+        // Round final x coordinates
+        const lastX = Math.round(
+            (lastInterval.end_time / currentDuration) * svgWidth,
+        );
+        const roundedSvgWidth = Math.round(svgWidth);
+        path += ` L ${lastX} ${roundedSvgHeight}`;
+        path += ` L ${roundedSvgWidth} ${roundedSvgHeight}`;
         path += " Z";
         return path;
     }
@@ -95,7 +117,6 @@
     });
 
     // --- Effects ---
-    // Update container width when the element is mounted/resized
     $effect(() => {
         if (containerElement) {
             const updateWidth = () => {
@@ -104,14 +125,13 @@
                         .offsetWidth;
                 }
             };
-            updateWidth(); // Initial width
+            updateWidth();
             const resizeObserver = new ResizeObserver(updateWidth);
             resizeObserver.observe(containerElement as HTMLDivElement);
             return () => resizeObserver.disconnect();
         }
     });
 
-    // Effect to manually set transform based on translateX
     $effect(() => {
         const el = waveformInnerElement;
         const currentTranslateX = translateX();
@@ -123,10 +143,9 @@
     // --- Event Handlers ---
     function handleWaveformClick(event: MouseEvent) {
         const el = containerElement;
-        // Guards ensure necessary values are valid before calculation
         if (
             !el ||
-            containerWidth <= 0 ||
+            roundedContainerWidth <= 0 ||
             waveformVisualWidth <= 0 ||
             duration <= 0 ||
             !results ||
@@ -134,33 +153,23 @@
         ) {
             return;
         }
-
         const rect = el.getBoundingClientRect();
         const clickXInContainer = event.clientX - rect.left;
-
-        // Calculate click offset from the visual center of the container
-        const clickOffsetFromCenterPx = clickXInContainer - containerWidth / 2;
-
-        // Calculate how many seconds this pixel offset represents
+        const clickOffsetFromCenterPx =
+            clickXInContainer - roundedContainerWidth / 2;
         const pixelsPerSecond = waveformVisualWidth / duration;
         const timeOffset = clickOffsetFromCenterPx / pixelsPerSecond;
-
-        // Calculate the target time relative to the current time
         let targetTime = currentTime + timeOffset;
-
-        // Clamp targetTime to valid range [0, duration]
         targetTime = Math.max(0, Math.min(targetTime, duration));
-
         seekAudio(targetTime);
     }
 
     function handleWaveformKeyDown(event: KeyboardEvent) {
         const el = containerElement;
-        // Guards ensure necessary values are valid
         if (
             duration <= 1 ||
             !el ||
-            containerWidth <= 0 ||
+            roundedContainerWidth <= 0 ||
             waveformVisualWidth <= 0
         ) {
             return;
@@ -168,16 +177,17 @@
 
         if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
-            // Seeking at the center line means seeking to the current time
             seekAudio(currentTime);
         }
     }
 
     // --- Derived values for template ---
-    const canInteract = $derived(duration > 0); // Can interact if duration known
+    const canInteract = $derived(
+        isTrackLoaded && duration > 0 && results && results.length > 0,
+    );
 </script>
 
-{#if results && results.length > 0}
+{#if isTrackLoaded && results && results.length > 0}
     {@const ariaValueNow = currentTime / duration}
     <div class="analysis-container" aria-label="Audio Volume Waveform">
         <div
@@ -214,9 +224,9 @@
             <div class="progress-indicator-fixed" aria-hidden="true"></div>
         {/if}
     </div>
-{:else if isAnalysisPending}
+{:else if isTrackLoaded && isAnalysisPending}
     <div class="loading-message">Analyzing audio...</div>
-{:else if !results && audioDuration > 0}
+{:else if isTrackLoaded && !results && audioDuration > 0}
     <p class="analysis-status">Processing audio analysis...</p>
 {:else}
     <div class="analysis-container placeholder" aria-hidden="true">
@@ -280,6 +290,8 @@
     }
 
     .waveform-inner {
+        /* Hint to the browser that transform will change */
+        will-change: transform;
         position: absolute;
         left: 0;
         top: 0;

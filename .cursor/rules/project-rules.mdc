@@ -25,6 +25,9 @@ Follow these rules to ensure correct, up-to-date, and project-specific code gene
 - Follow the official Svelte 5, Tauri 2.0, and TypeScript documentation for best practices.
 - Maintain a clear separation between frontend (`src/`) and backend (`src-tauri/`).
 
+## Rust Rules
+Rust edition `2024` must be used. All packages and syntax must follow the `2024` edition and syntax specific to prior editions must be avoided.
+
 ## Svelte 5 Rules
 Svelte 5 uses runes and updated syntax. LLMs must avoid Svelte 4 patterns.
 

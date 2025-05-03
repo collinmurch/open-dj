@@ -4,112 +4,205 @@
         createPlayerStore,
         type PlayerStore,
     } from "$lib/stores/playerStore";
-    import { readFile } from "@tauri-apps/plugin-fs";
-    import AudioPlayer from "./AudioPlayer.svelte";
     import VolumeAnalysis from "./VolumeAnalysis.svelte";
 
     // --- Props ---
-    let { filePath = null }: { filePath: string | null } = $props();
+    let {
+        filePath = null,
+        deckId, // Added deckId prop
+    }: {
+        filePath: string | null;
+        deckId: string;
+    } = $props();
+
+    // --- Time Formatting Utility ---
+    function formatTime(totalSeconds: number): string {
+        if (isNaN(totalSeconds) || totalSeconds < 0) {
+            return "00:00";
+        }
+        const minutes = Math.floor(totalSeconds / 60);
+        const seconds = Math.floor(totalSeconds % 60);
+        const milliseconds = Math.floor((totalSeconds % 1) * 10); // Tenths of a second
+
+        const paddedMinutes = String(minutes).padStart(2, "0");
+        const paddedSeconds = String(seconds).padStart(2, "0");
+        // Optional: include milliseconds
+        // return `${paddedMinutes}:${paddedSeconds}.${milliseconds}`;
+        return `${paddedMinutes}:${paddedSeconds}`;
+    }
 
     // --- Component References ---
-    let audioPlayer: AudioPlayer; // Still needed for seek callback
 
     // --- Create Player Store Instance ---
-    // IMPORTANT: We need this store to persist across filePath changes if the component instance itself doesn't change.
-    // Svelte 5 doesn't have explicit onMount/onDestroy in <script> like Svelte 4.
-    // We can use $effect.root for a one-time setup or simply declare it here.
-    // Declaring it here means a new store is created *if the TrackPlayer instance is recreated*.
-    // If TrackPlayer *persists* and only filePath changes, this same store instance is reused.
-    const playerStore: PlayerStore = createPlayerStore();
-
-    // --- Internal State ---
-    let audioUrl = $state<string | null>(null);
+    // Use deckId to create a specific store instance
+    const playerStore: PlayerStore = createPlayerStore(deckId);
+    // Use $playerStore directly in the template for auto-subscription
 
     // --- Derived analysis result based on filePath ---
-    // Find the track info corresponding to the current filePath
     const trackInfo = $derived(
         $libraryStore.audioFiles.find((track) => track.path === filePath),
     );
-    // Get the analysis features from the track info
     const analysisFeatures = $derived(trackInfo?.features);
-    // Extract volume analysis specifically for the VolumeAnalysis component
-    // Handle states: undefined (pending), null (error), or actual VolumeAnalysis object
     const volumeAnalysisResult = $derived(
         analysisFeatures === undefined
             ? undefined
             : (analysisFeatures?.volume ?? null),
     );
 
+    // Determine if a track is actually loaded based on filePath prop
+    const isTrackLoaded = $derived(!!filePath);
+
     // --- Effects ---
 
     // Effect to load audio data when filePath prop changes
     $effect(() => {
-        const currentFilePath = filePath;
-        let createdAudioUrl: string | null = null;
-
-        const cleanup = () => {
-            if (createdAudioUrl) URL.revokeObjectURL(createdAudioUrl);
-        };
+        const currentFilePath = filePath; // Capture current prop value
 
         if (currentFilePath) {
-            playerStore.setIsLoading(true); // Update store state
-            playerStore.setError(null);
-            audioUrl = null;
-
-            const loadFile = async () => {
-                try {
-                    const fileBytes = await readFile(currentFilePath);
-                    const blob = new Blob([fileBytes], { type: "audio/mpeg" });
-                    createdAudioUrl = URL.createObjectURL(blob);
-
-                    if (filePath === currentFilePath) {
-                        audioUrl = createdAudioUrl;
-                        // isLoading is set to false inside AudioPlayer's onLoadedMetadata via the store
-                    } else {
-                        cleanup();
-                    }
-                } catch (err) {
-                    if (filePath === currentFilePath) {
-                        console.error(`[TrackPlayer] File loading error:`, err);
-                        const message = `Failed to load audio: ${err instanceof Error ? err.message : String(err)}`;
-                        playerStore.setError(message); // Update store state
-                        cleanup();
-                        audioUrl = null;
-                        playerStore.setIsLoading(false); // Update store state
-                    }
-                }
-            };
-
-            loadFile();
+            // Call the store method to load the track via Rust
+            playerStore.loadTrack(currentFilePath).catch((err) => {
+                // This catch is mostly for logging invoke errors from the store,
+                // state updates (including errors) come via events.
+                console.error(
+                    `[TrackPlayer ${deckId}] Error invoking loadTrack:`,
+                    err,
+                );
+            });
         } else {
-            playerStore.reset();
-            const previousUrl = audioUrl;
-            audioUrl = null;
-            if (previousUrl) URL.revokeObjectURL(previousUrl);
+            // If filePath becomes null, maybe reset the player?
+            // Currently, the store doesn't have an explicit reset command for this.
+            // Consider adding playerStore.reset() or relying on cleanup.
         }
 
-        return cleanup;
+        // Cleanup function: Called when filePath changes OR component is destroyed
+        // We rely on the store's internal cleanup for listeners
+        // return () => {
+        //     // Optional: Add specific TrackPlayer cleanup if needed beyond store cleanup
+        // };
     });
 
-    // Callback passed TO VolumeAnalysis for seeking the AudioPlayer
+    // Effect for component cleanup
+    $effect(() => {
+        // Return the cleanup function from the store
+        return () => {
+            playerStore.cleanup();
+        };
+    });
+
+    const SEEK_AMOUNT = 5; // Seek 5 seconds
+
+    // --- Callbacks ---
     function seekAudioCallback(time: number) {
-        if (audioPlayer) {
-            audioPlayer.seekAudio(time); // Still call method on instance
+        playerStore.seek(time).catch((err) => {
+            console.error(`[TrackPlayer ${deckId}] Error invoking seek:`, err);
+        });
+    }
+
+    // --- Event Handlers for Buttons ---
+    function handlePlayPause() {
+        // Use $playerStore to access reactive state
+        if ($playerStore.isPlaying) {
+            playerStore
+                .pause()
+                .catch((err) =>
+                    console.error(
+                        `[TrackPlayer ${deckId}] Error invoking pause:`,
+                        err,
+                    ),
+                );
+        } else {
+            playerStore
+                .play()
+                .catch((err) =>
+                    console.error(
+                        `[TrackPlayer ${deckId}] Error invoking play:`,
+                        err,
+                    ),
+                );
         }
+    }
+
+    function handleSeekBackward() {
+        const currentTime = $playerStore.currentTime;
+        const duration = $playerStore.duration;
+        if (duration <= 0) return;
+        const newTime = Math.max(0, currentTime - SEEK_AMOUNT);
+        playerStore
+            .seek(newTime)
+            .catch((err) =>
+                console.error(
+                    `[TrackPlayer ${deckId}] Error invoking seek backward:`,
+                    err,
+                ),
+            );
+    }
+
+    function handleSeekForward() {
+        const currentTime = $playerStore.currentTime;
+        const duration = $playerStore.duration;
+        if (duration <= 0) return;
+        const newTime = Math.min(duration, currentTime + SEEK_AMOUNT);
+        playerStore
+            .seek(newTime)
+            .catch((err) =>
+                console.error(
+                    `[TrackPlayer ${deckId}] Error invoking seek forward:`,
+                    err,
+                ),
+            );
     }
 </script>
 
 <div class="track-player-wrapper">
-    {#if $playerStore.error && !$playerStore.isLoading}
+    {#if $playerStore.isLoading}
+        <div class="loading-overlay">Loading track...</div>
+    {:else if $playerStore.error}
         <p class="error-message">Error: {$playerStore.error}</p>
     {/if}
 
-    <AudioPlayer bind:this={audioPlayer} store={playerStore} {audioUrl} />
+    <div class="controls">
+        <button
+            class="seek-button"
+            onclick={handleSeekBackward}
+            disabled={$playerStore.isLoading ||
+                $playerStore.duration <= 0 ||
+                !!$playerStore.error}
+            aria-label="Seek backward 5 seconds"
+        >
+            ◀◀
+        </button>
+        <button
+            class="play-pause-button"
+            onclick={handlePlayPause}
+            disabled={$playerStore.isLoading ||
+                $playerStore.duration <= 0 ||
+                !!$playerStore.error}
+            aria-label={$playerStore.isPlaying ? "Pause" : "Play"}
+        >
+            {$playerStore.isPlaying ? "Pause" : "Play"}
+        </button>
+        <button
+            class="seek-button"
+            onclick={handleSeekForward}
+            disabled={$playerStore.isLoading ||
+                $playerStore.duration <= 0 ||
+                !!$playerStore.error}
+            aria-label="Seek forward 5 seconds"
+        >
+            ▶▶
+        </button>
+        <span class="time-display">
+            {formatTime($playerStore.currentTime)} / {formatTime(
+                $playerStore.duration,
+            )}
+        </span>
+    </div>
 
     <VolumeAnalysis
         results={volumeAnalysisResult?.intervals ?? null}
         maxRms={volumeAnalysisResult?.max_rms_amplitude ?? 0}
         isAnalysisPending={analysisFeatures === undefined}
+        {isTrackLoaded}
         audioDuration={$playerStore.duration}
         currentTime={$playerStore.currentTime}
         seekAudio={seekAudioCallback}
@@ -125,6 +218,7 @@
         background-color: var(--error-bg, #fdd);
         border: 1px solid var(--error-border, #fbb);
         border-radius: 4px;
+        margin-bottom: 1rem; /* Add margin */
     }
 
     .track-player-wrapper {
@@ -136,10 +230,57 @@
         border-radius: 8px;
         background-color: var(--track-bg, #f9f9f9);
         width: 100%;
-        max-width: 600px;
+        /* max-width: 600px; */ /* Allow flexible width based on parent */
         margin-bottom: 1rem;
         position: relative;
-        min-height: 200px;
+        min-height: 200px; /* Keep min height */
+    }
+
+    .loading-overlay {
+        position: absolute;
+        inset: 0;
+        background-color: rgba(200, 200, 200, 0.7);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        font-size: 1.2em;
+        color: #333;
+        border-radius: 8px;
+        z-index: 10;
+    }
+
+    .controls {
+        display: flex;
+        align-items: center;
+        justify-content: center; /* Center the controls */
+        gap: 0.75rem; /* Adjust gap */
+        padding-bottom: 0.5rem;
+        border-bottom: 1px solid #eee;
+        margin-bottom: 1rem;
+    }
+    .controls button {
+        padding: 0.5em 1em;
+        font-size: 1em;
+        cursor: pointer;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        background-color: #eee;
+    }
+    .controls button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+    .play-pause-button {
+        min-width: 80px; /* Give play/pause a bit more width */
+        font-weight: bold;
+    }
+    .time-display {
+        font-family: monospace;
+        font-size: 0.9em;
+        background-color: #eee;
+        padding: 0.2em 0.5em;
+        border-radius: 3px;
+        margin-left: auto; /* Push time display to the right */
     }
 
     @media (prefers-color-scheme: dark) {
@@ -151,6 +292,25 @@
             color: var(--error-text-dark, #f48481);
             background-color: var(--error-bg-dark, #5e3e3e);
             border: 1px solid var(--error-border-dark, #a75c5c);
+        }
+        .loading-overlay {
+            background-color: rgba(50, 50, 50, 0.7);
+            color: #eee;
+        }
+        .controls {
+            border-bottom-color: #444;
+        }
+        .controls button {
+            background-color: #555;
+            border-color: #777;
+            color: #eee;
+        }
+        .controls button:hover:not(:disabled) {
+            background-color: #666;
+        }
+        .time-display {
+            background-color: #555;
+            color: #eee;
         }
     }
 </style>
