@@ -9,6 +9,7 @@
         maxRms = 0,
         isAnalysisPending = false,
         isTrackLoaded = false,
+        className = "",
     }: {
         results: VolumeInterval[] | null;
         audioDuration: number;
@@ -17,6 +18,7 @@
         maxRms: number;
         isAnalysisPending?: boolean;
         isTrackLoaded?: boolean;
+        className?: string;
     } = $props();
 
     // --- Element References & State ---
@@ -189,7 +191,10 @@
 
 {#if isTrackLoaded && results && results.length > 0}
     {@const ariaValueNow = currentTime / duration}
-    <div class="analysis-container" aria-label="Audio Volume Waveform">
+    <div
+        class="analysis-container {className}"
+        aria-label="Audio Volume Waveform"
+    >
         <div
             bind:this={containerElement}
             class="waveform-scroll-container"
@@ -240,8 +245,8 @@
     .analysis-container {
         display: block;
         width: 100%;
-        max-width: 1200px;
-        margin: 10px 0;
+        height: 100%;
+        margin: 0;
         position: relative;
     }
     .analysis-container.placeholder {
@@ -251,7 +256,7 @@
     .waveform-scroll-container {
         position: relative;
         display: block;
-        height: 100px;
+        height: 100%;
         background-color: var(--waveform-bg, #e0e0e0);
         border-radius: 3px;
         outline: none;

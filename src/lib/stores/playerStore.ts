@@ -111,6 +111,19 @@ export function createPlayerStore(deckId: string) {
         }
     }
 
+    async function setVolume(level: number) {
+        console.log(`[Store ${deckId}] Setting volume to ${level}...`);
+        try {
+            await invoke("set_volume", { deckId, volume: level });
+            // No state update needed here, volume is fire-and-forget for now
+        } catch (err) {
+            const errorMsg = `Failed to set volume: ${err}`;
+            console.error(`[Store ${deckId}]`, errorMsg);
+            // Optionally update state with error if needed
+            // update((s) => ({ ...s, error: errorMsg }));
+        }
+    }
+
     function cleanup() {
         console.log(`[Store ${deckId}] Cleaning up listeners...`);
         if (unlistenUpdate) unlistenUpdate();
@@ -128,6 +141,7 @@ export function createPlayerStore(deckId: string) {
         play,
         pause,
         seek,
+        setVolume,
         cleanup,
         deckId,
     };

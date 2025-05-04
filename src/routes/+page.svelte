@@ -74,28 +74,39 @@
 <style>
     .library-section-initial {
         align-items: center;
+        flex-grow: 1; /* Allow initial section to take space */
     }
 
-    .container {
+    main.container {
         margin: 0 auto;
         padding: 2rem;
         padding-top: 3vh;
         display: flex;
         flex-direction: column;
-        align-items: center;
+        /* align-items: center; Removed */
         gap: 2rem;
         max-width: 1600px;
+        min-height: 90vh; /* Ensure container takes height */
     }
 
-    .library-section,
     .decks-section {
+        flex-grow: 3; /* Decks take more space */
+        display: flex; /* Needed for child flex */
+        flex-direction: column;
+    }
+
+    .library-section {
+        flex-grow: 1; /* Library takes less space */
+        display: flex;
+        flex-direction: column;
+        /* Existing styles below */
         width: 100%;
         border: 1px solid var(--section-border, #ddd);
         border-radius: 8px;
         padding: 1.5rem;
         background-color: var(--section-bg, #fff);
-        display: flex;
-        flex-direction: column;
+        /* display: flex; -> Moved up */
+        /* flex-direction: column; -> Moved up */
         gap: 1rem;
     }
     h2 {

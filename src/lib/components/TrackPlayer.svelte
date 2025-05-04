@@ -5,11 +5,12 @@
         type PlayerStore,
     } from "$lib/stores/playerStore";
     import VolumeAnalysis from "./VolumeAnalysis.svelte";
+    import VerticalSlider from "./VerticalSlider.svelte";
 
     // --- Props ---
     let {
         filePath = null,
-        deckId, // Added deckId prop
+        deckId,
     }: {
         filePath: string | null;
         deckId: string;
@@ -22,12 +23,10 @@
         }
         const minutes = Math.floor(totalSeconds / 60);
         const seconds = Math.floor(totalSeconds % 60);
-        const milliseconds = Math.floor((totalSeconds % 1) * 10); // Tenths of a second
 
         const paddedMinutes = String(minutes).padStart(2, "0");
         const paddedSeconds = String(seconds).padStart(2, "0");
-        // Optional: include milliseconds
-        // return `${paddedMinutes}:${paddedSeconds}.${milliseconds}`;
+
         return `${paddedMinutes}:${paddedSeconds}`;
     }
 
@@ -37,6 +36,9 @@
     // Use deckId to create a specific store instance
     const playerStore: PlayerStore = createPlayerStore(deckId);
     // Use $playerStore directly in the template for auto-subscription
+
+    // --- Volume State ---
+    let volume = $state(1.0); // Default volume (0.0 to 2.0)
 
     // --- Derived analysis result based on filePath ---
     const trackInfo = $derived(
@@ -58,27 +60,19 @@
     $effect(() => {
         const currentFilePath = filePath; // Capture current prop value
 
-        if (currentFilePath) {
-            // Call the store method to load the track via Rust
-            playerStore.loadTrack(currentFilePath).catch((err) => {
-                // This catch is mostly for logging invoke errors from the store,
-                // state updates (including errors) come via events.
-                console.error(
-                    `[TrackPlayer ${deckId}] Error invoking loadTrack:`,
-                    err,
-                );
-            });
-        } else {
-            // If filePath becomes null, maybe reset the player?
-            // Currently, the store doesn't have an explicit reset command for this.
-            // Consider adding playerStore.reset() or relying on cleanup.
+        if (!currentFilePath) {
+            return;
         }
 
-        // Cleanup function: Called when filePath changes OR component is destroyed
-        // We rely on the store's internal cleanup for listeners
-        // return () => {
-        //     // Optional: Add specific TrackPlayer cleanup if needed beyond store cleanup
-        // };
+        // Call the store method to load the track via Rust
+        playerStore.loadTrack(currentFilePath).catch((err) => {
+            // This catch is mostly for logging invoke errors from the store,
+            // state updates (including errors) come via events.
+            console.error(
+                `[TrackPlayer ${deckId}] Error invoking loadTrack:`,
+                err,
+            );
+        });
     });
 
     // Effect for component cleanup
@@ -87,6 +81,21 @@
         return () => {
             playerStore.cleanup();
         };
+    });
+
+    // Effect to update volume in Rust when local state changes
+    $effect(() => {
+        const currentVolume = volume; // Get current value directly
+        console.log(
+            `TrackPlayer ${deckId}: Volume changed to ${currentVolume}, calling store.setVolume`,
+        );
+        playerStore.setVolume(currentVolume).catch((err: unknown) => {
+            // Added err type
+            console.error(
+                `[TrackPlayer ${deckId}] Error invoking setVolume:`,
+                err,
+            );
+        });
     });
 
     const SEEK_AMOUNT = 5; // Seek 5 seconds
@@ -198,15 +207,28 @@
         </span>
     </div>
 
-    <VolumeAnalysis
-        results={volumeAnalysisResult?.intervals ?? null}
-        maxRms={volumeAnalysisResult?.max_rms_amplitude ?? 0}
-        isAnalysisPending={analysisFeatures === undefined}
-        {isTrackLoaded}
-        audioDuration={$playerStore.duration}
-        currentTime={$playerStore.currentTime}
-        seekAudio={seekAudioCallback}
-    />
+    <div class="player-body-area">
+        <VerticalSlider
+            id="volume-slider-{deckId}"
+            label="Volume"
+            min={0}
+            max={2}
+            step={0.05}
+            bind:value={volume}
+            debounceMs={50}
+        />
+        <div class="waveform-area">
+            <VolumeAnalysis
+                results={volumeAnalysisResult?.intervals ?? null}
+                maxRms={volumeAnalysisResult?.max_rms_amplitude ?? 0}
+                isAnalysisPending={analysisFeatures === undefined}
+                {isTrackLoaded}
+                audioDuration={$playerStore.duration}
+                currentTime={$playerStore.currentTime}
+                seekAudio={seekAudioCallback}
+            />
+        </div>
+    </div>
 </div>
 
 <style>
@@ -224,14 +246,14 @@
     .track-player-wrapper {
         display: flex;
         flex-direction: column;
-        gap: 1rem;
+        gap: 0.75rem; /* Adjust gap slightly */
         border: 1px solid #ccc;
         padding: 1rem;
         border-radius: 8px;
         background-color: var(--track-bg, #f9f9f9);
         width: 100%;
         /* max-width: 600px; */ /* Allow flexible width based on parent */
-        margin-bottom: 1rem;
+        margin-bottom: 0.5rem; /* Reduce margin */
         position: relative;
         min-height: 200px; /* Keep min height */
     }
@@ -283,6 +305,23 @@
         margin-left: auto; /* Push time display to the right */
     }
 
+    .player-body-area {
+        display: flex;
+        flex-direction: row;
+        align-items: stretch;
+        gap: 1rem;
+        flex-grow: 1;
+        min-height: 130px;
+    }
+
+    .waveform-area {
+        flex-grow: 1;
+        min-width: 0;
+        position: relative;
+        display: flex;
+        align-items: stretch;
+    }
+
     @media (prefers-color-scheme: dark) {
         .track-player-wrapper {
             border-color: #444;
@@ -312,5 +351,7 @@
             background-color: #555;
             color: #eee;
         }
+        /* Styles for volume control in dark mode could go here if needed */
+        /* .volume-control input[type="range"] { ... } */
     }
 </style>

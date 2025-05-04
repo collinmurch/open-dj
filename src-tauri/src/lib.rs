@@ -2,9 +2,13 @@ mod audio_analysis;
 mod audio_processor;
 mod bpm_analyzer;
 mod audio_playback;
+mod playback_types;
 
-use audio_playback::{AppState, AudioThreadCommand};
-use tauri::{WindowEvent};
+use playback_types::AudioThreadCommand;
+use audio_playback::AppState;
+#[allow(unused_imports)] // AppHandle, Emitter, Runtime might be needed for builder/traits
+use tauri::{AppHandle, Emitter, Runtime, WindowEvent};
+use tokio::sync::oneshot;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -43,6 +47,7 @@ pub fn run() {
             audio_playback::pause_track,
             audio_playback::seek_track,
             audio_playback::get_playback_state,
+            audio_playback::set_volume,
             audio_playback::cleanup_player
         ])
         .on_window_event(move |window, event| {
@@ -52,16 +57,32 @@ pub fn run() {
                 // Prevent the window from closing immediately
                 api.prevent_close();
 
-                // Clone the sender again for the event handler closure
+                // Create the shutdown signalling channel
+                let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+                // Clone the command sender again for the event handler closure
                 let audio_cmd_tx_clone = audio_cmd_tx.clone();
                 let window_clone = window.clone();
 
                 // Send shutdown command in a separate task to avoid blocking event loop
                 tauri::async_runtime::spawn(async move {
-                    if let Err(e) = audio_cmd_tx_clone.send(AudioThreadCommand::Shutdown).await {
+                    if let Err(e) = audio_cmd_tx_clone.send(AudioThreadCommand::Shutdown(shutdown_tx)).await {
                         log::error!("Failed to send Shutdown command to audio thread: {}", e);
+                        // If sending fails, we can probably just close the window
+                        if let Err(close_err) = window_clone.close() {
+                             log::error!("Failed to close window after send error: {}", close_err);
+                        }
+                        return;
                     }
-                    // Optionally wait a short moment for thread to potentially process
+
+                    // Wait for the audio thread to signal completion
+                    log::info!("Waiting for audio thread shutdown confirmation...");
+                    match shutdown_rx.await {
+                        Ok(_) => log::info!("Audio thread confirmed shutdown."),
+                        Err(e) => log::error!("Failed to receive shutdown confirmation from audio thread: {}", e),
+                    }
+
+                    // Optionally wait a short moment for thread to potentially process (Probably not needed now)
                     // tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     log::info!("Proceeding with window close after sending Shutdown command.");
                     // Now allow the window to close
@@ -71,7 +92,7 @@ pub fn run() {
                 });
             }
         })
-        // TODO: Add graceful shutdown for audio thread
+        // TODO: Add graceful shutdown for audio thread - DONE
         // .on_window_event(|window, event| match event { ... })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
