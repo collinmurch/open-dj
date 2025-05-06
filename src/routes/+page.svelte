@@ -49,7 +49,6 @@
 
         <section class="library-section">
             <h2>Music Library</h2>
-            <MusicLibrary />
             <div class="load-controls">
                 <button onclick={loadToDeckA} disabled={!selectedTrack}
                     >Load Selected to Deck A</button
@@ -57,16 +56,9 @@
                 <button onclick={loadToDeckB} disabled={!selectedTrack}
                     >Load Selected to Deck B</button
                 >
-                {#if selectedTrack}
-                    <span class="selected-track-info"
-                        >Selected: {selectedTrack.name}</span
-                    >
-                {:else}
-                    <span class="selected-track-info"
-                        >No track selected in library</span
-                    >
-                {/if}
             </div>
+
+            <MusicLibrary />
         </section>
     {/if}
 </main>
@@ -74,7 +66,7 @@
 <style>
     .library-section-initial {
         align-items: center;
-        flex-grow: 1; /* Allow initial section to take space */
+        flex-grow: 1;
     }
 
     main.container {
@@ -83,30 +75,28 @@
         padding-top: 3vh;
         display: flex;
         flex-direction: column;
-        /* align-items: center; Removed */
         gap: 2rem;
-        max-width: 1600px;
-        min-height: 90vh; /* Ensure container takes height */
+        min-height: 90vh;
     }
 
     .decks-section {
-        flex-grow: 3; /* Decks take more space */
-        display: flex; /* Needed for child flex */
+        flex-grow: 1;
+        display: flex;
         flex-direction: column;
     }
 
     .library-section {
-        flex-grow: 1; /* Library takes less space */
+        flex-grow: 0;
+        flex-shrink: 0;
+        max-height: 40vh;
+        overflow-y: auto;
         display: flex;
         flex-direction: column;
-        /* Existing styles below */
         width: 100%;
         border: 1px solid var(--section-border, #ddd);
         border-radius: 8px;
         padding: 1.5rem;
         background-color: var(--section-bg, #fff);
-        /* display: flex; -> Moved up */
-        /* flex-direction: column; -> Moved up */
         gap: 1rem;
     }
     h2 {
@@ -123,9 +113,7 @@
         justify-content: center;
         align-items: center;
         gap: 1rem;
-        margin-top: 1rem;
-        padding-top: 1rem;
-        border-top: 1px solid var(--section-border-light, #eee);
+        margin-bottom: 1rem;
     }
     .load-controls button {
         padding: 0.5em 1em;
@@ -143,28 +131,19 @@
         opacity: 0.5;
         cursor: not-allowed;
     }
-    .selected-track-info {
-        font-size: 0.9em;
-        font-style: italic;
-        color: var(--text-muted, #555);
-        text-align: center;
-        flex-basis: 100%;
-        margin-top: 0.5rem;
-    }
 
     .decks-container {
         width: 100%;
         display: flex;
         flex-direction: row;
         justify-content: space-around;
-        align-items: flex-start;
-        gap: 2rem;
+        align-items: stretch;
+        gap: 3rem;
         flex-wrap: wrap;
     }
     .deck {
         flex: 1;
         min-width: 300px;
-        max-width: 650px;
         display: flex;
         flex-direction: column;
         align-items: center;

@@ -1,5 +1,10 @@
 // src-tauri/src/audio_processor.rs
-use crate::{audio_analysis, bpm_analyzer};
+use crate::{
+    audio_analysis,
+    bpm_analyzer,
+    // errors::{AudioProcessorError, AudioDecodingError, BpmError, AudioAnalysisError} // This line to be replaced
+};
+use crate::errors::AudioProcessorError; // Only this is needed if sub-errors are just sources
 use rayon::prelude::*;
 use std::collections::HashMap;
 
@@ -12,73 +17,59 @@ pub struct AudioFeatures {
     pub volume: Option<audio_analysis::AudioAnalysis>, // Reuse existing struct
 }
 
-// --- Central Decoding Function ---
-
-// REMOVED: decode_audio_to_mono_f32 moved to audio_playback.rs
-
 // --- Analysis Functions ---
 
 /// Analyzes a single file, performing decoding and then parallel analysis.
-fn analyze_single_file_features(path: &str) -> Result<AudioFeatures, String> {
+fn analyze_single_file_features(path: &str) -> Result<AudioFeatures, AudioProcessorError> {
     log::info!("Analysis: Starting combined analysis for: {}", path);
 
-    // 1. Decode centrally - Use the playback module's decoder now
     let (samples, sample_rate) = crate::audio_playback::decode_audio_for_playback(path)
-        .map_err(|e| format!("Analysis Decode Error: {}", e))?; // Map error type if needed
+        .map_err(|e| AudioProcessorError::AnalysisDecodingError{ path: path.to_string(), source: e })?;
 
-    // 2. Run analyses in parallel
-    let (bpm_result, volume_result) = rayon::join(
+    let (bpm_analysis_result, volume_analysis_result) = rayon::join(
         || {
-            log::debug!("Analysis: Starting BPM calculation for '{}'", path);
-            let bpm = bpm_analyzer::calculate_bpm(&samples, sample_rate);
-            log::debug!("Analysis: Finished BPM calculation for '{}'", path);
-            bpm // Returns Result<f32, String>
+            bpm_analyzer::calculate_bpm(&samples, sample_rate)
+                .map_err(|e| AudioProcessorError::AnalysisBpmError{ path: path.to_string(), source: e })
         },
         || {
-            log::debug!("Analysis: Starting Volume calculation for '{}'", path);
-            // Pass f32 sample rate, cast inside if necessary
-            let volume_data = audio_analysis::calculate_rms_intervals(&samples, sample_rate);
-            log::debug!("Analysis: Finished Volume calculation for '{}'", path);
-            // volume_data is Result<(Vec<VolumeInterval>, f32), String>
-            // We need to map the Ok case to AudioAnalysis
-            volume_data.map(
-                |(intervals, max_rms_amplitude)| audio_analysis::AudioAnalysis {
+            audio_analysis::calculate_rms_intervals(&samples, sample_rate)
+                .map_err(|e| AudioProcessorError::AnalysisVolumeError{ path: path.to_string(), source: e })
+                .map(|(intervals, max_rms_amplitude)| audio_analysis::AudioAnalysis {
                     intervals,
                     max_rms_amplitude,
-                },
-            )
+                })
         },
     );
 
-    // 3. Combine results
-    let bpm = match bpm_result {
-        Ok(val) => {
-            log::info!("Analysis: BPM success for '{}': {:.2}", path, val);
-            Some(val)
+    // Combine results and handle errors from individual analyses
+    match (bpm_analysis_result, volume_analysis_result) {
+        (Ok(bpm_val), Ok(vol_analysis)) => {
+            log::info!("Analysis: BPM success for '{}': {:.2}", path, bpm_val);
+            log::info!("Analysis: Volume success for '{}': {} intervals, max RMS {:.4}", 
+                       path, vol_analysis.intervals.len(), vol_analysis.max_rms_amplitude);
+            Ok(AudioFeatures { bpm: Some(bpm_val), volume: Some(vol_analysis) })
         }
-        Err(e) => {
-            log::error!("Analysis: BPM failed for '{}': {}", path, e);
-            None
+        (Err(bpm_err), Ok(vol_analysis)) => {
+            log::error!("Analysis: BPM failed for '{}': {}", path, bpm_err);
+            log::info!("Analysis: Volume succeeded for '{}': {} intervals, max RMS {:.4}", 
+                       path, vol_analysis.intervals.len(), vol_analysis.max_rms_amplitude);
+            // Depending on requirements, could return partial success or the error.
+            // Current AudioFeatures struct allows partial. To propagate error: return Err(bpm_err);
+            Ok(AudioFeatures { bpm: None, volume: Some(vol_analysis) })
         }
-    };
-
-    let volume = match volume_result {
-        Ok(analysis_struct) => {
-            log::info!(
-                "Analysis: Volume success for '{}': {} intervals, max RMS {:.4}",
-                path,
-                analysis_struct.intervals.len(),
-                analysis_struct.max_rms_amplitude
-            );
-            Some(analysis_struct)
+        (Ok(bpm_val), Err(vol_err)) => {
+            log::info!("Analysis: BPM success for '{}': {:.2}", path, bpm_val);
+            log::error!("Analysis: Volume failed for '{}': {}", path, vol_err);
+            // To propagate error: return Err(vol_err);
+            Ok(AudioFeatures { bpm: Some(bpm_val), volume: None })
         }
-        Err(e) => {
-            log::error!("Analysis: Volume failed for '{}': {}", path, e);
-            None
+        (Err(bpm_err), Err(vol_err)) => {
+            log::error!("Analysis: BPM failed for '{}': {}", path, bpm_err);
+            log::error!("Analysis: Volume failed for '{}': {}", path, vol_err);
+            // Propagate a combined error or one of the specific errors.
+            Err(AudioProcessorError::CombinedAnalysisFailed{ path: path.to_string() })
         }
-    };
-
-    Ok(AudioFeatures { bpm, volume })
+    }
 }
 
 // --- Batch Command ---
@@ -98,10 +89,13 @@ pub fn analyze_features_batch(
             // Use the updated analysis function
             let analysis_result = analyze_single_file_features(path);
             // Log top-level errors here, specific errors logged within analyze_single_file_features
-            if let Err(e) = &analysis_result {
-                log::error!("Analysis: Top-level error for '{}': {}", path, e);
+            match analysis_result {
+                Ok(features) => (path.clone(), Ok(features)),
+                Err(e) => {
+                    log::error!("Feature analysis failed for path '{}': {}", path, e);
+                    (path.clone(), Err(e.to_string())) // Convert AudioProcessorError to String
+                }
             }
-            (path.clone(), analysis_result)
         })
         .collect();
 

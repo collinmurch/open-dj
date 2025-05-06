@@ -368,7 +368,7 @@
         /* max-width: 600px; */ /* Allow flexible width based on parent */
         margin-bottom: 0.5rem; /* Reduce margin */
         position: relative;
-        min-height: 200px; /* Keep min height */
+        min-height: 350px; /* INCREASED for taller decks */
     }
 
     .loading-overlay {
@@ -431,7 +431,7 @@
         display: flex;
         flex-direction: row; /* Arrange sliders horizontally */
         align-items: stretch; /* Stretch sliders vertically */
-        gap: 0.75rem; /* Space between sliders */
+        gap: 0; /* Space between sliders - MINIMIZED */
         padding: 0.5rem 0; /* Add some vertical padding */
         /* Remove fixed width if you want it to be more flexible */
         /* width: 200px; */

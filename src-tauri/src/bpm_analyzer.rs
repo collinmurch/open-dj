@@ -1,9 +1,7 @@
 use rayon::prelude::*;
 use rustfft::{FftPlanner, num_complex::Complex, num_traits::Zero};
-
-// --- Type Alias ---
-// Renamed error type for clarity
-type BpmResult<T> = Result<T, String>;
+use crate::config; // Import the config crate
+use crate::errors::BpmError; // Import custom error
 
 // --- Private Helper Functions ---
 
@@ -104,7 +102,7 @@ fn compute_spectral_flux(samples: &[f32], frame_size: usize, hop_size: usize) ->
     flux
 }
 
-fn fft_autocorrelation(signal: &[f32], max_lag: usize) -> BpmResult<Vec<f32>> {
+fn fft_autocorrelation(signal: &[f32], max_lag: usize) -> Result<Vec<f32>, BpmError> {
     if signal.is_empty() || max_lag == 0 {
         return Ok(Vec::new());
     }
@@ -143,41 +141,28 @@ fn fft_autocorrelation(signal: &[f32], max_lag: usize) -> BpmResult<Vec<f32>> {
     Ok(autocorrelation)
 }
 
-fn estimate_bpm(flux: &[f32], sample_rate: f32, hop_size: usize) -> BpmResult<f32> {
+fn estimate_bpm(flux: &[f32], sample_rate: f32, hop_size: usize) -> Result<f32, BpmError> {
     if flux.is_empty() {
-        return Err("Cannot estimate BPM from empty spectral flux.".to_string());
+        return Err(BpmError::EmptySpectralFlux);
     }
-    // Typical BPM range for music
-    const MIN_BPM: f32 = 60.0;
-    const MAX_BPM: f32 = 200.0;
 
     // Calculate lag range in terms of flux frames based on BPM range
-    let max_lag_frames = (60.0 * sample_rate / (MIN_BPM * hop_size as f32)).ceil() as usize;
-    let min_lag_frames = (60.0 * sample_rate / (MAX_BPM * hop_size as f32)).floor() as usize;
+    let max_lag_frames = (60.0 * sample_rate / (config::BPM_MIN * hop_size as f32)).ceil() as usize; // Use config value
+    let min_lag_frames = (60.0 * sample_rate / (config::BPM_MAX * hop_size as f32)).floor() as usize; // Use config value
 
     if min_lag_frames == 0 || max_lag_frames <= min_lag_frames {
-        return Err(format!(
-            "Invalid lag range calculated (min: {}, max: {}). Check sample rate ({}) and hop size ({}).",
-            min_lag_frames, max_lag_frames, sample_rate, hop_size
-        ));
+        return Err(BpmError::InvalidLagRange { min_lag: min_lag_frames, max_lag: max_lag_frames, sample_rate, hop_size });
     }
 
     // Ensure max_lag doesn't exceed flux length for autocorrelation
     let effective_max_lag = max_lag_frames.min(flux.len());
     if effective_max_lag <= min_lag_frames {
-        return Err(format!(
-            "Effective max lag ({}) is not greater than min lag ({}) after flux length check.",
-            effective_max_lag, min_lag_frames
-        ));
+        return Err(BpmError::EffectiveLagTooSmall { eff_max_lag: effective_max_lag, min_lag: min_lag_frames });
     }
 
     let ac = fft_autocorrelation(flux, effective_max_lag)?;
     if ac.len() <= min_lag_frames {
-        return Err(format!(
-            "Autocorrelation result length ({}) is not greater than min lag ({}).",
-            ac.len(),
-            min_lag_frames
-        ));
+        return Err(BpmError::AutocorrelationTooShort { ac_len: ac.len(), min_lag: min_lag_frames });
     }
 
     // Find the peak in the autocorrelation within the valid lag range
@@ -194,17 +179,14 @@ fn estimate_bpm(flux: &[f32], sample_rate: f32, hop_size: usize) -> BpmResult<f3
             if period_secs > 1e-6 {
                 let bpm = 60.0 / period_secs;
                 // Clamp BPM to the expected range just in case
-                Ok(bpm.clamp(MIN_BPM, MAX_BPM))
+                Ok(bpm.clamp(config::BPM_MIN, config::BPM_MAX)) // Use config values
             } else {
-                Err("Calculated period is too small, cannot determine BPM.".to_string())
+                Err(BpmError::PeriodTooSmall)
             }
         }
         _ => {
             // No peak found or peak is at lag 0
-            Err(
-                "Could not find a significant peak in autocorrelation for BPM estimation."
-                    .to_string(),
-            )
+            Err(BpmError::NoAutocorrelationPeak)
         }
     }
 }
@@ -212,15 +194,9 @@ fn estimate_bpm(flux: &[f32], sample_rate: f32, hop_size: usize) -> BpmResult<f3
 // --- Public Calculation Function ---
 
 /// Calculates the BPM from pre-decoded mono f32 audio samples.
-pub(crate) fn calculate_bpm(samples: &[f32], sample_rate: f32) -> BpmResult<f32> {
-    log::debug!(
-        "BPM Calc: Starting BPM calculation with {} samples at {} Hz",
-        samples.len(),
-        sample_rate
-    );
-
+pub(crate) fn calculate_bpm(samples: &[f32], sample_rate: f32) -> Result<f32, BpmError> {
     if samples.is_empty() {
-        return Err("BPM Calc: Cannot calculate BPM from empty samples.".to_string());
+        return Err(BpmError::EmptySamplesForBpm);
     }
 
     // Sensible defaults - these could be parameters if needed
@@ -234,31 +210,17 @@ pub(crate) fn calculate_bpm(samples: &[f32], sample_rate: f32) -> BpmResult<f32>
     downsample_in_place(&mut processed_samples, downsample_factor);
     let effective_sample_rate = sample_rate / downsample_factor as f32;
 
-    log::debug!(
-        "BPM Calc: Downsampled to {} samples at effective {} Hz",
-        processed_samples.len(),
-        effective_sample_rate
-    );
-
     if processed_samples.is_empty() {
-        return Err(format!(
-            "BPM Calc: Samples became empty after downsampling (factor {}). Original count: {}",
-            downsample_factor,
-            samples.len()
-        ));
+        return Err(BpmError::EmptyAfterDownsample { factor: downsample_factor, original_count: samples.len() });
     }
 
     // --- Compute Spectral Flux ---
     let flux = compute_spectral_flux(&processed_samples, frame_size, hop_size);
-    log::debug!("BPM Calc: Computed spectral flux ({} values)", flux.len());
-
     if flux.is_empty() {
-        return Err("BPM Calc: Spectral flux calculation resulted in empty vector. Insufficient samples after processing?".to_string());
+        return Err(BpmError::EmptyFluxVector);
     }
 
     // --- Estimate BPM from Flux ---
     let bpm = estimate_bpm(&flux, effective_sample_rate, hop_size)?;
-    log::debug!("BPM Calc: Estimated BPM: {:.2}", bpm);
-
     Ok(bpm)
 }

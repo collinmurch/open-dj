@@ -3,12 +3,13 @@ mod audio_effects;
 mod audio_playback;
 mod audio_processor;
 mod bpm_analyzer;
+mod config;
+mod errors;
 mod playback_types;
 
 use audio_playback::AppState;
 use playback_types::AudioThreadCommand;
-#[allow(unused_imports)] // AppHandle, Emitter, Runtime might be needed for builder/traits
-use tauri::{AppHandle, Emitter, Runtime, WindowEvent};
+use tauri::WindowEvent; // Removed Manager, AppHandle, Emitter, Runtime
 use tokio::sync::oneshot;
 
 #[tauri::command]

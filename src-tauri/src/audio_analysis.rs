@@ -1,4 +1,6 @@
 use rayon::prelude::*;
+use crate::config;
+use crate::errors::AudioAnalysisError;
 
 #[derive(serde::Serialize, Debug, Clone)]
 pub struct VolumeInterval {
@@ -19,7 +21,7 @@ pub struct AudioAnalysis {
 pub(crate) fn calculate_rms_intervals(
     samples: &[f32],
     sample_rate: f32,
-) -> Result<(Vec<VolumeInterval>, f32), String> {
+) -> Result<(Vec<VolumeInterval>, f32), AudioAnalysisError> {
     // Return Result
     if samples.is_empty() {
         // Return empty results, not an error necessarily, but log warning
@@ -27,12 +29,10 @@ pub(crate) fn calculate_rms_intervals(
         return Ok((Vec::new(), 0.0));
     }
     if sample_rate <= 0.0 {
-        return Err(format!("Volume Calc: Invalid sample rate: {}", sample_rate));
+        return Err(AudioAnalysisError::InvalidSampleRate(sample_rate));
     }
 
-    const TARGET_INTERVALS_PER_SECOND: f64 = 25.0;
-    // Ensure sample_rate cast doesn't truncate to 0
-    let samples_per_interval = ((sample_rate as f64) / TARGET_INTERVALS_PER_SECOND)
+    let samples_per_interval = ((sample_rate as f64) / config::TARGET_RMS_INTERVALS_PER_SECOND)
         .round()
         .max(1.0) as usize;
 
@@ -76,14 +76,8 @@ pub(crate) fn calculate_rms_intervals(
     // Ensure max_rms is non-zero if we have intervals, preventing division by zero later
     // Use a small epsilon instead of 0.0001 for robustness
     if max_rms_amplitude < f32::EPSILON && !intervals.is_empty() {
-        max_rms_amplitude = f32::EPSILON; // Use machine epsilon
+        max_rms_amplitude = f32::EPSILON;
     }
-
-    log::debug!(
-        "Volume Calc: Calculated RMS for {} intervals. Max RMS: {:.4}",
-        intervals.len(),
-        max_rms_amplitude
-    );
 
     Ok((intervals, max_rms_amplitude))
 }

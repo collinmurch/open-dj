@@ -14,15 +14,25 @@
 </script>
 
 <div class="music-library">
-    <button onclick={selectLibraryFolder} disabled={$libraryStore.isLoading}>
-        {#if $libraryStore.isLoading}
-            Loading Folder...
-        {:else if $libraryStore.selectedFolder}
-            Change Music Folder
-        {:else}
-            Select Music Folder
+    <div class="library-header">
+        <button
+            onclick={selectLibraryFolder}
+            disabled={$libraryStore.isLoading}
+        >
+            {#if $libraryStore.isLoading}
+                Loading Folder...
+            {:else if $libraryStore.selectedFolder}
+                Change Music Folder
+            {:else}
+                Select Music Folder
+            {/if}
+        </button>
+        {#if $libraryStore.selectedFolder && !$libraryStore.isLoading}
+            <p class="folder-info folder-info-header">
+                Library: {$libraryStore.selectedFolder}
+            </p>
         {/if}
-    </button>
+    </div>
 
     {#if $libraryStore.error}
         <p class="error-message">Error: {$libraryStore.error}</p>
@@ -31,7 +41,6 @@
     <!-- Conditional section for folder info and track list -->
     {#if $libraryStore.selectedFolder && !$libraryStore.isLoading}
         <div class="library-content">
-            <p class="folder-info">Library: {$libraryStore.selectedFolder}</p>
             {#if $libraryStore.audioFiles.length > 0}
                 <ul class="track-list">
                     {#each $libraryStore.audioFiles as track (track.path)}
@@ -84,8 +93,17 @@
         gap: 1rem;
     }
 
+    .library-header {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        width: 100%;
+    }
+
     .library-content {
-        max-height: 35vh;
+        max-height: 38vh;
         overflow-y: auto;
         display: flex;
         flex-direction: column;
@@ -127,6 +145,19 @@
         color: var(--text-muted, #555);
         word-break: break-all;
         margin-top: 0;
+    }
+
+    .folder-info-header {
+        font-style: italic;
+        font-size: 0.9em;
+        color: var(--text-muted, #555);
+        word-break: break-all;
+        margin: 0;
+        flex-grow: 1;
+        text-align: right;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
 
     .track-list {

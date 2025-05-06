@@ -86,6 +86,3 @@ impl Default for PlaybackState {
         }
     }
 }
-
-// Note: AudioThreadDeckState remains internal to audio_playback.rs for now,
-// as it's not directly part of the public API or state management structure visible outside.

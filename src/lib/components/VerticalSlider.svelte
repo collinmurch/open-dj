@@ -179,8 +179,8 @@
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: 1rem; /* Increased gap for more space */
-        padding: 0.5rem 0.5rem 0.25rem;
+        gap: 1rem;
+        padding: 0.5rem 0 0.25rem;
         min-width: 60px;
         height: 100%;
     }
@@ -204,23 +204,23 @@
     .vertical-slider {
         appearance: slider-vertical;
         writing-mode: bt-lr;
-        width: 24px; /* Increase clickable width slightly */
+        width: 24px;
         height: 100%;
         cursor: pointer;
         margin: 0;
-        background: transparent; /* Make slider itself transparent */
-        padding: 0; /* Remove padding */
+        background: transparent;
+        padding: 0;
     }
 
     /* --- Track Styling --- */
     .vertical-slider::-webkit-slider-runnable-track {
-        width: 6px; /* Thinner track */
+        width: 6px;
         background: var(--border, #ddd);
         border-radius: 3px;
-        margin-left: 9px; /* Center track ( (24px - 6px) / 2 ) */
+        margin-left: 9px;
     }
     .vertical-slider::-moz-range-track {
-        width: 6px; /* Thinner track */
+        width: 6px;
         height: 100%;
         background: var(--border, #ddd);
         border-radius: 3px;
@@ -228,50 +228,49 @@
 
     /* --- Thumb Styling --- */
     .vertical-slider::-webkit-slider-thumb {
-        appearance: none; /* Force appearance reset */
+        appearance: none;
         width: 16px;
         height: 16px;
-        background: var(--button-bg, #eee); /* Match button background */
-        border-radius: 50%; /* Make it a circle */
-        border: 1px solid var(--button-border, #ccc); /* Add subtle border like buttons */
+        background: var(--button-bg, #eee);
+        border-radius: 50%;
+        border: 1px solid var(--button-border, #ccc);
         box-shadow: none;
         cursor: pointer;
         margin-left: -5px;
     }
     .vertical-slider::-moz-range-thumb {
-        appearance: none; /* Force appearance reset */
+        appearance: none;
         width: 16px;
         height: 16px;
-        background: var(--button-bg, #eee); /* Match button background */
-        border: 1px solid var(--button-border, #ccc); /* Add subtle border like buttons */
+        background: var(--button-bg, #eee);
+        border: 1px solid var(--button-border, #ccc);
         box-shadow: none;
-        border-radius: 50%; /* Make it a circle */
+        border-radius: 50%;
         cursor: pointer;
     }
 
     .slider-value {
         font-family: monospace;
         font-size: 0.75em;
-        margin-top: 1rem; /* Add margin above the value */
+        margin-top: 1rem;
         background-color: var(--muted, #eee);
         color: var(--muted-foreground, #333);
         padding: 0.2em 0.4em;
         border-radius: 4px;
         min-width: 2.8em;
         text-align: center;
-        flex-shrink: 0; /* Prevent value from shrinking */
+        flex-shrink: 0;
     }
 
     @media (prefers-color-scheme: dark) {
         .vertical-slider-wrapper {
             --muted-foreground: #aaa;
-            --border: #444; /* Example dark border color */
-            --primary: #8ab4f8; /* Example dark primary */
-            --muted: #444; /* Example dark muted bg */
-            --button-bg: #555; /* Define button bg for dark */
-            --button-border: #777; /* Define button border for dark */
+            --border: #444;
+            --primary: #8ab4f8;
+            --muted: #444;
+            --button-bg: #555;
+            --button-border: #777;
         }
-        /* Track and thumb colors inherit via CSS vars */
         .slider-value {
             color: var(--foreground, #eee);
         }
