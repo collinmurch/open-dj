@@ -24,14 +24,7 @@ export function createPlayerStore(deckId: string) {
             deckId: string;
             state: PlayerState;
         }>("playback://update", (event) => {
-            if (event.payload.deckId === deckId) {
-                console.debug(
-                    `[Store ${deckId}] Received state update:`,
-                    event.payload.state,
-                );
-                set(event.payload.state);
-            } else {
-            }
+            if (event.payload.deckId === deckId) set(event.payload.state);
         });
 
         unlistenError = await listen<{ deckId: string; error: string }>(

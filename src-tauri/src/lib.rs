@@ -1,11 +1,12 @@
 mod audio_analysis;
+mod audio_effects;
+mod audio_playback;
 mod audio_processor;
 mod bpm_analyzer;
-mod audio_playback;
 mod playback_types;
 
-use playback_types::AudioThreadCommand;
 use audio_playback::AppState;
+use playback_types::AudioThreadCommand;
 #[allow(unused_imports)] // AppHandle, Emitter, Runtime might be needed for builder/traits
 use tauri::{AppHandle, Emitter, Runtime, WindowEvent};
 use tokio::sync::oneshot;
@@ -47,8 +48,10 @@ pub fn run() {
             audio_playback::pause_track,
             audio_playback::seek_track,
             audio_playback::get_playback_state,
-            audio_playback::set_volume,
-            audio_playback::cleanup_player
+            audio_playback::set_fader_level,
+            audio_playback::set_trim_gain,
+            audio_playback::cleanup_player,
+            audio_playback::set_eq_params
         ])
         .on_window_event(move |window, event| {
             // Send shutdown command only once when close is requested
@@ -66,11 +69,14 @@ pub fn run() {
 
                 // Send shutdown command in a separate task to avoid blocking event loop
                 tauri::async_runtime::spawn(async move {
-                    if let Err(e) = audio_cmd_tx_clone.send(AudioThreadCommand::Shutdown(shutdown_tx)).await {
+                    if let Err(e) = audio_cmd_tx_clone
+                        .send(AudioThreadCommand::Shutdown(shutdown_tx))
+                        .await
+                    {
                         log::error!("Failed to send Shutdown command to audio thread: {}", e);
                         // If sending fails, we can probably just close the window
                         if let Err(close_err) = window_clone.close() {
-                             log::error!("Failed to close window after send error: {}", close_err);
+                            log::error!("Failed to close window after send error: {}", close_err);
                         }
                         return;
                     }
@@ -79,7 +85,10 @@ pub fn run() {
                     log::info!("Waiting for audio thread shutdown confirmation...");
                     match shutdown_rx.await {
                         Ok(_) => log::info!("Audio thread confirmed shutdown."),
-                        Err(e) => log::error!("Failed to receive shutdown confirmation from audio thread: {}", e),
+                        Err(e) => log::error!(
+                            "Failed to receive shutdown confirmation from audio thread: {}",
+                            e
+                        ),
                     }
 
                     // Optionally wait a short moment for thread to potentially process (Probably not needed now)
@@ -87,7 +96,7 @@ pub fn run() {
                     log::info!("Proceeding with window close after sending Shutdown command.");
                     // Now allow the window to close
                     if let Err(e) = window_clone.close() {
-                         log::error!("Failed to close window: {}", e);
+                        log::error!("Failed to close window: {}", e);
                     }
                 });
             }

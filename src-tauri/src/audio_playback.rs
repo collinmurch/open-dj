@@ -1,10 +1,12 @@
 // src-tauri/src/audio_playback.rs
+
 use std::collections::HashMap;
 use std::fs::File;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::playback_types::{AudioThreadCommand, PlaybackState};
+use crate::audio_effects::EqSource;
+use crate::playback_types::{AudioThreadCommand, EqParams, PlaybackState};
 use rodio::{OutputStream, OutputStreamHandle, Sink, buffer::SamplesBuffer};
 use symphonia::core::{
     audio::SampleBuffer,
@@ -40,11 +42,20 @@ impl AppState {
 
 // Data managed locally ONLY within the audio thread
 struct AudioThreadDeckState {
+    // Keep the sink for playback control
     sink: Sink,
+    // Store the raw audio data for seeking/rebuilding
+    decoded_samples: Arc<Vec<f32>>, // Use Arc for potential cheap cloning
+    sample_rate: f32,
+    // Playback timing state
     playback_start_time: Option<Instant>,
     paused_position: Option<Duration>,
     duration: Duration,
-    is_playing: bool, // Track actual sink state
+    is_playing: bool,
+    // Shared EQ parameters
+    eq_params: Arc<Mutex<EqParams>>,
+    trim_gain: Arc<Mutex<f32>>, // Add trim gain state (linear)
+    // Fader level is controlled via sink.volume(), no separate state needed here
 }
 
 // --- Decoding Logic (Moved from audio_processor.rs) ---
@@ -285,7 +296,10 @@ pub async fn load_track(
     // Just set the loading flag in the logical state immediately for the UI
     // The audio thread will emit the full state once loading finishes/fails.
     {
-        let mut states = state.logical_playback_states.lock().map_err(|_| "Failed to lock logical state for loading flag".to_string())?;
+        let mut states = state
+            .logical_playback_states
+            .lock()
+            .map_err(|_| "Failed to lock logical state for loading flag".to_string())?;
         let logical_state = states.entry(deck_id.to_string()).or_default();
         logical_state.is_loading = true;
         logical_state.error = None; // Clear previous errors on new load attempt
@@ -387,23 +401,90 @@ pub async fn cleanup_player(state: State<'_, AppState>, deck_id: String) -> Resu
 }
 
 #[tauri::command]
-pub async fn set_volume(
+pub async fn set_fader_level(
     state: State<'_, AppState>,
     deck_id: String,
-    volume: f32,
+    level: f32, // Expect linear level 0.0 - 1.0
 ) -> Result<(), String> {
-    // Clamp volume to a reasonable range (e.g., 0.0 to 2.0)
-    let clamped_volume = volume.clamp(0.0, 2.0);
-    log::info!("CMD SetVolume: Deck '{}' to {:.2}", deck_id, clamped_volume);
-    // No optimistic update needed for volume
+    // Clamp level to 0.0 - 1.0 (sink volume is linear)
+    let clamped_level = level.clamp(0.0, 1.0);
+    log::info!(
+        "CMD SetFaderLevel: Deck '{}' to {:.2}",
+        deck_id,
+        clamped_level
+    );
     state
         .audio_command_sender
-        .send(AudioThreadCommand::SetVolume {
+        .send(AudioThreadCommand::SetFaderLevel {
             deck_id,
-            volume: clamped_volume,
+            level: clamped_level, // Send linear level
         })
         .await
-        .map_err(|e| format!("CMD SetVolume: Failed to send command: {}", e))
+        .map_err(|e| format!("CMD SetFaderLevel: Failed to send command: {}", e))
+}
+
+#[tauri::command]
+pub async fn set_trim_gain(
+    state: State<'_, AppState>,
+    deck_id: String,
+    gain_db: f32, // Expect dB value from UI
+) -> Result<(), String> {
+    // Clamp dB range (e.g., -12dB to +12dB)
+    let clamped_db = gain_db.clamp(-12.0, 12.0);
+    // Convert dB to linear gain for internal processing
+    let linear_gain = 10.0f32.powf(clamped_db / 20.0);
+    log::info!(
+        "CMD SetTrimGain: Deck '{}' to {:.1} dB (Linear: {:.3})",
+        deck_id,
+        clamped_db,
+        linear_gain
+    );
+    state
+        .audio_command_sender
+        .send(AudioThreadCommand::SetTrimGain {
+            deck_id,
+            gain: linear_gain, // Send linear gain
+        })
+        .await
+        .map_err(|e| format!("CMD SetTrimGain: Failed to send command: {}", e))
+}
+
+#[tauri::command]
+pub async fn set_eq_params(
+    state: State<'_, AppState>,
+    deck_id: String,
+    low_gain_db: f32,
+    mid_gain_db: f32,
+    high_gain_db: f32,
+) -> Result<(), String> {
+    log::info!(
+        "Tauri command `set_eq_params` invoked for deck '{}'",
+        deck_id
+    );
+
+    // Adjust clamp range: Deeper cut (-26dB), less boost (+6dB)
+    let clamped_low = low_gain_db.clamp(-26.0, 6.0);
+    let clamped_mid = mid_gain_db.clamp(-26.0, 6.0);
+    let clamped_high = high_gain_db.clamp(-26.0, 6.0);
+
+    log::info!(
+        "CMD SetEq: Deck '{}' Low: {:.1}dB, Mid: {:.1}dB, High: {:.1}dB",
+        deck_id,
+        clamped_low,
+        clamped_mid,
+        clamped_high
+    );
+    let params = EqParams {
+        low_gain_db: clamped_low,
+        mid_gain_db: clamped_mid,
+        high_gain_db: clamped_high,
+    };
+
+    state
+        .audio_command_sender
+        .send(AudioThreadCommand::SetEq { deck_id, params })
+        .await
+        .map_err(|e| format!("CMD SetEq: Failed to send command: {}", e))
 }
 
 // --- Audio Thread Implementation (Placeholder - to be implemented) ---
@@ -419,7 +500,6 @@ pub fn run_audio_thread(app_handle: AppHandle, mut receiver: mpsc::Receiver<Audi
                 "Audio Thread: Failed to get output stream: {}. Thread exiting.",
                 e
             );
-            // We could potentially emit a global error event here
             return;
         }
     };
@@ -442,7 +522,7 @@ pub fn run_audio_thread(app_handle: AppHandle, mut receiver: mpsc::Receiver<Audi
     rt.block_on(async move {
         log::info!("Audio thread entering main loop.");
         let mut should_shutdown = false;
-        let mut time_update_interval = tokio::time::interval(Duration::from_millis(100));
+        let mut time_update_interval = tokio::time::interval(Duration::from_millis(250));
 
         while !should_shutdown {
             tokio::select! {
@@ -455,7 +535,6 @@ pub fn run_audio_thread(app_handle: AppHandle, mut receiver: mpsc::Receiver<Audi
                                     audio_thread_handle_init(&deck_id, &mut local_deck_states, &handle, &app_handle);
                                 }
                                 AudioThreadCommand::LoadTrack { deck_id, path } => {
-                                    // Clone app_handle specifically for this async operation
                                     let app_handle_clone = app_handle.clone();
                                     audio_thread_handle_load(deck_id, path, &mut local_deck_states, app_handle_clone).await;
                                 }
@@ -468,8 +547,14 @@ pub fn run_audio_thread(app_handle: AppHandle, mut receiver: mpsc::Receiver<Audi
                                 AudioThreadCommand::Seek { deck_id, position_seconds } => {
                                     audio_thread_handle_seek(&deck_id, position_seconds, &mut local_deck_states, &app_handle);
                                 }
-                                AudioThreadCommand::SetVolume { deck_id, volume } => {
-                                    audio_thread_handle_set_volume(&deck_id, volume, &mut local_deck_states);
+                                AudioThreadCommand::SetFaderLevel { deck_id, level } => {
+                                    audio_thread_handle_set_fader_level(&deck_id, level, &mut local_deck_states);
+                                }
+                                AudioThreadCommand::SetTrimGain { deck_id, gain } => {
+                                    audio_thread_handle_set_trim_gain(&deck_id, gain, &mut local_deck_states);
+                                }
+                                AudioThreadCommand::SetEq { deck_id, params } => {
+                                    audio_thread_handle_set_eq(&deck_id, params, &mut local_deck_states);
                                 }
                                 AudioThreadCommand::CleanupDeck(deck_id) => {
                                     audio_thread_handle_cleanup(&deck_id, &mut local_deck_states);
@@ -477,9 +562,7 @@ pub fn run_audio_thread(app_handle: AppHandle, mut receiver: mpsc::Receiver<Audi
                                 AudioThreadCommand::Shutdown(shutdown_complete_tx) => {
                                     log::info!("Audio Thread: Shutdown received. Cleaning up decks.");
                                     local_deck_states.clear();
-                                    receiver.close();
                                     should_shutdown = true;
-                                    // Send signal *after* cleanup, just before loop exit
                                     if shutdown_complete_tx.send(()).is_err() {
                                          log::error!("Audio Thread: Failed to send shutdown completion signal.");
                                     }
@@ -488,17 +571,14 @@ pub fn run_audio_thread(app_handle: AppHandle, mut receiver: mpsc::Receiver<Audi
                         }
                         None => {
                            log::info!("Audio Thread: Command channel closed. Exiting loop.");
-                           should_shutdown = true; // Exit if channel closes
+                           should_shutdown = true;
                         }
                     }
                 }
-
-                // Handle periodic time updates for playing decks
                 _ = time_update_interval.tick(), if !should_shutdown => {
                     audio_thread_handle_time_update(&mut local_deck_states, &app_handle);
                 }
             }
-            // Loop continues until should_shutdown is true
         }
         log::info!("Audio thread loop finished.");
     });
@@ -510,23 +590,31 @@ pub fn run_audio_thread(app_handle: AppHandle, mut receiver: mpsc::Receiver<Audi
 fn audio_thread_handle_init(
     deck_id: &str,
     local_states: &mut HashMap<String, AudioThreadDeckState>,
-    audio_handle: &OutputStreamHandle, // Need the handle from the audio thread
+    audio_handle: &OutputStreamHandle,
     app_handle: &AppHandle,
 ) {
     if !local_states.contains_key(deck_id) {
         match Sink::try_new(audio_handle) {
             Ok(sink) => {
+                let initial_eq_params = Arc::new(Mutex::new(EqParams::default()));
+                let initial_trim_gain = Arc::new(Mutex::new(1.0f32)); // Default trim = 1.0 (0dB)
                 local_states.insert(
                     deck_id.to_string(),
                     AudioThreadDeckState {
                         sink,
+                        // Initialize audio data fields as empty/default
+                        decoded_samples: Arc::new(Vec::new()),
+                        sample_rate: 0.0, // Placeholder, will be set on load
                         duration: Duration::ZERO,
                         is_playing: false,
                         playback_start_time: None,
                         paused_position: None,
+                        eq_params: initial_eq_params,
+                        trim_gain: initial_trim_gain, // Initialize trim gain
                     },
                 );
                 log::info!("Audio Thread: Initialized sink for deck '{}'", deck_id);
+                emit_state_update(app_handle, deck_id, &PlaybackState::default());
             }
             Err(e) => {
                 log::error!(
@@ -543,24 +631,22 @@ fn audio_thread_handle_init(
 }
 
 async fn audio_thread_handle_load(
-    deck_id: String, // Take ownership for spawn_blocking
-    path: String,    // Take ownership for spawn_blocking
+    deck_id: String,
+    path: String,
     local_states: &mut HashMap<String, AudioThreadDeckState>,
-    app_handle: AppHandle, // Take ownership for spawn_blocking
+    app_handle: AppHandle,
 ) {
     log::debug!("Audio Thread: Handling LoadTrack for '{}'", deck_id);
 
-    // Get mutable access before potential async operations
-    let deck_state_entry = local_states.get_mut(&deck_id);
+    let (eq_params_arc, trim_gain_arc) = match local_states.get(&deck_id) {
+        Some(state) => (state.eq_params.clone(), state.trim_gain.clone()),
+        None => {
+            log::error!("Audio Thread: Deck '{}' not found for LoadTrack. Cannot get params.", deck_id);
+            emit_error(&app_handle, &deck_id, "Deck not initialized before load.");
+            return;
+        }
+    };
 
-    if deck_state_entry.is_none() {
-        log::error!("Audio Thread: Deck '{}' not found during LoadTrack handling.", deck_id);
-        // Emit error? Or rely on init being called first?
-        emit_error(&app_handle, &deck_id, "Deck not initialized before load.");
-        return;
-    }
-
-    // Clone necessary items for spawn_blocking
     let path_clone = path.clone();
     let app_handle_clone = app_handle.clone();
     let deck_id_clone = deck_id.clone();
@@ -571,55 +657,83 @@ async fn audio_thread_handle_load(
 
     match decode_handle.await {
         Ok(decode_result) => {
-            // Re-access deck_state (assuming local_states wasn't borrowed across await)
-            // This is tricky. A better approach might involve sending results back via another channel
-            // or restructuring to avoid holding mutable ref across await.
-            // For now, let's assume it's okay for this specific flow, but be aware.
-             if let Some(deck_state) = local_states.get_mut(&deck_id) { // Re-borrow mutably
-                 match decode_result {
-                     Ok((samples, sample_rate)) => {
-                         let duration = Duration::from_secs_f64(samples.len() as f64 / sample_rate as f64);
-                         log::info!("Audio Thread: Decoded '{}'. Duration: {:?}, Rate: {}", path, duration, sample_rate);
+            if let Some(deck_state) = local_states.get_mut(&deck_id) {
+                match decode_result {
+                    Ok((samples, rate)) => {
+                        let duration = Duration::from_secs_f64(samples.len() as f64 / rate as f64);
+                        log::info!(
+                            "Audio Thread: Decoded '{}'. Duration: {:?}, Rate: {}, Samples: {}",
+                            path, duration, rate, samples.len()
+                        );
 
-                         deck_state.sink.stop();
-                         deck_state.sink.clear();
-                         let source = SamplesBuffer::new(1, sample_rate as u32, samples);
-                         deck_state.sink.append(source);
-                         deck_state.sink.pause();
+                        // *** Store decoded data in the state ***
+                        deck_state.decoded_samples = Arc::new(samples); // Store as Arc
+                        deck_state.sample_rate = rate;
+                        deck_state.duration = duration;
 
-                         deck_state.duration = duration;
-                         deck_state.is_playing = false;
-                         deck_state.playback_start_time = None;
-                         deck_state.paused_position = Some(Duration::ZERO);
+                        // Create the initial source with Trim and EQ
+                        let buffer = SamplesBuffer::new(1, rate as u32, (*deck_state.decoded_samples).clone());
+                        // Pass both param Arcs
+                        let eq_source = EqSource::new(buffer, eq_params_arc.clone(), trim_gain_arc.clone());
 
-                         let state_to_emit = PlaybackState {
-                             is_playing: false,
-                             is_loading: false,
-                             current_time: 0.0,
-                             duration: duration.as_secs_f64(),
-                             error: None,
-                         };
-                         emit_state_update(&app_handle, &deck_id, &state_to_emit);
-                     }
-                     Err(e) => {
-                         log::error!("Audio Thread: Decode failed for deck '{}': {}", deck_id, e);
-                         emit_error(&app_handle, &deck_id, &e);
-                         let state_to_emit = PlaybackState {
-                             is_loading: false,
-                             error: Some(e),
-                             ..Default::default()
-                         };
-                         emit_state_update(&app_handle, &deck_id, &state_to_emit);
-                     }
-                 }
-             } else {
-                  log::error!("Audio Thread: Deck '{}' disappeared after decode?!", deck_id);
-             }
+                        deck_state.sink.stop();
+                        deck_state.sink.clear();
+                        deck_state.sink.append(eq_source);
+                        deck_state.sink.pause();
+                        // Reset fader volume on sink to 1.0 on new load
+                        deck_state.sink.set_volume(1.0);
+
+                        deck_state.is_playing = false;
+                        deck_state.playback_start_time = None;
+                        deck_state.paused_position = Some(Duration::ZERO);
+
+                        let state_to_emit = PlaybackState {
+                            is_playing: false,
+                            is_loading: false,
+                            current_time: 0.0,
+                            duration: duration.as_secs_f64(),
+                            error: None,
+                        };
+                        emit_state_update(&app_handle, &deck_id, &state_to_emit);
+                    }
+                    Err(e) => {
+                        log::error!("Audio Thread: Decode failed for deck '{}': {}", deck_id, e);
+                        deck_state.decoded_samples = Arc::new(Vec::new());
+                        deck_state.sample_rate = 0.0;
+                        deck_state.duration = Duration::ZERO;
+                        deck_state.is_playing = false;
+                        deck_state.playback_start_time = None;
+                        deck_state.paused_position = None;
+
+                        emit_error(&app_handle, &deck_id, &e);
+                        let state_to_emit = PlaybackState {
+                            is_loading: false,
+                            error: Some(e),
+                            ..Default::default()
+                        };
+                        emit_state_update(&app_handle, &deck_id, &state_to_emit);
+                    }
+                }
+            } else {
+                log::error!("Audio Thread: Deck '{}' disappeared after decode?!", deck_id);
+            }
         }
         Err(join_error) => {
-            log::error!("Audio Thread: Decode task panicked for deck '{}': {}", deck_id_clone, join_error);
+            log::error!(
+                "Audio Thread: Decode task panicked for deck '{}': {}",
+                deck_id_clone,
+                join_error
+            );
             let error_msg = format!("Audio decoding task failed: {}", join_error);
             emit_error(&app_handle_clone, &deck_id_clone, &error_msg);
+            if let Some(deck_state) = local_states.get_mut(&deck_id_clone) {
+                deck_state.decoded_samples = Arc::new(Vec::new());
+                deck_state.sample_rate = 0.0;
+                deck_state.duration = Duration::ZERO;
+                deck_state.is_playing = false;
+                deck_state.playback_start_time = None;
+                deck_state.paused_position = None;
+            }
             let state_to_emit = PlaybackState {
                 is_loading: false,
                 error: Some(error_msg),
@@ -635,28 +749,28 @@ fn audio_thread_handle_play(
     local_states: &mut HashMap<String, AudioThreadDeckState>,
     app_handle: &AppHandle,
 ) {
-     log::debug!("Audio Thread: Handling Play for '{}'", deck_id);
-     if let Some(deck_state) = local_states.get_mut(deck_id) {
-         if deck_state.sink.empty() {
-             log::warn!("Audio Thread: Play called on empty sink for '{}'", deck_id);
-             emit_error(app_handle, deck_id, "Cannot play: No track loaded.");
-         } else if !deck_state.is_playing {
-             deck_state.sink.play();
-             deck_state.is_playing = true;
-             deck_state.playback_start_time = Some(Instant::now());
-             log::info!("Audio Thread: Playback started for '{}'", deck_id);
-             let state_to_emit = PlaybackState {
-                 is_playing: true,
-                 current_time: deck_state.paused_position.unwrap_or_default().as_secs_f64(),
-                 duration: deck_state.duration.as_secs_f64(),
-                 is_loading: false,
-                 error: None,
-             };
-             emit_state_update(app_handle, deck_id, &state_to_emit);
-         } else {
-              log::trace!("Audio Thread: Already playing '{}'", deck_id);
-         }
-     }
+    log::debug!("Audio Thread: Handling Play for '{}'", deck_id);
+    if let Some(deck_state) = local_states.get_mut(deck_id) {
+        if deck_state.sink.empty() {
+            log::warn!("Audio Thread: Play called on empty sink for '{}'", deck_id);
+            emit_error(app_handle, deck_id, "Cannot play: No track loaded.");
+        } else if !deck_state.is_playing {
+            deck_state.sink.play();
+            deck_state.is_playing = true;
+            deck_state.playback_start_time = Some(Instant::now());
+            log::info!("Audio Thread: Playback started for '{}'", deck_id);
+            let state_to_emit = PlaybackState {
+                is_playing: true,
+                current_time: deck_state.paused_position.unwrap_or_default().as_secs_f64(),
+                duration: deck_state.duration.as_secs_f64(),
+                is_loading: false,
+                error: None,
+            };
+            emit_state_update(app_handle, deck_id, &state_to_emit);
+        } else {
+            log::trace!("Audio Thread: Already playing '{}'", deck_id);
+        }
+    }
 }
 
 fn audio_thread_handle_pause(
@@ -665,28 +779,36 @@ fn audio_thread_handle_pause(
     app_handle: &AppHandle,
 ) {
     log::debug!("Audio Thread: Handling Pause START for '{}'", deck_id);
-     if let Some(deck_state) = local_states.get_mut(deck_id) {
-         if deck_state.is_playing {
-             deck_state.sink.pause();
-             deck_state.is_playing = false;
-             let elapsed_since_play = deck_state.playback_start_time.map_or(Duration::ZERO, |st| st.elapsed());
-             let previous_pos = deck_state.paused_position.unwrap_or_default();
-             let new_paused_pos = previous_pos + elapsed_since_play;
-             deck_state.paused_position = Some(new_paused_pos);
-             deck_state.playback_start_time = None;
-             log::info!("Audio Thread: Playback paused for '{}' at {:?}", deck_id, new_paused_pos);
-             let state_to_emit = PlaybackState {
-                 is_playing: false,
-                 current_time: new_paused_pos.as_secs_f64().min(deck_state.duration.as_secs_f64()),
-                 duration: deck_state.duration.as_secs_f64(),
-                 is_loading: false,
-                 error: None,
-             };
-             emit_state_update(app_handle, deck_id, &state_to_emit);
-         } else {
-             log::trace!("Audio Thread: Already paused '{}'", deck_id);
-         }
-     }
+    if let Some(deck_state) = local_states.get_mut(deck_id) {
+        if deck_state.is_playing {
+            deck_state.sink.pause();
+            deck_state.is_playing = false;
+            let elapsed_since_play = deck_state
+                .playback_start_time
+                .map_or(Duration::ZERO, |st| st.elapsed());
+            let previous_pos = deck_state.paused_position.unwrap_or_default();
+            let new_paused_pos = previous_pos + elapsed_since_play;
+            deck_state.paused_position = Some(new_paused_pos);
+            deck_state.playback_start_time = None;
+            log::info!(
+                "Audio Thread: Playback paused for '{}' at {:?}",
+                deck_id,
+                new_paused_pos
+            );
+            let state_to_emit = PlaybackState {
+                is_playing: false,
+                current_time: new_paused_pos
+                    .as_secs_f64()
+                    .min(deck_state.duration.as_secs_f64()),
+                duration: deck_state.duration.as_secs_f64(),
+                is_loading: false,
+                error: None,
+            };
+            emit_state_update(app_handle, deck_id, &state_to_emit);
+        } else {
+            log::trace!("Audio Thread: Already paused '{}'", deck_id);
+        }
+    }
     log::debug!("Audio Thread: Handling Pause END for '{}'", deck_id);
 }
 
@@ -696,112 +818,216 @@ fn audio_thread_handle_seek(
     local_states: &mut HashMap<String, AudioThreadDeckState>,
     app_handle: &AppHandle,
 ) {
-     log::debug!("Audio Thread: Handling Seek START for '{}' to {:.2}s", deck_id, position_seconds);
-     if let Some(deck_state) = local_states.get_mut(deck_id) {
-         if deck_state.duration == Duration::ZERO {
-             log::warn!("Audio Thread: Cannot seek deck '{}', duration unknown.", deck_id);
-             emit_error(app_handle, deck_id, "Cannot seek: Track duration not known.");
-             return;
-         }
-         let target_duration = Duration::from_secs_f64(position_seconds.max(0.0));
-         match deck_state.sink.try_seek(target_duration) {
-             Ok(_) => {
-                 let clamped_time_secs = position_seconds.max(0.0).min(deck_state.duration.as_secs_f64());
-                 let seek_pos_duration = Duration::from_secs_f64(clamped_time_secs);
-                 log::info!("Audio Thread: Seek successful for '{}' to {:?}", deck_id, seek_pos_duration);
-                 if deck_state.is_playing {
-                     deck_state.playback_start_time = Some(Instant::now());
-                     deck_state.paused_position = Some(seek_pos_duration);
-                 } else {
-                     deck_state.playback_start_time = None;
-                     deck_state.paused_position = Some(seek_pos_duration);
-                 }
-                 let state_to_emit = PlaybackState {
-                     is_playing: deck_state.is_playing,
-                     current_time: clamped_time_secs,
-                     duration: deck_state.duration.as_secs_f64(),
-                     is_loading: false,
-                     error: None,
-                 };
-                 emit_state_update(app_handle, deck_id, &state_to_emit);
+    log::debug!(
+        "Audio Thread: Handling Seek START for '{}' to {:.2}s",
+        deck_id,
+        position_seconds
+    );
+    if let Some(deck_state) = local_states.get_mut(deck_id) {
+        // Check if track is loaded
+        if deck_state.duration == Duration::ZERO || deck_state.sample_rate <= 0.0 || deck_state.decoded_samples.is_empty() {
+            log::warn!(
+                "Audio Thread: Cannot seek deck '{}', track not fully loaded or invalid state.",
+                deck_id
+            );
+            emit_error(
+                app_handle,
+                deck_id,
+                "Cannot seek: Track not loaded or invalid state.",
+            );
+            return;
+        }
+
+        // Clamp seek position and calculate sample index
+        let clamped_time_secs = position_seconds.max(0.0).min(deck_state.duration.as_secs_f64());
+        let target_sample_index = (clamped_time_secs * deck_state.sample_rate as f64).round() as usize;
+        let seek_pos_duration = Duration::from_secs_f64(clamped_time_secs);
+
+        log::info!(
+            "Audio Thread: Seeking '{}' to {:?} (sample index {})",
+            deck_id,
+            seek_pos_duration,
+            target_sample_index
+        );
+
+        // Rebuild the source chain
+        let current_fader_level = deck_state.sink.volume(); // Preserve current fader level
+        deck_state.sink.stop();
+        deck_state.sink.clear();
+
+        // Ensure index is within bounds
+        let start_index = target_sample_index.min(deck_state.decoded_samples.len());
+
+        // Create a new SamplesBuffer starting from the seek position
+        // We need to clone the relevant slice of the Arc<Vec<f32>> data.
+        // This involves creating a new Vec, which is less efficient than rodio's internal seek
+        // but necessary for wrapped sources.
+        let remaining_samples: Vec<f32> = deck_state.decoded_samples[start_index..].to_vec();
+        
+        if remaining_samples.is_empty() {
+            log::warn!("Audio Thread: Seek position {} is at or beyond the end of the track for deck '{}'", clamped_time_secs, deck_id);
+            // Treat as seeking to the end
+            deck_state.paused_position = Some(deck_state.duration);
+            deck_state.playback_start_time = None; // Ensure playback doesn't restart
+            deck_state.is_playing = false; // Mark as not playing
+        } else {
+             let new_buffer = SamplesBuffer::new(1, deck_state.sample_rate as u32, remaining_samples);
+             // Rewrap with EQ and Trim
+             let new_eq_source = EqSource::new(new_buffer, deck_state.eq_params.clone(), deck_state.trim_gain.clone());
+             deck_state.sink.append(new_eq_source);
+             deck_state.sink.set_volume(current_fader_level); // Restore fader level
+
+             // Update timing state
+             deck_state.paused_position = Some(seek_pos_duration);
+             if deck_state.is_playing {
+                 deck_state.playback_start_time = Some(Instant::now());
+                 deck_state.sink.play(); // Resume playback if it was playing
+             } else {
+                 deck_state.playback_start_time = None;
+                 deck_state.sink.pause(); // Ensure sink is paused if state was paused
              }
-             Err(e) => {
-                 log::error!("Audio Thread: Seek failed for '{}': {:?}", deck_id, e);
-                 emit_error(app_handle, deck_id, &format!("Seek failed: {:?}", e));
-             }
-         }
-     }
+        }
+
+        // Emit the state update regardless of whether samples remained
+        let state_to_emit = PlaybackState {
+            is_playing: deck_state.is_playing,
+            current_time: clamped_time_secs,
+            duration: deck_state.duration.as_secs_f64(),
+            is_loading: false,
+            error: None,
+        };
+        emit_state_update(app_handle, deck_id, &state_to_emit);
+
+    } else {
+         log::warn!("Audio Thread: Seek ignored for unknown deck '{}'", deck_id);
+    }
     log::debug!("Audio Thread: Handling Seek END for '{}'", deck_id);
 }
 
-fn audio_thread_handle_set_volume(
+fn audio_thread_handle_set_fader_level(
     deck_id: &str,
-    volume: f32,
+    level: f32, // Linear level 0.0 - 1.0
     local_states: &mut HashMap<String, AudioThreadDeckState>,
 ) {
-     log::debug!("Audio Thread: Handling SetVolume START for '{}' to {:.2}", deck_id, volume);
-     if let Some(deck_state) = local_states.get_mut(deck_id) {
-         deck_state.sink.set_volume(volume); // rodio clamps internally anyway (0.0+) but we clamped on command entry
-         // Optionally store volume in deck_state if needed later
-         // deck_state.volume = volume;
-         log::info!("Audio Thread: Volume set for '{}' to {:.2}", deck_id, volume);
-     } else {
-         log::warn!("Audio Thread: SetVolume ignored for unknown deck '{}'", deck_id);
-     }
-     log::debug!("Audio Thread: Handling SetVolume END for '{}'", deck_id);
+    log::debug!(
+        "Audio Thread: Handling SetFaderLevel START for '{}' to {:.2}",
+        deck_id,
+        level
+    );
+    if let Some(deck_state) = local_states.get_mut(deck_id) {
+        // Use sink's volume control for the fader
+        deck_state.sink.set_volume(level);
+        log::info!("Audio Thread: Fader level (sink volume) set for '{}' to {:.2}", deck_id, level);
+    } else {
+        log::warn!("Audio Thread: SetFaderLevel ignored for unknown deck '{}'", deck_id);
+    }
+    log::debug!("Audio Thread: Handling SetFaderLevel END for '{}'", deck_id);
+}
+
+fn audio_thread_handle_set_trim_gain(
+    deck_id: &str,
+    gain: f32, // Linear gain
+    local_states: &mut HashMap<String, AudioThreadDeckState>,
+) {
+    log::debug!(
+        "Audio Thread: Handling SetTrimGain START for '{}' to {:.3}",
+        deck_id,
+        gain
+    );
+    if let Some(deck_state) = local_states.get_mut(deck_id) {
+        // Update the shared trim gain value
+        *deck_state.trim_gain.lock().expect("Failed to lock trim gain for update") = gain;
+        log::info!("Audio Thread: Trim gain updated in shared state for '{}' to {:.3}", deck_id, gain);
+        // Note: EqSource will pick this up automatically in its `next` method
+    } else {
+        log::warn!("Audio Thread: SetTrimGain ignored for unknown deck '{}'", deck_id);
+    }
+    log::debug!("Audio Thread: Handling SetTrimGain END for '{}'", deck_id);
+}
+
+fn audio_thread_handle_set_eq(
+    deck_id: &str,
+    new_params: EqParams,
+    local_states: &mut HashMap<String, AudioThreadDeckState>,
+) {
+    log::debug!(
+        "Audio Thread: Handling SetEq START for '{}': {:?}",
+        deck_id,
+        new_params
+    );
+    if let Some(deck_state) = local_states.get_mut(deck_id) {
+        // Lock the shared parameters and update them
+        let mut params_guard = deck_state
+            .eq_params
+            .lock()
+            .expect("Failed to lock EQ params for update");
+        *params_guard = new_params;
+        // The EqSource instance running in the sink will pick up these changes
+        // via the Arc<Mutex> the next time it checks.
+        log::info!(
+            "Audio Thread: EQ params updated in shared state for '{}'",
+            deck_id
+        );
+    } else {
+        log::warn!("Audio Thread: SetEq ignored for unknown deck '{}'", deck_id);
+    }
+    log::debug!("Audio Thread: Handling SetEq END for '{}'", deck_id);
+}
+
+fn audio_thread_handle_time_update(
+    local_states: &mut HashMap<String, AudioThreadDeckState>,
+    app_handle: &AppHandle,
+) {
+    for (deck_id, deck_state) in local_states.iter_mut() {
+        // Check if the sink is actually playing, not just our logical flag
+        // Check is_playing first as a quick exit
+        if deck_state.is_playing && !deck_state.sink.is_paused() && !deck_state.sink.empty() {
+            let current_elapsed = deck_state
+                .playback_start_time
+                .map_or(Duration::ZERO, |st| st.elapsed());
+            let base_pos = deck_state.paused_position.unwrap_or_default();
+            let total_pos = base_pos + current_elapsed;
+            let current_time_secs = total_pos
+                .as_secs_f64()
+                .min(deck_state.duration.as_secs_f64());
+
+            // Check if the track has effectively ended
+            // Add a small buffer (e.g., 50ms) to avoid premature ending due to timing slight inaccuracies
+            let end_buffer = Duration::from_millis(50);
+            let has_ended = deck_state.duration > Duration::ZERO
+                && (total_pos + end_buffer >= deck_state.duration);
+
+            let state_update = PlaybackState {
+                current_time: current_time_secs,
+                is_playing: !has_ended, // Set is_playing to false if it has ended
+                duration: deck_state.duration.as_secs_f64(),
+                is_loading: false,
+                error: None,
+                // eq_params: deck_state.eq_params.lock().unwrap().clone(), // If adding to state
+            };
+            emit_state_update(app_handle, deck_id, &state_update);
+
+            if has_ended {
+                log::info!(
+                    "Audio Thread: Track finished for '{}' based on time update.",
+                    deck_id
+                );
+                // Ensure the sink is paused on the audio thread side
+                deck_state.sink.pause(); // Pause the actual sink
+                deck_state.is_playing = false;
+                deck_state.playback_start_time = None;
+                // Set paused position precisely to the end
+                deck_state.paused_position = Some(deck_state.duration);
+            }
+        }
+    }
 }
 
 fn audio_thread_handle_cleanup(
     deck_id: &str,
     local_states: &mut HashMap<String, AudioThreadDeckState>,
 ) {
-     if local_states.remove(deck_id).is_some() {
-         log::info!("Audio Thread: Cleaned up '{}'", deck_id);
-     }
+    if local_states.remove(deck_id).is_some() {
+        log::info!("Audio Thread: Cleaned up '{}'", deck_id);
+    }
 }
-
-fn audio_thread_handle_time_update(
-     local_states: &mut HashMap<String, AudioThreadDeckState>,
-     app_handle: &AppHandle,
- ) {
-     for (deck_id, deck_state) in local_states.iter_mut() {
-         if deck_state.is_playing && !deck_state.sink.is_paused() && !deck_state.sink.empty() {
-             let current_elapsed = deck_state.playback_start_time.map_or(Duration::ZERO, |st| st.elapsed());
-             let base_pos = deck_state.paused_position.unwrap_or_default();
-             let total_pos = base_pos + current_elapsed;
-             let current_time_secs = total_pos.as_secs_f64().min(deck_state.duration.as_secs_f64());
-
-             let state_update = PlaybackState {
-                 current_time: current_time_secs,
-                 is_playing: deck_state.is_playing,
-                 duration: deck_state.duration.as_secs_f64(),
-                 is_loading: false,
-                 error: None,
-             };
-             emit_state_update(app_handle, deck_id, &state_update);
-
-             if current_time_secs >= deck_state.duration.as_secs_f64() && deck_state.duration > Duration::ZERO {
-                 log::info!("Audio Thread: Track finished for '{}'", deck_id);
-                 deck_state.sink.pause();
-                 deck_state.is_playing = false;
-                 deck_state.playback_start_time = None;
-                 deck_state.paused_position = Some(deck_state.duration);
-                 let final_state = PlaybackState {
-                     is_playing: false,
-                     current_time: deck_state.duration.as_secs_f64(),
-                     duration: deck_state.duration.as_secs_f64(),
-                     is_loading: false,
-                     error: None,
-                 };
-                 emit_state_update(app_handle, deck_id, &final_state);
-             }
-         }
-     }
- }
-
-// --- TODO ---
-// - Implement actual Load/Play/Pause/Seek logic within the audio thread loop.
-// - Ensure correct state synchronization between logical state and audio thread state.
-// - Handle errors gracefully within the audio thread (e.g., decode errors) and emit them.
-// - Add volume control command/logic.
-// - Implement robust shutdown handling (e.g., wait for thread on close).

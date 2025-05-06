@@ -6,6 +6,8 @@
     } from "$lib/stores/playerStore";
     import VolumeAnalysis from "./VolumeAnalysis.svelte";
     import VerticalSlider from "./VerticalSlider.svelte";
+    import { invoke } from "@tauri-apps/api/core";
+    import { onDestroy } from "svelte"; // Import onDestroy
 
     // --- Props ---
     let {
@@ -37,8 +39,18 @@
     const playerStore: PlayerStore = createPlayerStore(deckId);
     // Use $playerStore directly in the template for auto-subscription
 
-    // --- Volume State ---
-    let volume = $state(1.0); // Default volume (0.0 to 2.0)
+    // --- Volume, Trim & EQ State ---
+    let trimDb = $state(0.0); // Trim control in dB (-12 to +12)
+    let faderLevel = $state(1.0); // Fader control linear (0.0 to 1.0)
+    let lowGainDb = $state(0.0);
+    let midGainDb = $state(0.0);
+    let highGainDb = $state(0.0);
+    let trimDebounceTimeout: number | undefined = undefined;
+    let faderDebounceTimeout: number | undefined = undefined;
+    let eqDebounceTimeout: number | undefined = undefined;
+    const TRIM_DEBOUNCE_MS = 50;
+    const FADER_DEBOUNCE_MS = 50;
+    const EQ_DEBOUNCE_MS = 50;
 
     // --- Derived analysis result based on filePath ---
     const trackInfo = $derived(
@@ -58,16 +70,17 @@
 
     // Effect to load audio data when filePath prop changes
     $effect(() => {
-        const currentFilePath = filePath; // Capture current prop value
-
+        const currentFilePath = filePath;
         if (!currentFilePath) {
+            // Reset controls when track unloaded
+            trimDb = 0;
+            faderLevel = 1.0;
+            lowGainDb = 0;
+            midGainDb = 0;
+            highGainDb = 0;
             return;
         }
-
-        // Call the store method to load the track via Rust
         playerStore.loadTrack(currentFilePath).catch((err) => {
-            // This catch is mostly for logging invoke errors from the store,
-            // state updates (including errors) come via events.
             console.error(
                 `[TrackPlayer ${deckId}] Error invoking loadTrack:`,
                 err,
@@ -77,25 +90,80 @@
 
     // Effect for component cleanup
     $effect(() => {
-        // Return the cleanup function from the store
         return () => {
             playerStore.cleanup();
+            if (trimDebounceTimeout !== undefined)
+                clearTimeout(trimDebounceTimeout);
+            if (faderDebounceTimeout !== undefined)
+                clearTimeout(faderDebounceTimeout);
+            if (eqDebounceTimeout !== undefined)
+                clearTimeout(eqDebounceTimeout);
         };
     });
 
-    // Effect to update volume in Rust when local state changes
+    // Effect to update Fader Level in Rust
     $effect(() => {
-        const currentVolume = volume; // Get current value directly
-        console.log(
-            `TrackPlayer ${deckId}: Volume changed to ${currentVolume}, calling store.setVolume`,
-        );
-        playerStore.setVolume(currentVolume).catch((err: unknown) => {
-            // Added err type
-            console.error(
-                `[TrackPlayer ${deckId}] Error invoking setVolume:`,
-                err,
-            );
-        });
+        const currentFaderLevel = faderLevel;
+        if (faderDebounceTimeout !== undefined)
+            clearTimeout(faderDebounceTimeout);
+        faderDebounceTimeout = setTimeout(async () => {
+            console.log(`Updating Fader for ${deckId} to ${currentFaderLevel}`);
+            try {
+                await invoke("set_fader_level", {
+                    deckId,
+                    level: currentFaderLevel,
+                });
+            } catch (err: unknown) {
+                console.error(
+                    `[TrackPlayer ${deckId}] Error invoking set_fader_level:`,
+                    err,
+                );
+            }
+        }, FADER_DEBOUNCE_MS);
+    });
+
+    // Effect to update Trim Gain in Rust
+    $effect(() => {
+        const currentTrimDb = trimDb;
+        if (trimDebounceTimeout !== undefined)
+            clearTimeout(trimDebounceTimeout);
+        trimDebounceTimeout = setTimeout(async () => {
+            console.log(`Updating Trim for ${deckId} to ${currentTrimDb} dB`);
+            try {
+                await invoke("set_trim_gain", {
+                    deckId,
+                    gainDb: currentTrimDb, // Send dB, Rust converts
+                });
+            } catch (err: unknown) {
+                console.error(
+                    `[TrackPlayer ${deckId}] Error invoking set_trim_gain:`,
+                    err,
+                );
+            }
+        }, TRIM_DEBOUNCE_MS);
+    });
+
+    // Effect to update EQ parameters in Rust
+    $effect(() => {
+        const paramsToSend = {
+            low_gain_db: lowGainDb,
+            mid_gain_db: midGainDb,
+            high_gain_db: highGainDb,
+        };
+        if (eqDebounceTimeout !== undefined) clearTimeout(eqDebounceTimeout);
+        eqDebounceTimeout = setTimeout(async () => {
+            console.log(`Updating EQ for ${deckId}:`, paramsToSend);
+            try {
+                await invoke("set_eq_params", {
+                    deckId,
+                    lowGainDb: paramsToSend.low_gain_db,
+                    midGainDb: paramsToSend.mid_gain_db,
+                    highGainDb: paramsToSend.high_gain_db,
+                });
+            } catch (err) {
+                console.error(`Failed to set EQ for ${deckId}:`, err);
+            }
+        }, EQ_DEBOUNCE_MS);
     });
 
     const SEEK_AMOUNT = 5; // Seek 5 seconds
@@ -208,15 +276,60 @@
     </div>
 
     <div class="player-body-area">
-        <VerticalSlider
-            id="volume-slider-{deckId}"
-            label="Volume"
-            min={0}
-            max={2}
-            step={0.05}
-            bind:value={volume}
-            debounceMs={50}
-        />
+        <!-- Mixer Controls Column -->
+        <div class="mixer-controls">
+            <VerticalSlider
+                id="trim-slider-{deckId}"
+                label="Trim (dB)"
+                outputMin={-12}
+                outputMax={12}
+                centerValue={0}
+                step={1}
+                bind:value={trimDb}
+                debounceMs={0}
+            />
+            <VerticalSlider
+                id="fader-slider-{deckId}"
+                label="Fader"
+                outputMin={0}
+                outputMax={1}
+                step={0.01}
+                bind:value={faderLevel}
+                debounceMs={0}
+            />
+            <VerticalSlider
+                id="low-eq-slider-{deckId}"
+                label="Low"
+                outputMin={-26}
+                outputMax={6}
+                centerValue={0}
+                step={1}
+                bind:value={lowGainDb}
+                debounceMs={0}
+            />
+            <VerticalSlider
+                id="mid-eq-slider-{deckId}"
+                label="Mid"
+                outputMin={-26}
+                outputMax={6}
+                centerValue={0}
+                step={1}
+                bind:value={midGainDb}
+                debounceMs={0}
+            />
+            <VerticalSlider
+                id="high-eq-slider-{deckId}"
+                label="High"
+                outputMin={-26}
+                outputMax={6}
+                centerValue={0}
+                step={1}
+                bind:value={highGainDb}
+                debounceMs={0}
+            />
+        </div>
+
+        <!-- Waveform Area -->
         <div class="waveform-area">
             <VolumeAnalysis
                 results={volumeAnalysisResult?.intervals ?? null}
@@ -314,6 +427,17 @@
         min-height: 130px;
     }
 
+    .mixer-controls {
+        display: flex;
+        flex-direction: row; /* Arrange sliders horizontally */
+        align-items: stretch; /* Stretch sliders vertically */
+        gap: 0.75rem; /* Space between sliders */
+        padding: 0.5rem 0; /* Add some vertical padding */
+        /* Remove fixed width if you want it to be more flexible */
+        /* width: 200px; */
+        flex-shrink: 0; /* Prevent shrinking */
+    }
+
     .waveform-area {
         flex-grow: 1;
         min-width: 0;
@@ -351,7 +475,5 @@
             background-color: #555;
             color: #eee;
         }
-        /* Styles for volume control in dark mode could go here if needed */
-        /* .volume-control input[type="range"] { ... } */
     }
 </style>

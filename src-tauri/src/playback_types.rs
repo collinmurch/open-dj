@@ -1,5 +1,36 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
+
+// --- EQ Parameters ---
+
+/// Holds the gain values (in dB) for the 3-band EQ.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct EqParams {
+    pub low_gain_db: f32,
+    pub mid_gain_db: f32,
+    pub high_gain_db: f32,
+}
+
+impl Default for EqParams {
+    fn default() -> Self {
+        EqParams {
+            low_gain_db: 0.0,
+            mid_gain_db: 0.0,
+            high_gain_db: 0.0,
+        }
+    }
+}
+
+// Add approximate comparison for f32
+impl EqParams {
+    pub(crate) fn approx_eq(&self, other: &Self) -> bool {
+        const EPSILON: f32 = 1e-5; // Tolerance for float comparison
+        (self.low_gain_db - other.low_gain_db).abs() < EPSILON
+            && (self.mid_gain_db - other.mid_gain_db).abs() < EPSILON
+            && (self.high_gain_db - other.high_gain_db).abs() < EPSILON
+    }
+}
 
 // --- Audio Thread Communication ---
 
@@ -16,9 +47,17 @@ pub enum AudioThreadCommand {
         deck_id: String,
         position_seconds: f64,
     },
-    SetVolume {
+    SetFaderLevel {
         deck_id: String,
-        volume: f32,
+        level: f32, // Linear level 0.0 to 1.0
+    },
+    SetTrimGain {
+        deck_id: String,
+        gain: f32, // Linear gain, e.g., 0.0 to 4.0 (+12dB)
+    },
+    SetEq {
+        deck_id: String,
+        params: EqParams,
     },
     CleanupDeck(String), // deck_id
     Shutdown(oneshot::Sender<()>),
@@ -49,4 +88,4 @@ impl Default for PlaybackState {
 }
 
 // Note: AudioThreadDeckState remains internal to audio_playback.rs for now,
-// as it's not directly part of the public API or state management structure visible outside. 
+// as it's not directly part of the public API or state management structure visible outside.
