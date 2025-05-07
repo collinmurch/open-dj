@@ -10,6 +10,7 @@
         isAnalysisPending = false,
         isTrackLoaded = false,
         className = "",
+        waveformColor = "var(--waveform-fill-default, #6488ac)",
     }: {
         results: VolumeInterval[] | null;
         audioDuration: number;
@@ -19,20 +20,24 @@
         isAnalysisPending?: boolean;
         isTrackLoaded?: boolean;
         className?: string;
+        waveformColor?: string;
     } = $props();
 
     // --- Element References & State ---
     let containerElement: HTMLDivElement | null = $state(null);
     let waveformInnerElement: HTMLDivElement | null = $state(null);
     let containerWidth = $state(0);
+    let containerHeight = $state(0);
     const SVG_WIDTH_MULTIPLIER = 5;
-    const SVG_HEIGHT = 100;
 
     // --- Derived State ---
     const duration = $derived(audioDuration > 0 ? audioDuration : 1);
     const roundedContainerWidth = $derived(Math.round(containerWidth));
     const waveformVisualWidth = $derived(
         roundedContainerWidth * SVG_WIDTH_MULTIPLIER,
+    );
+    const svgHeight = $derived(
+        containerHeight > 0 ? Math.round(containerHeight) : 80,
     );
 
     const translateX = $derived(() => {
@@ -54,19 +59,20 @@
         currentDuration: number,
         currentMaxRms: number,
         svgWidth: number,
-        svgHeight: number,
+        svgHeightToUse: number,
     ): string {
         if (
             !intervals ||
             intervals.length === 0 ||
             currentDuration <= 0 ||
-            svgWidth <= 0
+            svgWidth <= 0 ||
+            svgHeightToUse <= 0
         ) {
             return "M 0 0 Z";
         }
 
         // Round the constant height for path start/end
-        const roundedSvgHeight = Math.round(svgHeight);
+        const roundedSvgHeight = Math.round(svgHeightToUse);
         let path = `M 0 ${roundedSvgHeight}`;
         const effectiveMaxRms = currentMaxRms > 0 ? currentMaxRms : 0.0001;
 
@@ -80,7 +86,8 @@
                 Math.min(interval.rms_amplitude, effectiveMaxRms),
             );
             const y = Math.round(
-                svgHeight - (rmsClamped / effectiveMaxRms) * svgHeight,
+                svgHeightToUse -
+                    (rmsClamped / effectiveMaxRms) * svgHeightToUse,
             );
             // Use integer values in the path string
             path += ` L ${x} ${y}`;
@@ -104,14 +111,15 @@
             results &&
             results.length > 0 &&
             duration > 0 &&
-            waveformVisualWidth > 0
+            waveformVisualWidth > 0 &&
+            svgHeight > 0
         ) {
             return calculateSvgPath(
                 results,
                 duration,
                 maxRms,
                 waveformVisualWidth,
-                SVG_HEIGHT,
+                svgHeight,
             );
         }
 
@@ -121,14 +129,16 @@
     // --- Effects ---
     $effect(() => {
         if (containerElement) {
-            const updateWidth = () => {
+            const updateDimensions = () => {
                 if (containerElement) {
                     containerWidth = (containerElement as HTMLDivElement)
                         .offsetWidth;
+                    containerHeight = (containerElement as HTMLDivElement)
+                        .offsetHeight;
                 }
             };
-            updateWidth();
-            const resizeObserver = new ResizeObserver(updateWidth);
+            updateDimensions();
+            const resizeObserver = new ResizeObserver(updateDimensions);
             resizeObserver.observe(containerElement as HTMLDivElement);
             return () => resizeObserver.disconnect();
         }
@@ -213,14 +223,19 @@
                 bind:this={waveformInnerElement}
                 class="waveform-inner"
                 style:width="{waveformVisualWidth}px"
+                style:height="{svgHeight}px"
             >
                 <svg
                     class="waveform-svg"
-                    viewBox={`0 0 ${waveformVisualWidth} ${SVG_HEIGHT}`}
+                    viewBox={`0 0 ${waveformVisualWidth} ${svgHeight}`}
                     preserveAspectRatio="none"
                 >
                     {#if svgPathData() !== "M 0 0 Z"}
-                        <path class="waveform-path" d={svgPathData()}></path>
+                        <path
+                            class="waveform-path"
+                            d={svgPathData()}
+                            style="fill: {waveformColor};"
+                        ></path>
                     {/if}
                 </svg>
             </div>
@@ -290,7 +305,6 @@
     }
 
     .waveform-path {
-        fill: var(--waveform-fill, #6488ac);
         stroke-width: 0;
     }
 

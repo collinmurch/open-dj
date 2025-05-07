@@ -1,47 +1,43 @@
 <script lang="ts">
-    import { libraryStore } from "$lib/stores/libraryStore";
-    import {
-        createPlayerStore,
-        type PlayerStore,
-    } from "$lib/stores/playerStore";
-    import VolumeAnalysis from "./VolumeAnalysis.svelte";
+    // Removed libraryStore import as analysis results are handled by parent
+    // Removed createPlayerStore as store is passed in
     import VerticalSlider from "./VerticalSlider.svelte";
     import { invoke } from "@tauri-apps/api/core";
-    import { onDestroy } from "svelte"; // Import onDestroy
+    import { onDestroy } from "svelte";
+    import type { PlayerStore } from "$lib/stores/playerStore"; // For typing playerActions
+    import type { PlayerState } from "$lib/types"; // For typing playerStoreState
 
-    // --- Props ---
+    // --- Props --- Modified to accept store state and actions
     let {
-        filePath = null,
+        filePath = null, // Still needed to trigger initial load
         deckId,
+        playerStoreState, // The reactive Svelte store state ($playerStoreA or $playerStoreB)
+        playerActions, // The object with action methods from the store
     }: {
         filePath: string | null;
         deckId: string;
+        playerStoreState: PlayerState;
+        playerActions: Pick<
+            PlayerStore,
+            "loadTrack" | "play" | "pause" | "seek" | "cleanup" | "setVolume"
+        >;
     } = $props();
 
-    // --- Time Formatting Utility ---
+    // --- Time Formatting Utility (remains the same) ---
     function formatTime(totalSeconds: number): string {
         if (isNaN(totalSeconds) || totalSeconds < 0) {
             return "00:00";
         }
         const minutes = Math.floor(totalSeconds / 60);
         const seconds = Math.floor(totalSeconds % 60);
-
         const paddedMinutes = String(minutes).padStart(2, "0");
         const paddedSeconds = String(seconds).padStart(2, "0");
-
         return `${paddedMinutes}:${paddedSeconds}`;
     }
 
-    // --- Component References ---
-
-    // --- Create Player Store Instance ---
-    // Use deckId to create a specific store instance
-    const playerStore: PlayerStore = createPlayerStore(deckId);
-    // Use $playerStore directly in the template for auto-subscription
-
-    // --- Volume, Trim & EQ State ---
-    let trimDb = $state(0.0); // Trim control in dB (-12 to +12)
-    let faderLevel = $state(1.0); // Fader control linear (0.0 to 1.0)
+    // --- Volume, Trim & EQ State (remains the same) ---
+    let trimDb = $state(0.0);
+    let faderLevel = $state(1.0);
     let lowGainDb = $state(0.0);
     let midGainDb = $state(0.0);
     let highGainDb = $state(0.0);
@@ -52,19 +48,11 @@
     const FADER_DEBOUNCE_MS = 50;
     const EQ_DEBOUNCE_MS = 50;
 
-    // --- Derived analysis result based on filePath ---
-    const trackInfo = $derived(
-        $libraryStore.audioFiles.find((track) => track.path === filePath),
-    );
-    const analysisFeatures = $derived(trackInfo?.features);
-    const volumeAnalysisResult = $derived(
-        analysisFeatures === undefined
-            ? undefined
-            : (analysisFeatures?.volume ?? null),
-    );
+    // --- REMOVED Derived analysis result based on filePath ---
+    // This is now handled in +page.svelte
 
     // Determine if a track is actually loaded based on filePath prop
-    const isTrackLoaded = $derived(!!filePath);
+    // const isTrackLoaded = $derived(!!filePath); // Not directly needed here for VolumeAnalysis anymore
 
     // --- Effects ---
 
@@ -72,26 +60,27 @@
     $effect(() => {
         const currentFilePath = filePath;
         if (!currentFilePath) {
-            // Reset controls when track unloaded
             trimDb = 0;
             faderLevel = 1.0;
             lowGainDb = 0;
             midGainDb = 0;
             highGainDb = 0;
+            // playerActions.cleanup(); // Let parent handle cleanup if store is managed by parent or do it on $destroy
             return;
         }
-        playerStore.loadTrack(currentFilePath).catch((err) => {
+        // Use the loadTrack action passed via props
+        playerActions.loadTrack(currentFilePath).catch((err) => {
             console.error(
-                `[TrackPlayer ${deckId}] Error invoking loadTrack:`,
+                `[TrackPlayer ${deckId}] Error invoking loadTrack prop:`, // Log adjusted
                 err,
             );
         });
     });
 
-    // Effect for component cleanup
+    // Effect for component cleanup (if needed for timeouts)
     $effect(() => {
         return () => {
-            playerStore.cleanup();
+            // playerActions.cleanup(); // Parent should manage store lifecycle now
             if (trimDebounceTimeout !== undefined)
                 clearTimeout(trimDebounceTimeout);
             if (faderDebounceTimeout !== undefined)
@@ -101,6 +90,7 @@
         };
     });
 
+    // Effects for Trim, Fader, EQ remain largely the same, invoking Rust via Tauri
     // Effect to update Fader Level in Rust
     $effect(() => {
         const currentFaderLevel = faderLevel;
@@ -132,7 +122,7 @@
             try {
                 await invoke("set_trim_gain", {
                     deckId,
-                    gainDb: currentTrimDb, // Send dB, Rust converts
+                    gainDb: currentTrimDb,
                 });
             } catch (err: unknown) {
                 console.error(
@@ -168,31 +158,25 @@
 
     const SEEK_AMOUNT = 5; // Seek 5 seconds
 
-    // --- Callbacks ---
-    function seekAudioCallback(time: number) {
-        playerStore.seek(time).catch((err) => {
-            console.error(`[TrackPlayer ${deckId}] Error invoking seek:`, err);
-        });
-    }
+    // --- REMOVED Callbacks for VolumeAnalysis (seekAudioCallback) ---
 
-    // --- Event Handlers for Buttons ---
+    // --- Event Handlers for Buttons (use playerActions props) ---
     function handlePlayPause() {
-        // Use $playerStore to access reactive state
-        if ($playerStore.isPlaying) {
-            playerStore
+        if (playerStoreState.isPlaying) {
+            playerActions
                 .pause()
                 .catch((err) =>
                     console.error(
-                        `[TrackPlayer ${deckId}] Error invoking pause:`,
+                        `[TrackPlayer ${deckId}] Error invoking pause prop:`,
                         err,
                     ),
                 );
         } else {
-            playerStore
+            playerActions
                 .play()
                 .catch((err) =>
                     console.error(
-                        `[TrackPlayer ${deckId}] Error invoking play:`,
+                        `[TrackPlayer ${deckId}] Error invoking play prop:`,
                         err,
                     ),
                 );
@@ -200,30 +184,30 @@
     }
 
     function handleSeekBackward() {
-        const currentTime = $playerStore.currentTime;
-        const duration = $playerStore.duration;
+        const currentTime = playerStoreState.currentTime;
+        const duration = playerStoreState.duration;
         if (duration <= 0) return;
         const newTime = Math.max(0, currentTime - SEEK_AMOUNT);
-        playerStore
+        playerActions
             .seek(newTime)
             .catch((err) =>
                 console.error(
-                    `[TrackPlayer ${deckId}] Error invoking seek backward:`,
+                    `[TrackPlayer ${deckId}] Error invoking seek backward prop:`,
                     err,
                 ),
             );
     }
 
     function handleSeekForward() {
-        const currentTime = $playerStore.currentTime;
-        const duration = $playerStore.duration;
+        const currentTime = playerStoreState.currentTime;
+        const duration = playerStoreState.duration;
         if (duration <= 0) return;
         const newTime = Math.min(duration, currentTime + SEEK_AMOUNT);
-        playerStore
+        playerActions
             .seek(newTime)
             .catch((err) =>
                 console.error(
-                    `[TrackPlayer ${deckId}] Error invoking seek forward:`,
+                    `[TrackPlayer ${deckId}] Error invoking seek forward prop:`,
                     err,
                 ),
             );
@@ -231,19 +215,75 @@
 </script>
 
 <div class="track-player-wrapper">
-    {#if $playerStore.isLoading}
+    {#if playerStoreState.isLoading}
         <div class="loading-overlay">Loading track...</div>
-    {:else if $playerStore.error}
-        <p class="error-message">Error: {$playerStore.error}</p>
+    {:else if playerStoreState.error}
+        <p class="error-message">Error: {playerStoreState.error}</p>
     {/if}
 
-    <div class="controls">
+    <!-- REMOVED Waveform Area -->
+
+    <!-- Mixer Controls - Unchanged structurally, but parent div might change -->
+    <div class="mixer-controls-horizontal">
+        <VerticalSlider
+            id="trim-slider-{deckId}"
+            label="Trim (dB)"
+            outputMin={-12}
+            outputMax={12}
+            centerValue={0}
+            step={1}
+            bind:value={trimDb}
+            debounceMs={0}
+        />
+        <VerticalSlider
+            id="fader-slider-{deckId}"
+            label="Fader"
+            outputMin={0}
+            outputMax={1}
+            step={0.01}
+            bind:value={faderLevel}
+            debounceMs={0}
+        />
+        <VerticalSlider
+            id="low-eq-slider-{deckId}"
+            label="Low"
+            outputMin={-26}
+            outputMax={6}
+            centerValue={0}
+            step={1}
+            bind:value={lowGainDb}
+            debounceMs={0}
+        />
+        <VerticalSlider
+            id="mid-eq-slider-{deckId}"
+            label="Mid"
+            outputMin={-26}
+            outputMax={6}
+            centerValue={0}
+            step={1}
+            bind:value={midGainDb}
+            debounceMs={0}
+        />
+        <VerticalSlider
+            id="high-eq-slider-{deckId}"
+            label="High"
+            outputMin={-26}
+            outputMax={6}
+            centerValue={0}
+            step={1}
+            bind:value={highGainDb}
+            debounceMs={0}
+        />
+    </div>
+
+    <!-- Transport Controls (Play/Pause/Seek/Time) -->
+    <div class="transport-controls">
         <button
             class="seek-button"
             onclick={handleSeekBackward}
-            disabled={$playerStore.isLoading ||
-                $playerStore.duration <= 0 ||
-                !!$playerStore.error}
+            disabled={playerStoreState.isLoading ||
+                playerStoreState.duration <= 0 ||
+                !!playerStoreState.error}
             aria-label="Seek backward 5 seconds"
         >
             ◀◀
@@ -251,96 +291,28 @@
         <button
             class="play-pause-button"
             onclick={handlePlayPause}
-            disabled={$playerStore.isLoading ||
-                $playerStore.duration <= 0 ||
-                !!$playerStore.error}
-            aria-label={$playerStore.isPlaying ? "Pause" : "Play"}
+            disabled={playerStoreState.isLoading ||
+                playerStoreState.duration <= 0 ||
+                !!playerStoreState.error}
+            aria-label={playerStoreState.isPlaying ? "Pause" : "Play"}
         >
-            {$playerStore.isPlaying ? "Pause" : "Play"}
+            {playerStoreState.isPlaying ? "Pause" : "Play"}
         </button>
         <button
             class="seek-button"
             onclick={handleSeekForward}
-            disabled={$playerStore.isLoading ||
-                $playerStore.duration <= 0 ||
-                !!$playerStore.error}
+            disabled={playerStoreState.isLoading ||
+                playerStoreState.duration <= 0 ||
+                !!playerStoreState.error}
             aria-label="Seek forward 5 seconds"
         >
             ▶▶
         </button>
         <span class="time-display">
-            {formatTime($playerStore.currentTime)} / {formatTime(
-                $playerStore.duration,
+            {formatTime(playerStoreState.currentTime)} / {formatTime(
+                playerStoreState.duration,
             )}
         </span>
-    </div>
-
-    <div class="player-body-area">
-        <!-- Mixer Controls Column -->
-        <div class="mixer-controls">
-            <VerticalSlider
-                id="trim-slider-{deckId}"
-                label="Trim (dB)"
-                outputMin={-12}
-                outputMax={12}
-                centerValue={0}
-                step={1}
-                bind:value={trimDb}
-                debounceMs={0}
-            />
-            <VerticalSlider
-                id="fader-slider-{deckId}"
-                label="Fader"
-                outputMin={0}
-                outputMax={1}
-                step={0.01}
-                bind:value={faderLevel}
-                debounceMs={0}
-            />
-            <VerticalSlider
-                id="low-eq-slider-{deckId}"
-                label="Low"
-                outputMin={-26}
-                outputMax={6}
-                centerValue={0}
-                step={1}
-                bind:value={lowGainDb}
-                debounceMs={0}
-            />
-            <VerticalSlider
-                id="mid-eq-slider-{deckId}"
-                label="Mid"
-                outputMin={-26}
-                outputMax={6}
-                centerValue={0}
-                step={1}
-                bind:value={midGainDb}
-                debounceMs={0}
-            />
-            <VerticalSlider
-                id="high-eq-slider-{deckId}"
-                label="High"
-                outputMin={-26}
-                outputMax={6}
-                centerValue={0}
-                step={1}
-                bind:value={highGainDb}
-                debounceMs={0}
-            />
-        </div>
-
-        <!-- Waveform Area -->
-        <div class="waveform-area">
-            <VolumeAnalysis
-                results={volumeAnalysisResult?.intervals ?? null}
-                maxRms={volumeAnalysisResult?.max_rms_amplitude ?? 0}
-                isAnalysisPending={analysisFeatures === undefined}
-                {isTrackLoaded}
-                audioDuration={$playerStore.duration}
-                currentTime={$playerStore.currentTime}
-                seekAudio={seekAudioCallback}
-            />
-        </div>
     </div>
 </div>
 
@@ -353,22 +325,19 @@
         background-color: var(--error-bg, #fdd);
         border: 1px solid var(--error-border, #fbb);
         border-radius: 4px;
-        margin-bottom: 1rem; /* Add margin */
+        margin-bottom: 1rem;
     }
 
     .track-player-wrapper {
         display: flex;
         flex-direction: column;
-        gap: 0.75rem; /* Adjust gap slightly */
-        border: 1px solid #ccc;
-        padding: 1rem;
+        gap: 0.75rem;
+        border: 1px solid var(--section-border-light, #ccc); /* Lightened border */
+        padding: 0.75rem; /* Slightly reduced padding */
         border-radius: 8px;
         background-color: var(--track-bg, #f9f9f9);
         width: 100%;
-        /* max-width: 600px; */ /* Allow flexible width based on parent */
-        margin-bottom: 0.5rem; /* Reduce margin */
         position: relative;
-        min-height: 350px; /* INCREASED for taller decks */
     }
 
     .loading-overlay {
@@ -384,16 +353,15 @@
         z-index: 10;
     }
 
-    .controls {
+    .transport-controls {
         display: flex;
         align-items: center;
-        justify-content: center; /* Center the controls */
-        gap: 0.75rem; /* Adjust gap */
-        padding-bottom: 0.5rem;
-        border-bottom: 1px solid #eee;
-        margin-bottom: 1rem;
+        justify-content: center;
+        gap: 0.75rem;
+        padding-top: 0.5rem; /* Reduced padding */
+        width: 100%;
     }
-    .controls button {
+    .transport-controls button {
         padding: 0.5em 1em;
         font-size: 1em;
         cursor: pointer;
@@ -401,12 +369,12 @@
         border-radius: 4px;
         background-color: #eee;
     }
-    .controls button:disabled {
+    .transport-controls button:disabled {
         opacity: 0.5;
         cursor: not-allowed;
     }
     .play-pause-button {
-        min-width: 80px; /* Give play/pause a bit more width */
+        min-width: 80px;
         font-weight: bold;
     }
     .time-display {
@@ -415,40 +383,28 @@
         background-color: #eee;
         padding: 0.2em 0.5em;
         border-radius: 3px;
-        margin-left: auto; /* Push time display to the right */
+        margin-left: auto;
     }
 
-    .player-body-area {
+    .mixer-controls-horizontal {
         display: flex;
         flex-direction: row;
-        align-items: stretch;
-        gap: 1rem;
-        flex-grow: 1;
-        min-height: 130px;
+        justify-content: space-around;
+        align-items: flex-start;
+        gap: 0.5rem;
+        padding: 0.75rem 0;
+        width: 100%;
+        /* Removed borders, will be simpler component now */
+        /* margin-top: 0.75rem; */ /* Removed top margin */
+        margin-bottom: 0.25rem;
     }
 
-    .mixer-controls {
-        display: flex;
-        flex-direction: row; /* Arrange sliders horizontally */
-        align-items: stretch; /* Stretch sliders vertically */
-        gap: 0; /* Space between sliders - MINIMIZED */
-        padding: 0.5rem 0; /* Add some vertical padding */
-        /* Remove fixed width if you want it to be more flexible */
-        /* width: 200px; */
-        flex-shrink: 0; /* Prevent shrinking */
-    }
-
-    .waveform-area {
-        flex-grow: 1;
-        min-width: 0;
-        position: relative;
-        display: flex;
-        align-items: stretch;
-    }
+    /* REMOVED .waveform-area styles */
+    /* REMOVED :global(.track-player-waveform .waveform-scroll-container) */
 
     @media (prefers-color-scheme: dark) {
         .track-player-wrapper {
-            border-color: #444;
+            border-color: var(--section-border-light, #444);
             background-color: var(--track-bg, #3a3a3a);
         }
         .error-message {
@@ -460,20 +416,19 @@
             background-color: rgba(50, 50, 50, 0.7);
             color: #eee;
         }
-        .controls {
-            border-bottom-color: #444;
-        }
-        .controls button {
+        .transport-controls button {
             background-color: #555;
             border-color: #777;
             color: #eee;
         }
-        .controls button:hover:not(:disabled) {
+        .transport-controls button:hover:not(:disabled) {
             background-color: #666;
         }
         .time-display {
             background-color: #555;
             color: #eee;
         }
+        /* Removed .mixer-controls-horizontal dark theme border overrides */
+        /* Removed .waveform-area dark theme background override */
     }
 </style>
