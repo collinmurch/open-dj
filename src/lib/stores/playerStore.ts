@@ -105,12 +105,12 @@ export function createPlayerStore(deckId: string) {
     }
 
     async function setVolume(level: number) {
-        console.log(`[Store ${deckId}] Setting volume to ${level}...`);
+        console.log(`[Store ${deckId}] Setting volume to ${level} via set_fader_level...`);
         try {
-            await invoke("set_volume", { deckId, volume: level });
+            await invoke("set_fader_level", { deckId, level: level });
             // No state update needed here, volume is fire-and-forget for now
         } catch (err) {
-            const errorMsg = `Failed to set volume: ${err}`;
+            const errorMsg = `Failed to set volume (invoking set_fader_level): ${err}`;
             console.error(`[Store ${deckId}]`, errorMsg);
             // Optionally update state with error if needed
             // update((s) => ({ ...s, error: errorMsg }));

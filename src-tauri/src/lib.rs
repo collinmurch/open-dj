@@ -102,8 +102,6 @@ pub fn run() {
                 });
             }
         })
-        // TODO: Add graceful shutdown for audio thread - DONE
-        // .on_window_event(|window, event| match event { ... })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

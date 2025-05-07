@@ -2,6 +2,7 @@
     import MusicLibrary from "$lib/components/MusicLibrary.svelte";
     import TrackPlayer from "$lib/components/TrackPlayer.svelte";
     import VolumeAnalysis from "$lib/components/VolumeAnalysis.svelte";
+    import Slider from "$lib/components/Slider.svelte";
     import { libraryStore } from "$lib/stores/libraryStore";
     import {
         createPlayerStore,
@@ -17,6 +18,33 @@
     // --- Player Store Instances ---
     const playerStoreA: PlayerStore = createPlayerStore("A");
     const playerStoreB: PlayerStore = createPlayerStore("B");
+
+    // --- Crossfader State ---
+    let crossfaderValue = $state(0.5); // 0 = Deck A, 0.5 = Center, 1 = Deck B
+
+    // --- Deck Volume Derivations for Crossfader ---
+    // Using a simple linear taper for now. Could be upgraded to constant power.
+    const deckAVolume = $derived(() => {
+        // Deck A is louder when crossfaderValue is closer to 0
+        return 1 - crossfaderValue;
+    });
+    const deckBVolume = $derived(() => {
+        // Deck B is louder when crossfaderValue is closer to 1
+        return crossfaderValue;
+    });
+
+    // --- Effects to apply derived volumes to player stores ---
+    $effect(() => {
+        const volumeA = deckAVolume();
+        console.log(`Effect: Setting Deck A Volume to ${volumeA}`);
+        playerStoreA.setVolume(volumeA);
+    });
+
+    $effect(() => {
+        const volumeB = deckBVolume();
+        console.log(`Effect: Setting Deck B Volume to ${volumeB}`);
+        playerStoreB.setVolume(volumeB);
+    });
 
     // --- Deck A Data Derivations ---
     const trackInfoA = $derived(
@@ -100,6 +128,20 @@
                     seekAudio={seekDeckB}
                     className="mixer-waveform"
                     waveformColor="var(--deck-b-waveform-fill-light)"
+                />
+            </div>
+            <!-- Crossfader Slider -->
+            <div class="crossfader-container">
+                <Slider
+                    id="crossfader"
+                    label="Crossfader"
+                    orientation="horizontal"
+                    outputMin={0}
+                    outputMax={1}
+                    centerValue={0.5}
+                    step={0.01}
+                    bind:value={crossfaderValue}
+                    debounceMs={20}
                 />
             </div>
         </section>
@@ -463,5 +505,14 @@
             --text-color: #f6f6f6;
             --bg-color: #2f2f2f;
         }
+    }
+
+    .crossfader-container {
+        width: 100%;
+        max-width: 50%; /* Make it half the width of its parent */
+        margin-left: auto; /* Center it */
+        margin-right: auto; /* Center it */
+        padding: 0.5rem 1rem;
+        margin-top: 0.5rem;
     }
 </style>

@@ -1,7 +1,7 @@
 <script lang="ts">
     // Removed libraryStore import as analysis results are handled by parent
     // Removed createPlayerStore as store is passed in
-    import VerticalSlider from "./VerticalSlider.svelte";
+    import Slider from "./Slider.svelte";
     import { invoke } from "@tauri-apps/api/core";
     import { onDestroy } from "svelte";
     import type { PlayerStore } from "$lib/stores/playerStore"; // For typing playerActions
@@ -225,9 +225,10 @@
 
     <!-- Mixer Controls - Unchanged structurally, but parent div might change -->
     <div class="mixer-controls-horizontal">
-        <VerticalSlider
+        <Slider
             id="trim-slider-{deckId}"
             label="Trim (dB)"
+            orientation="vertical"
             outputMin={-12}
             outputMax={12}
             centerValue={0}
@@ -235,18 +236,20 @@
             bind:value={trimDb}
             debounceMs={0}
         />
-        <VerticalSlider
+        <Slider
             id="fader-slider-{deckId}"
             label="Fader"
+            orientation="vertical"
             outputMin={0}
             outputMax={1}
             step={0.01}
             bind:value={faderLevel}
             debounceMs={0}
         />
-        <VerticalSlider
+        <Slider
             id="low-eq-slider-{deckId}"
             label="Low"
+            orientation="vertical"
             outputMin={-26}
             outputMax={6}
             centerValue={0}
@@ -254,9 +257,10 @@
             bind:value={lowGainDb}
             debounceMs={0}
         />
-        <VerticalSlider
+        <Slider
             id="mid-eq-slider-{deckId}"
             label="Mid"
+            orientation="vertical"
             outputMin={-26}
             outputMax={6}
             centerValue={0}
@@ -264,9 +268,10 @@
             bind:value={midGainDb}
             debounceMs={0}
         />
-        <VerticalSlider
+        <Slider
             id="high-eq-slider-{deckId}"
             label="High"
+            orientation="vertical"
             outputMin={-26}
             outputMax={6}
             centerValue={0}

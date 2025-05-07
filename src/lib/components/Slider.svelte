@@ -1,22 +1,22 @@
 <script lang="ts">
     import { onDestroy } from "svelte";
 
-    // --- Props --- A Vertical Slider component
+    // --- Props --- A versatile Slider component
     let {
         id,
         label,
-        // Define the ACTUAL output value range (add defaults here too)
+        orientation = "vertical" as "vertical" | "horizontal",
         outputMin = 0,
         outputMax = 100,
-        // Optionally define a value to map to the visual center (50%).
         // If undefined or same as mathematical midpoint, linear mapping is used.
         centerValue = undefined as number | undefined,
         step = 1,
-        value = $bindable(), // Bindable prop represents the ACTUAL output value
+        value = $bindable(),
         debounceMs = 50,
     }: {
         id: string;
         label: string;
+        orientation?: "vertical" | "horizontal";
         outputMin?: number;
         outputMax?: number;
         centerValue?: number;
@@ -127,13 +127,10 @@
     $effect(() => {
         const valueToEmit = actualOutputValue;
         if (debounceTimeoutId !== undefined) clearTimeout(debounceTimeoutId);
+
         debounceTimeoutId = setTimeout(() => {
             // Update the externally bound value after debounce
-            if (value !== valueToEmit) {
-                value = valueToEmit;
-            } else {
-                // REMOVED console.log
-            }
+            if (value !== valueToEmit) value = valueToEmit;
         }, debounceMs);
     });
 
@@ -148,11 +145,21 @@
     onDestroy(() => {
         if (debounceTimeoutId !== undefined) clearTimeout(debounceTimeoutId);
     });
+
+    const isVertical = $derived(orientation === "vertical");
 </script>
 
-<div class="vertical-slider-wrapper">
+<div
+    class="slider-wrapper"
+    class:vertical={isVertical}
+    class:horizontal={!isVertical}
+>
     <label for={id} class="slider-label">{label}</label>
-    <div class="slider-container">
+    <div
+        class="slider-container"
+        class:vertical={isVertical}
+        class:horizontal={!isVertical}
+    >
         <input
             type="range"
             {id}
@@ -162,10 +169,13 @@
             value={internalRawValue}
             oninput={handleInput}
             aria-label={label}
-            class="vertical-slider"
+            class="slider"
+            class:vertical-slider={isVertical}
+            class:horizontal-slider={!isVertical}
             aria-valuemin={outputMin}
             aria-valuemax={outputMax}
             aria-valuenow={actualOutputValue}
+            aria-orientation={orientation}
         />
         <!-- Display the actual output value -->
         <span class="slider-value"
@@ -175,14 +185,21 @@
 </div>
 
 <style>
-    .vertical-slider-wrapper {
+    .slider-wrapper {
         display: flex;
-        flex-direction: column;
         align-items: center;
         gap: 1rem;
         padding: 0.5rem 0 0.25rem;
-        min-width: 60px;
+        min-width: 60px; /* Default for vertical */
+    }
+    .slider-wrapper.vertical {
+        flex-direction: column;
         height: 100%;
+    }
+    .slider-wrapper.horizontal {
+        flex-direction: row;
+        width: 100%;
+        min-height: 60px; /* Default for horizontal */
     }
 
     .slider-label {
@@ -191,14 +208,31 @@
         text-align: center;
         flex-shrink: 0;
     }
+    .slider-wrapper.horizontal .slider-label {
+        min-width: 80px; /* Give some space for horizontal label */
+        text-align: left;
+    }
 
     .slider-container {
         display: flex;
-        flex-direction: column;
         align-items: center;
         flex-grow: 1;
-        width: 100%;
         position: relative;
+    }
+    .slider-container.vertical {
+        flex-direction: column;
+        width: 100%;
+    }
+    .slider-container.horizontal {
+        flex-direction: row;
+        height: 100%;
+    }
+
+    .slider {
+        cursor: pointer;
+        margin: 0;
+        background: transparent;
+        padding: 0;
     }
 
     .vertical-slider {
@@ -206,10 +240,12 @@
         writing-mode: bt-lr;
         width: 24px;
         height: 100%;
-        cursor: pointer;
-        margin: 0;
-        background: transparent;
-        padding: 0;
+    }
+
+    .horizontal-slider {
+        appearance: auto;
+        width: 100%;
+        height: 24px;
     }
 
     /* --- Track Styling --- */
@@ -225,9 +261,21 @@
         background: var(--border, #ddd);
         border-radius: 3px;
     }
+    .horizontal-slider::-webkit-slider-runnable-track {
+        height: 6px;
+        background: var(--border, #ddd);
+        border-radius: 3px;
+        margin-top: 9px;
+    }
+    .horizontal-slider::-moz-range-track {
+        height: 6px;
+        width: 100%;
+        background: var(--border, #ddd);
+        border-radius: 3px;
+    }
 
     /* --- Thumb Styling --- */
-    .vertical-slider::-webkit-slider-thumb {
+    .slider::-webkit-slider-thumb {
         appearance: none;
         width: 16px;
         height: 16px;
@@ -236,9 +284,15 @@
         border: 1px solid var(--button-border, #ccc);
         box-shadow: none;
         cursor: pointer;
+    }
+    .vertical-slider::-webkit-slider-thumb {
         margin-left: -5px;
     }
-    .vertical-slider::-moz-range-thumb {
+    .horizontal-slider::-webkit-slider-thumb {
+        margin-top: -5px;
+    }
+
+    .slider::-moz-range-thumb {
         appearance: none;
         width: 16px;
         height: 16px;
@@ -252,7 +306,6 @@
     .slider-value {
         font-family: monospace;
         font-size: 0.75em;
-        margin-top: 1rem;
         background-color: var(--muted, #eee);
         color: var(--muted-foreground, #333);
         padding: 0.2em 0.4em;
@@ -261,9 +314,16 @@
         text-align: center;
         flex-shrink: 0;
     }
+    .slider-container.vertical .slider-value {
+        margin-top: 1rem;
+    }
+    .slider-container.horizontal .slider-value {
+        margin-left: 1rem;
+    }
 
     @media (prefers-color-scheme: dark) {
-        .vertical-slider-wrapper {
+        .slider-wrapper {
+            /* Changed from .vertical-slider-wrapper */
             --muted-foreground: #aaa;
             --border: #444;
             --primary: #8ab4f8;

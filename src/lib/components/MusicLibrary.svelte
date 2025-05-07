@@ -11,6 +11,23 @@
     function isSelected(track: TrackInfo): boolean {
         return $libraryStore.selectedTrack?.path === track.path;
     }
+
+    // Helper function to format time from seconds to MM:SS
+    function formatTime(totalSeconds: number | undefined | null): string {
+        if (
+            totalSeconds === undefined ||
+            totalSeconds === null ||
+            isNaN(totalSeconds) ||
+            totalSeconds < 0
+        ) {
+            return "--:--"; // Or some other placeholder for unknown duration
+        }
+        const minutes = Math.floor(totalSeconds / 60);
+        const seconds = Math.floor(totalSeconds % 60);
+        const paddedMinutes = String(minutes).padStart(2, "0");
+        const paddedSeconds = String(seconds).padStart(2, "0");
+        return `${paddedMinutes}:${paddedSeconds}`;
+    }
 </script>
 
 <div class="music-library">
@@ -44,6 +61,11 @@
             {#if $libraryStore.audioFiles.length > 0}
                 <ul class="track-list">
                     {#each $libraryStore.audioFiles as track (track.path)}
+                        {@const _ = console.log(
+                            `MusicLibrary render: Track ${track.name}, TopLevelDuration: ${track.durationSeconds}, Features:`,
+                            track.features,
+                            `NestedDuration: ${track.features?.durationSeconds}`,
+                        )}
                         <li class:selected-li={isSelected(track)}>
                             <button
                                 class:selected={isSelected(track)}
@@ -55,6 +77,9 @@
                                 aria-label={`Select track ${track.name}`}
                             >
                                 <span class="track-name">{track.name}</span>
+                                <span class="track-duration"
+                                    >{formatTime(track.durationSeconds)}</span
+                                >
                                 {#if track.bpm === undefined}
                                     <span class="track-bpm track-bpm-loading"
                                         >Calculating...</span
@@ -201,6 +226,16 @@
         margin-right: 0.5rem;
     }
 
+    .track-duration {
+        font-size: 0.85em;
+        color: var(
+            --text-muted-darker,
+            #555
+        ); /* Slightly darker than BPM for differentiation */
+        margin-right: 0.75rem; /* Space before BPM */
+        flex-shrink: 0;
+    }
+
     .track-bpm {
         font-size: 0.85em;
         font-style: italic;
@@ -286,6 +321,9 @@
         .track-list li button.selected {
             background-color: var(--track-item-selected-bg, #0a2d57);
             border-color: #2a6bba;
+        }
+        .track-duration {
+            color: var(--text-muted-darker-dark, #bbb);
         }
         .track-bpm {
             color: var(--text-muted, #aaa);

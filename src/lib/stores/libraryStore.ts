@@ -75,25 +75,31 @@ function createLibraryStore() {
                             const result = results[file.path];
                             let features: AudioFeatures | null | undefined = undefined;
                             let derivedBpm: number | null | undefined = undefined;
+                            let derivedDurationSeconds: number | null | undefined = undefined;
 
                             if (result === undefined) {
                                 console.warn(`[LibraryStore] No analysis result found for ${file.path}`);
                                 features = null;
                                 derivedBpm = null;
+                                derivedDurationSeconds = null;
                             } else if (result?.Err) {
                                 console.error(`[LibraryStore] Analysis error for ${file.path}:`, result.Err);
                                 features = null;
                                 derivedBpm = null;
+                                derivedDurationSeconds = null;
                             } else if (result?.Ok) {
                                 features = result.Ok;
                                 derivedBpm = result.Ok.bpm;
+                                derivedDurationSeconds = result.Ok.durationSeconds;
+                                console.log(`[LibraryStore] Parsed features for ${file.path}: BPM=${derivedBpm}, Duration=${derivedDurationSeconds}`);
                             } else {
                                 console.warn(`[LibraryStore] Unexpected result structure for ${file.path}:`, result);
                                 features = null;
                                 derivedBpm = null;
+                                derivedDurationSeconds = null;
                             }
 
-                            return { ...file, features: features, bpm: derivedBpm };
+                            return { ...file, features: features, bpm: derivedBpm, durationSeconds: derivedDurationSeconds };
                         });
 
                         return { ...state, audioFiles: updatedFiles };

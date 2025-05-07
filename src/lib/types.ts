@@ -19,6 +19,7 @@ export interface VolumeAnalysis {
 export interface AudioFeatures {
     bpm: number | null; // Option<f32> -> number | null
     volume: VolumeAnalysis | null; // Option<AudioAnalysis> -> VolumeAnalysis | null
+    durationSeconds?: number | null; // Added duration (Option<f64> -> number | null)
 }
 
 // Structure for individual track information in the library
@@ -27,6 +28,7 @@ export interface TrackInfo {
     name: string;
     bpm?: number | null; // Optional, null means analysis failed or pending
     features?: AudioFeatures | null | undefined; // Undefined: pending, null: error, AudioFeatures: success
+    durationSeconds?: number | null; // Added for direct access
 }
 
 // Structure for the result of the batch volume analysis command

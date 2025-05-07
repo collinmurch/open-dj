@@ -129,6 +129,8 @@ pub enum AudioProcessorError {
     AnalysisBpmError{ path: String, source: BpmError },
     #[error("Volume analysis failed for '{path}': {source}")]
     AnalysisVolumeError{ path: String, source: AudioAnalysisError },
+    #[error("Invalid data (empty samples or zero sample rate) for duration calculation for '{path}'.")]
+    InvalidDataForDurationCalculation { path: String },
     #[error("Overall analysis for '{path}' failed due to one or more sub-tasks failing.")]
     CombinedAnalysisFailed { path: String }, // Used when we just want to indicate a failure without specifying which part.
 }
