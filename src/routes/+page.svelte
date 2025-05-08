@@ -102,7 +102,6 @@
     {/if}
 
     {#if isFolderSelected}
-        <!-- NEW: Mixer Section for Waveforms -->
         <section class="mixer-section">
             <h2>Mixer</h2>
             <div class="waveform-container deck-a-style">
@@ -133,7 +132,6 @@
                     waveformColor="var(--deck-b-waveform-fill-light)"
                 />
             </div>
-            <!-- Crossfader Slider -->
             <div class="crossfader-container">
                 <Slider
                     id="crossfader"
@@ -149,7 +147,6 @@
             </div>
         </section>
 
-        <!-- Decks Section (TrackPlayers without waveforms) -->
         <section class="decks-section-horizontal">
             <div class="deck-stacked deck-a-style">
                 <DeckControls
@@ -190,13 +187,12 @@
 </main>
 
 <style>
-    /* Place all :root variables for light theme here */
     :root {
         --section-border: #ddd;
         --section-bg: #fff;
         --waveform-area-bg: #e9e9e9;
         --deck-bg: transparent;
-        --section-border-light: #eee; /* For mixer h2 border */
+        --section-border-light: #eee;
 
         /* Deck A - Light Theme */
         --deck-a-waveform-bg-light: hsl(255, 45%, 75%);
@@ -205,11 +201,7 @@
         --deck-a-waveform-fill-light: hsl(255, 60%, 90%);
         --deck-a-button-bg-light: hsl(255, 50%, 65%);
         --deck-a-button-text-light: hsl(255, 100%, 98%);
-        --deck-a-button-hover-bg-light: hsl(
-            255,
-            55%,
-            75%
-        ); /* Lighter purple for hover */
+        --deck-a-button-hover-bg-light: hsl(255, 55%, 75%);
 
         /* Deck B - Light Theme */
         --deck-b-waveform-bg-light: hsl(210, 25%, 97%);
@@ -218,15 +210,7 @@
         --deck-b-waveform-fill-light: hsl(210, 15%, 75%);
         --deck-b-button-bg-light: hsl(210, 20%, 85%);
         --deck-b-button-text-light: hsl(210, 20%, 25%);
-        --deck-b-button-hover-bg-light: hsl(
-            210,
-            25%,
-            90%
-        ); /* Lighter grey for hover */
-
-        /* Global text & general bg should be at the very end or in a global css */
-        /* --text-color: #0f0f0f; */ /* Moved to end or assume global */
-        /* --bg-color: #f6f6f6; */ /* Moved to end or assume global */
+        --deck-b-button-hover-bg-light: hsl(210, 25%, 90%);
     }
 
     .library-section-initial {
@@ -369,15 +353,13 @@
         cursor: not-allowed;
     }
 
-    /* Deck-specific button styles - Increased specificity */
     .load-controls .load-deck-a-button {
         background-color: var(--deck-a-button-bg-light);
         color: var(--deck-a-button-text-light);
         border-color: var(--deck-a-border-light);
     }
     .load-controls .load-deck-a-button:hover:not(:disabled) {
-        /* background-color: var(--deck-a-button-hover-bg-light); */
-        background-color: limegreen; /* Test with a very obvious color */
+        background-color: limegreen;
     }
 
     .load-controls .load-deck-b-button {
@@ -391,12 +373,11 @@
 
     @media (prefers-color-scheme: dark) {
         :root {
-            /* Overrides for dark theme */
             --section-border: #555;
             --section-bg: #3a3a3a;
             --waveform-area-bg: #303030;
             --deck-bg: #333;
-            --section-border-light: #444; /* For mixer h2 border in dark */
+            --section-border-light: #444;
 
             /* Deck A - Dark Theme */
             --deck-a-waveform-bg-dark: hsl(260, 35%, 12%);
@@ -405,11 +386,7 @@
             --deck-a-waveform-fill-light: hsl(260, 45%, 35%);
             --deck-a-button-bg-dark: hsl(260, 40%, 25%);
             --deck-a-button-text-dark: hsl(260, 80%, 90%);
-            --deck-a-button-hover-bg-light: hsl(
-                260,
-                45%,
-                35%
-            ); /* Redefine for dark: Lighter purple hover */
+            --deck-a-button-hover-bg-light: hsl(260, 45%, 35%);
 
             /* Deck B - Dark Theme */
             --deck-b-waveform-bg-dark: hsl(210, 12%, 20%);
@@ -418,15 +395,7 @@
             --deck-b-waveform-fill-light: hsl(210, 15%, 45%);
             --deck-b-button-bg-dark: hsl(210, 15%, 25%);
             --deck-b-button-text-dark: hsl(210, 25%, 85%);
-            --deck-b-button-hover-bg-light: hsl(
-                210,
-                20%,
-                35%
-            ); /* Redefine for dark: Lighter grey hover */
-
-            /* Global text & general bg for dark theme */
-            /* --text-color: #f6f6f6; */ /* Moved to end or assume global */
-            /* --bg-color: #2f2f2f; */ /* Moved to end or assume global */
+            --deck-b-button-hover-bg-light: hsl(210, 20%, 35%);
         }
 
         .load-controls button {
@@ -444,9 +413,7 @@
             border-color: var(--deck-a-border-dark);
         }
         .load-controls .load-deck-a-button:hover:not(:disabled) {
-            background-color: var(
-                --deck-a-button-hover-bg-light
-            ); /* Uses redefined var for dark hover */
+            background-color: var(--deck-a-button-hover-bg-light);
         }
 
         .load-controls .load-deck-b-button {
@@ -455,9 +422,7 @@
             border-color: var(--deck-b-border-dark);
         }
         .load-controls .load-deck-b-button:hover:not(:disabled) {
-            background-color: var(
-                --deck-b-button-hover-bg-light
-            ); /* Uses redefined var for dark hover */
+            background-color: var(--deck-b-button-hover-bg-light);
         }
 
         /* Styles for specific components in dark mode using the variables */
@@ -488,11 +453,8 @@
         font-size: 16px;
         line-height: 24px;
         font-weight: 400;
-        color: var(--text-color, #0f0f0f); /* Fallback if not globally set */
-        background-color: var(
-            --bg-color,
-            #f6f6f6
-        ); /* Fallback if not globally set */
+        color: var(--text-color, #0f0f0f);
+        background-color: var(--bg-color, #f6f6f6);
         font-synthesis: none;
         text-rendering: optimizeLegibility;
         -webkit-font-smoothing: antialiased;
@@ -512,9 +474,9 @@
 
     .crossfader-container {
         width: 100%;
-        max-width: 50%; /* Make it half the width of its parent */
-        margin-left: auto; /* Center it */
-        margin-right: auto; /* Center it */
+        max-width: 50%;
+        margin-left: auto;
+        margin-right: auto;
         padding: 0.5rem 1rem;
         margin-top: 0.5rem;
     }
