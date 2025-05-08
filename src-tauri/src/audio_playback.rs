@@ -21,6 +21,7 @@ use symphonia::core::{
 };
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tokio::sync::mpsc;
+use crate::config; // Added import for config
 
 // --- State Management ---
 
@@ -57,7 +58,7 @@ struct AudioThreadDeckState {
     // Shared EQ parameters
     eq_params: Arc<Mutex<EqParams>>,
     trim_gain: Arc<Mutex<f32>>, // Add trim gain state (linear)
-    // Fader level is controlled via sink.volume(), no separate state needed here
+    cue_point: Option<Duration>, // Added cue point state
 }
 
 // --- Decoding Logic (Moved from audio_processor.rs) ---
@@ -409,6 +410,24 @@ pub async fn set_eq_params(
         .map_err(|e| format!("CMD SetEq: Failed to send command: {}", e))
 }
 
+// NEW Tauri Command for setting cue point
+#[tauri::command]
+pub async fn set_cue_point(
+    state: State<'_, AppState>,
+    deck_id: String,
+    position_seconds: f64,
+) -> Result<(), String> {
+    if position_seconds < 0.0 {
+        return Err("Cue point position cannot be negative.".to_string());
+    }
+    log::info!("CMD SetCue: Deck '{}' to {:.3}s", deck_id, position_seconds);
+    state
+        .audio_command_sender
+        .send(AudioThreadCommand::SetCue { deck_id, position_seconds })
+        .await
+        .map_err(|e| format!("CMD SetCue: Failed to send command: {}", e))
+}
+
 // --- Audio Thread Implementation (Placeholder - to be implemented) ---
 
 pub fn run_audio_thread(app_handle: AppHandle, mut receiver: mpsc::Receiver<AudioThreadCommand>) {
@@ -444,7 +463,9 @@ pub fn run_audio_thread(app_handle: AppHandle, mut receiver: mpsc::Receiver<Audi
     rt.block_on(async move {
         log::info!("Audio thread entering main loop.");
         let mut should_shutdown = false;
-        let mut time_update_interval = tokio::time::interval(Duration::from_millis(250));
+        let mut time_update_interval = tokio::time::interval(
+            Duration::from_millis(config::AUDIO_THREAD_TIME_UPDATE_INTERVAL_MS)
+        );
 
         while !should_shutdown {
             tokio::select! {
@@ -476,6 +497,9 @@ pub fn run_audio_thread(app_handle: AppHandle, mut receiver: mpsc::Receiver<Audi
                                 }
                                 AudioThreadCommand::SetEq { deck_id, params } => {
                                     audio_thread_handle_set_eq(&deck_id, params, &mut local_deck_states);
+                                }
+                                AudioThreadCommand::SetCue { deck_id, position_seconds } => {
+                                    audio_thread_handle_set_cue(&deck_id, position_seconds, &mut local_deck_states, &app_handle);
                                 }
                                 AudioThreadCommand::CleanupDeck(deck_id) => {
                                     audio_thread_handle_cleanup(&deck_id, &mut local_deck_states);
@@ -532,9 +556,11 @@ fn audio_thread_handle_init(
                         paused_position: None,
                         eq_params: initial_eq_params,
                         trim_gain: initial_trim_gain, // Initialize trim gain
+                        cue_point: None, // Initialize cue point
                     },
                 );
                 log::info!("Audio Thread: Initialized sink for deck '{}'", deck_id);
+                // Emit default state which now includes cue_point_seconds: null
                 emit_state_update(app_handle, deck_id, &PlaybackState::default());
             }
             Err(e) => {
@@ -589,6 +615,7 @@ async fn audio_thread_handle_load(
                         deck_state.decoded_samples = Arc::new(samples); // Store as Arc
                         deck_state.sample_rate = rate;
                         deck_state.duration = duration;
+                        deck_state.cue_point = None; // Reset cue point on load
 
                         // Create the initial source with Trim and EQ
                         let buffer = SamplesBuffer::new(1, rate as u32, (*deck_state.decoded_samples).clone());
@@ -609,6 +636,7 @@ async fn audio_thread_handle_load(
                                 let state_to_emit = PlaybackState {
                                     is_playing: false, is_loading: false, current_time: 0.0,
                                     duration: duration.as_secs_f64(), error: None,
+                                    cue_point_seconds: None, // Emit initial null cue point
                                 };
                                 emit_state_update(app_handle, &deck_id, &state_to_emit);
                             }
@@ -681,6 +709,7 @@ fn audio_thread_handle_play(
                 duration: deck_state.duration.as_secs_f64(),
                 is_loading: false,
                 error: None,
+                cue_point_seconds: deck_state.cue_point.map(|d| d.as_secs_f64()),
             };
             emit_state_update(app_handle, deck_id, &state_to_emit);
         } else {
@@ -719,6 +748,7 @@ fn audio_thread_handle_pause(
                 duration: deck_state.duration.as_secs_f64(),
                 is_loading: false,
                 error: None,
+                cue_point_seconds: deck_state.cue_point.map(|d| d.as_secs_f64()),
             };
             emit_state_update(app_handle, deck_id, &state_to_emit);
         } else {
@@ -818,6 +848,7 @@ fn audio_thread_handle_seek(
             duration: deck_state.duration.as_secs_f64(),
             is_loading: false,
             error: None,
+            cue_point_seconds: deck_state.cue_point.map(|d| d.as_secs_f64()),
         };
         emit_state_update(app_handle, deck_id, &state_to_emit);
 
@@ -897,35 +928,76 @@ fn audio_thread_handle_set_eq(
     log::debug!("Audio Thread: Handling SetEq END for '{}'", deck_id);
 }
 
+fn audio_thread_handle_set_cue(
+    deck_id: &str,
+    position_seconds: f64,
+    local_states: &mut HashMap<String, AudioThreadDeckState>,
+    app_handle: &AppHandle,
+) {
+    log::debug!("Audio Thread: Handling SetCue for '{}' to {:.3}s", deck_id, position_seconds);
+    if let Some(deck_state) = local_states.get_mut(deck_id) {
+        // Ensure duration is valid before setting cue relative to it
+        if deck_state.duration == Duration::ZERO {
+            log::warn!("Audio Thread: Cannot set cue for deck '{}', track duration is zero (not loaded?)", deck_id);
+            emit_error_event(app_handle, deck_id, "Cannot set cue: Track not loaded or has zero duration.");
+            return;
+        }
+
+        let clamped_time_secs = position_seconds.max(0.0).min(deck_state.duration.as_secs_f64());
+        let cue_duration = Duration::from_secs_f64(clamped_time_secs);
+
+        deck_state.cue_point = Some(cue_duration);
+        log::info!("Audio Thread: Cue point set for '{}' to {:?}", deck_id, cue_duration);
+
+        // Emit state update with the new cue point
+        let current_time = get_current_playback_time_secs(deck_state); // Use helper to get current time
+        let state_to_emit = PlaybackState {
+            is_playing: deck_state.is_playing,
+            current_time: current_time,
+            duration: deck_state.duration.as_secs_f64(),
+            is_loading: false,
+            error: None,
+            cue_point_seconds: Some(clamped_time_secs),
+        };
+        emit_state_update(app_handle, deck_id, &state_to_emit);
+    } else {
+        log::warn!("Audio Thread: SetCue ignored for unknown deck '{}'", deck_id);
+    }
+}
+
+// Helper function to calculate current time (used in multiple places)
+fn get_current_playback_time_secs(deck_state: &AudioThreadDeckState) -> f64 {
+    if deck_state.is_playing {
+        let current_elapsed = deck_state
+            .playback_start_time
+            .map_or(Duration::ZERO, |st| st.elapsed());
+        let base_pos = deck_state.paused_position.unwrap_or_default();
+        (base_pos + current_elapsed).as_secs_f64()
+    } else {
+        deck_state.paused_position.unwrap_or_default().as_secs_f64()
+    }
+    .min(deck_state.duration.as_secs_f64()) // Ensure it doesn't exceed duration
+}
+
 fn audio_thread_handle_time_update(
     local_states: &mut HashMap<String, AudioThreadDeckState>,
     app_handle: &AppHandle,
 ) {
     for (deck_id, deck_state) in local_states.iter_mut() {
-        // Check if the sink is actually playing, not just our logical flag
-        // Check is_playing first as a quick exit
         if deck_state.is_playing && !deck_state.sink.is_paused() && !deck_state.sink.empty() {
-            let current_elapsed = deck_state
-                .playback_start_time
-                .map_or(Duration::ZERO, |st| st.elapsed());
-            let base_pos = deck_state.paused_position.unwrap_or_default();
-            let total_pos = base_pos + current_elapsed;
-            let current_time_secs = total_pos
-                .as_secs_f64()
-                .min(deck_state.duration.as_secs_f64());
+            let current_time_secs = get_current_playback_time_secs(deck_state);
 
-            // Check if the track has effectively ended
-            // Add a small buffer (e.g., 50ms) to avoid premature ending due to timing slight inaccuracies
             let end_buffer = Duration::from_millis(50);
             let has_ended = deck_state.duration > Duration::ZERO
-                && (total_pos + end_buffer >= deck_state.duration);
+                && (Duration::from_secs_f64(current_time_secs) + end_buffer >= deck_state.duration);
 
             let state_update = PlaybackState {
                 current_time: current_time_secs,
-                is_playing: !has_ended, // Set is_playing to false if it has ended
+                is_playing: !has_ended,
                 duration: deck_state.duration.as_secs_f64(),
                 is_loading: false,
                 error: None,
+                cue_point_seconds: deck_state.cue_point.map(|d| d.as_secs_f64()),
             };
             emit_state_update(app_handle, deck_id, &state_update);
 
@@ -934,14 +1006,14 @@ fn audio_thread_handle_time_update(
                     "Audio Thread: Track finished for '{}' based on time update.",
                     deck_id
                 );
-                // Ensure the sink is paused on the audio thread side
-                deck_state.sink.pause(); // Pause the actual sink
+                deck_state.sink.pause();
                 deck_state.is_playing = false;
                 deck_state.playback_start_time = None;
-                // Set paused position precisely to the end
                 deck_state.paused_position = Some(deck_state.duration);
             }
         }
+        // No need for an else block to emit state for paused tracks, 
+        // as state is emitted when actions like pause, seek, set_cue occur.
     }
 }
 

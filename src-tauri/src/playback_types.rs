@@ -59,6 +59,10 @@ pub enum AudioThreadCommand {
         deck_id: String,
         params: EqParams,
     },
+    SetCue {
+        deck_id: String,
+        position_seconds: f64,
+    },
     CleanupDeck(String), // deck_id
     Shutdown(oneshot::Sender<()>),
 }
@@ -73,6 +77,7 @@ pub struct PlaybackState {
     pub current_time: f64,
     pub duration: f64,
     pub error: Option<String>,
+    pub cue_point_seconds: Option<f64>,
 }
 
 impl Default for PlaybackState {
@@ -83,6 +88,7 @@ impl Default for PlaybackState {
             current_time: 0.0,
             duration: 0.0,
             error: None,
+            cue_point_seconds: None,
         }
     }
 }

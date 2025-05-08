@@ -11,6 +11,7 @@
         isTrackLoaded = false,
         className = "",
         waveformColor = "var(--waveform-fill-default, #6488ac)",
+        cuePointTime = null as number | null,
     }: {
         results: VolumeInterval[] | null;
         audioDuration: number;
@@ -21,6 +22,7 @@
         isTrackLoaded?: boolean;
         className?: string;
         waveformColor?: string;
+        cuePointTime?: number | null;
     } = $props();
 
     // --- Element References & State ---
@@ -126,6 +128,30 @@
         return "M 0 0 Z"; // Default empty path
     });
 
+    // --- NEW: Derived Cue Marker Position ---
+    const cueMarkerLeftOffset = $derived(() => {
+        // Check if cue point exists, duration is valid, and component has dimensions
+        const currentContainerWidth = roundedContainerWidth; // Access derived value directly
+        if (
+            cuePointTime !== null &&
+            duration > 0 &&
+            waveformVisualWidth > 0 &&
+            currentContainerWidth > 0
+        ) {
+            // Calculate the X position within the untranslated SVG coordinate space
+            const svgX = (cuePointTime / duration) * waveformVisualWidth;
+            // Calculate the final visual position within the container by applying the current translation
+            const containerX = translateX() + svgX;
+
+            // Only return a value if the calculated position is within the visible container bounds
+            if (containerX >= 0 && containerX <= currentContainerWidth) {
+                return `${containerX}px`;
+            }
+        }
+        // Return null if no cue point, no duration, no width, or if marker is outside visible area
+        return null;
+    });
+
     // --- Effects ---
     $effect(() => {
         if (containerElement) {
@@ -227,7 +253,7 @@
             >
                 <svg
                     class="waveform-svg"
-                    viewBox={`0 0 ${waveformVisualWidth} ${svgHeight}`}
+                    viewBox="0 0 {waveformVisualWidth} {svgHeight}"
                     preserveAspectRatio="none"
                 >
                     {#if svgPathData() !== "M 0 0 Z"}
@@ -242,6 +268,14 @@
         </div>
         {#if canInteract}
             <div class="progress-indicator-fixed" aria-hidden="true"></div>
+        {/if}
+        <!-- NEW: Cue Marker -->
+        {#if cueMarkerLeftOffset() !== null}
+            <div
+                class="cue-marker"
+                style:left={cueMarkerLeftOffset()}
+                aria-hidden="true"
+            ></div>
         {/if}
     </div>
 {:else if isTrackLoaded && isAnalysisPending}
@@ -331,6 +365,17 @@
         z-index: 10;
     }
 
+    .cue-marker {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: 2px;
+        background-color: #cfe2ff;
+        pointer-events: none;
+        z-index: 9;
+        transition: left 0.05s linear;
+    }
+
     .analysis-status {
         font-style: italic;
         color: var(--status-text-color, #666);
@@ -351,6 +396,9 @@
         }
         .progress-indicator-fixed {
             --progress-indicator-color: #f48481;
+        }
+        .cue-marker {
+            background-color: #2a6bba;
         }
         .analysis-status {
             --status-text-color: #bbb;

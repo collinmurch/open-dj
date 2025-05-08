@@ -1,29 +1,31 @@
 <script lang="ts">
-    // Removed libraryStore import as analysis results are handled by parent
-    // Removed createPlayerStore as store is passed in
     import Slider from "./Slider.svelte";
     import { invoke } from "@tauri-apps/api/core";
     import { onDestroy } from "svelte";
-    import type { PlayerStore } from "$lib/stores/playerStore"; // For typing playerActions
-    import type { PlayerState } from "$lib/types"; // For typing playerStoreState
+    import type { PlayerStore } from "$lib/stores/playerStore";
+    import type { PlayerState } from "$lib/types";
 
-    // --- Props --- Modified to accept store state and actions
     let {
-        filePath = null, // Still needed to trigger initial load
+        filePath = null,
         deckId,
-        playerStoreState, // The reactive Svelte store state ($playerStoreA or $playerStoreB)
-        playerActions, // The object with action methods from the store
+        playerStoreState,
+        playerActions,
     }: {
         filePath: string | null;
         deckId: string;
         playerStoreState: PlayerState;
         playerActions: Pick<
             PlayerStore,
-            "loadTrack" | "play" | "pause" | "seek" | "cleanup" | "setVolume"
+            | "loadTrack"
+            | "play"
+            | "pause"
+            | "seek"
+            | "cleanup"
+            | "setVolume"
+            | "setCuePoint"
         >;
     } = $props();
 
-    // --- Time Formatting Utility (remains the same) ---
     function formatTime(totalSeconds: number): string {
         if (isNaN(totalSeconds) || totalSeconds < 0) {
             return "00:00";
@@ -48,11 +50,16 @@
     const FADER_DEBOUNCE_MS = 50;
     const EQ_DEBOUNCE_MS = 50;
 
-    // --- REMOVED Derived analysis result based on filePath ---
-    // This is now handled in +page.svelte
+    // --- CUE State ---
+    let isCueHeld = $state(false); // Track if cue button is currently held down
+    let wasPausedAtCueWhenCuePressed = $state(false); // Flag for cue play logic
 
-    // Determine if a track is actually loaded based on filePath prop
-    // const isTrackLoaded = $derived(!!filePath); // Not directly needed here for VolumeAnalysis anymore
+    // Derived state to check if playback is currently at the cue point
+    const isAtCuePoint = $derived(() => {
+        const cueTime = playerStoreState.cuePointTime;
+        const currentTime = playerStoreState.currentTime;
+        return cueTime !== null && Math.abs(currentTime - cueTime) < 0.1; // Tolerance of 100ms
+    });
 
     // --- Effects ---
 
@@ -212,9 +219,62 @@
                 ),
             );
     }
+
+    // --- CUE Button Handlers ---
+    function handleCueClick() {
+        console.log(
+            `[TrackPlayer ${deckId}] Cue CLICKED. Playing: ${playerStoreState.isPlaying}, Cue Time: ${playerStoreState.cuePointTime}`,
+        );
+        if (playerStoreState.isPlaying) {
+            // If playing, set the cue point to the current time
+            playerActions.setCuePoint(playerStoreState.currentTime);
+        } else {
+            // If paused
+            if (playerStoreState.cuePointTime !== null) {
+                // If cue point exists, seek to it
+                playerActions.seek(playerStoreState.cuePointTime);
+            } else {
+                // If no cue point exists, set it to the start (0.0)
+                playerActions.setCuePoint(0.0);
+                playerActions.seek(0.0); // And seek there
+            }
+        }
+    }
+
+    function handleCuePointerDown() {
+        console.log(
+            `[TrackPlayer ${deckId}] Cue Pointer DOWN. Paused: ${!playerStoreState.isPlaying}, At Cue: ${isAtCuePoint()}`,
+        );
+        isCueHeld = true;
+        if (!playerStoreState.isPlaying && isAtCuePoint()) {
+            // If paused AT the cue point, start temporary playback
+            wasPausedAtCueWhenCuePressed = true;
+            playerActions.play();
+        } else {
+            wasPausedAtCueWhenCuePressed = false;
+        }
+    }
+
+    function handleCuePointerUp() {
+        console.log(
+            `[TrackPlayer ${deckId}] Cue Pointer UP. Was temporary play: ${wasPausedAtCueWhenCuePressed}`,
+        );
+        isCueHeld = false;
+        if (wasPausedAtCueWhenCuePressed) {
+            // If we started temporary playback, stop it and return to cue
+            playerActions.pause().then(() => {
+                // Ensure seek happens *after* pause confirmation if possible,
+                // though state updates might race slightly. Seeking paused is okay.
+                if (playerStoreState.cuePointTime !== null) {
+                    playerActions.seek(playerStoreState.cuePointTime);
+                }
+            });
+        }
+        wasPausedAtCueWhenCuePressed = false; // Reset flag
+    }
 </script>
 
-<div class="track-player-wrapper">
+<div class="deck-controls-wrapper">
     {#if playerStoreState.isLoading}
         <div class="loading-overlay">Loading track...</div>
     {:else if playerStoreState.error}
@@ -284,6 +344,20 @@
     <!-- Transport Controls (Play/Pause/Seek/Time) -->
     <div class="transport-controls">
         <button
+            class="cue-button"
+            class:held={isCueHeld}
+            onclick={handleCueClick}
+            onpointerdown={handleCuePointerDown}
+            onpointerup={handleCuePointerUp}
+            onpointerleave={handleCuePointerUp}
+            disabled={playerStoreState.isLoading ||
+                playerStoreState.duration <= 0 ||
+                !!playerStoreState.error}
+            aria-label="Set or return to Cue point"
+        >
+            CUE
+        </button>
+        <button
             class="seek-button"
             onclick={handleSeekBackward}
             disabled={playerStoreState.isLoading ||
@@ -333,12 +407,12 @@
         margin-bottom: 1rem;
     }
 
-    .track-player-wrapper {
+    .deck-controls-wrapper {
         display: flex;
         flex-direction: column;
         gap: 0.75rem;
-        border: 1px solid var(--section-border-light, #ccc); /* Lightened border */
-        padding: 0.75rem; /* Slightly reduced padding */
+        border: 1px solid var(--section-border-light, #ccc);
+        padding: 0.75rem;
         border-radius: 8px;
         background-color: var(--track-bg, #f9f9f9);
         width: 100%;
@@ -363,7 +437,7 @@
         align-items: center;
         justify-content: center;
         gap: 0.75rem;
-        padding-top: 0.5rem; /* Reduced padding */
+        padding-top: 0.5rem;
         width: 100%;
     }
     .transport-controls button {
@@ -373,10 +447,24 @@
         border: 1px solid #ccc;
         border-radius: 4px;
         background-color: #eee;
+        min-width: 50px;
+        text-align: center;
+    }
+    .cue-button {
+        background-color: var(--cue-button-bg, #f0ad4e);
+        color: var(--cue-button-text, #fff);
+        border-color: var(--cue-button-border, #eea236);
+    }
+    .cue-button.held {
+        background-color: var(--cue-button-held-bg, #ec971f);
+        border-color: var(--cue-button-held-border, #d58512);
     }
     .transport-controls button:disabled {
         opacity: 0.5;
         cursor: not-allowed;
+        background-color: #eee;
+        color: #aaa;
+        border-color: #ccc;
     }
     .play-pause-button {
         min-width: 80px;
@@ -399,16 +487,11 @@
         gap: 0.5rem;
         padding: 0.75rem 0;
         width: 100%;
-        /* Removed borders, will be simpler component now */
-        /* margin-top: 0.75rem; */ /* Removed top margin */
         margin-bottom: 0.25rem;
     }
 
-    /* REMOVED .waveform-area styles */
-    /* REMOVED :global(.track-player-waveform .waveform-scroll-container) */
-
     @media (prefers-color-scheme: dark) {
-        .track-player-wrapper {
+        .deck-controls-wrapper {
             border-color: var(--section-border-light, #444);
             background-color: var(--track-bg, #3a3a3a);
         }
@@ -426,14 +509,31 @@
             border-color: #777;
             color: #eee;
         }
-        .transport-controls button:hover:not(:disabled) {
+        .cue-button {
+            background-color: var(--cue-button-bg-dark, #d9534f);
+            color: var(--cue-button-text-dark, #fff);
+            border-color: var(--cue-button-border-dark, #d43f3a);
+        }
+        .cue-button.held {
+            background-color: var(--cue-button-held-bg-dark, #c9302c);
+            border-color: var(--cue-button-held-border-dark, #ac2925);
+        }
+        .transport-controls button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            background-color: #555;
+            color: #888;
+            border-color: #666;
+        }
+        .transport-controls button:hover:not(:disabled):not(.cue-button) {
             background-color: #666;
+        }
+        .cue-button:hover:not(:disabled) {
+            background-color: var(--cue-button-held-bg-dark, #c9302c);
         }
         .time-display {
             background-color: #555;
             color: #eee;
         }
-        /* Removed .mixer-controls-horizontal dark theme border overrides */
-        /* Removed .waveform-area dark theme background override */
     }
 </style>

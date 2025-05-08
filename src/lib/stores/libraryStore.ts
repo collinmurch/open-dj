@@ -57,6 +57,12 @@ function createLibraryStore() {
             }
 
             console.log(`[LibraryStore] Found ${initialFiles.length} audio files.`);
+            if (initialFiles.length === 0) {
+                console.warn("[LibraryStore] No compatible audio files found in the selected folder. Skipping analysis.");
+                update(state => ({ ...state, isLoading: false, isAnalyzing: false }));
+                return;
+            }
+
             update(state => ({
                 ...state,
                 audioFiles: initialFiles,
@@ -71,7 +77,7 @@ function createLibraryStore() {
                     console.log("[LibraryStore] Batch features analysis complete.");
 
                     update(state => {
-                        const updatedFiles = state.audioFiles.map(file => {
+                        const updatedFiles = state.audioFiles.map((file, index) => {
                             const result = results[file.path];
                             let features: AudioFeatures | null | undefined = undefined;
                             let derivedBpm: number | null | undefined = undefined;
@@ -91,7 +97,6 @@ function createLibraryStore() {
                                 features = result.Ok;
                                 derivedBpm = result.Ok.bpm;
                                 derivedDurationSeconds = result.Ok.durationSeconds;
-                                console.log(`[LibraryStore] Parsed features for ${file.path}: BPM=${derivedBpm}, Duration=${derivedDurationSeconds}`);
                             } else {
                                 console.warn(`[LibraryStore] Unexpected result structure for ${file.path}:`, result);
                                 features = null;
@@ -101,12 +106,11 @@ function createLibraryStore() {
 
                             return { ...file, features: features, bpm: derivedBpm, durationSeconds: derivedDurationSeconds };
                         });
-
                         return { ...state, audioFiles: updatedFiles };
                     });
 
                 } catch (batchError) {
-                    console.error("[LibraryStore] Batch features analysis failed invoke:", batchError);
+                    console.error("[LibraryStore] CRITICAL ERROR during invoke or processing of analyze_features_batch:", batchError);
                     const message = batchError instanceof Error ? batchError.message : String(batchError);
                     update(state => {
                         const updatedFiles = state.audioFiles.map(file =>
@@ -123,7 +127,7 @@ function createLibraryStore() {
             runBackgroundAnalysis();
 
         } catch (err) {
-            console.error('[LibraryStore] Error selecting or reading folder:', err);
+            console.error('[LibraryStore] CRITICAL ERROR during folder selection or reading:', err);
             const message = err instanceof Error ? err.message : String(err);
             update(state => ({ ...state, isLoading: false, isAnalyzing: false, error: `Failed to load library: ${message}` }));
         }

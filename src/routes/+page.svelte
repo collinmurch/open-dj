@@ -1,7 +1,7 @@
 <script lang="ts">
     import MusicLibrary from "$lib/components/MusicLibrary.svelte";
-    import TrackPlayer from "$lib/components/TrackPlayer.svelte";
-    import VolumeAnalysis from "$lib/components/VolumeAnalysis.svelte";
+    import DeckControls from "$lib/components/DeckControls.svelte";
+    import WaveformDisplay from "$lib/components/WaveformDisplay.svelte";
     import Slider from "$lib/components/Slider.svelte";
     import { libraryStore } from "$lib/stores/libraryStore";
     import {
@@ -50,6 +50,7 @@
     const trackInfoA = $derived(
         $libraryStore.audioFiles.find((track) => track.path === deckAFilePath),
     );
+
     const analysisFeaturesA = $derived(trackInfoA?.features);
     const volumeAnalysisResultA = $derived(
         analysisFeaturesA === undefined
@@ -105,26 +106,28 @@
         <section class="mixer-section">
             <h2>Mixer</h2>
             <div class="waveform-container deck-a-style">
-                <VolumeAnalysis
+                <WaveformDisplay
                     results={volumeAnalysisResultA?.intervals ?? null}
                     maxRms={volumeAnalysisResultA?.max_rms_amplitude ?? 0}
                     isAnalysisPending={analysisFeaturesA === undefined}
                     isTrackLoaded={isTrackLoadedA}
                     audioDuration={$playerStoreA.duration}
                     currentTime={$playerStoreA.currentTime}
+                    cuePointTime={$playerStoreA.cuePointTime}
                     seekAudio={seekDeckA}
                     className="mixer-waveform"
                     waveformColor="var(--deck-a-waveform-fill-light)"
                 />
             </div>
             <div class="waveform-container deck-b-style">
-                <VolumeAnalysis
+                <WaveformDisplay
                     results={volumeAnalysisResultB?.intervals ?? null}
                     maxRms={volumeAnalysisResultB?.max_rms_amplitude ?? 0}
                     isAnalysisPending={analysisFeaturesB === undefined}
                     isTrackLoaded={isTrackLoadedB}
                     audioDuration={$playerStoreB.duration}
                     currentTime={$playerStoreB.currentTime}
+                    cuePointTime={$playerStoreB.cuePointTime}
                     seekAudio={seekDeckB}
                     className="mixer-waveform"
                     waveformColor="var(--deck-b-waveform-fill-light)"
@@ -149,7 +152,7 @@
         <!-- Decks Section (TrackPlayers without waveforms) -->
         <section class="decks-section-horizontal">
             <div class="deck-stacked deck-a-style">
-                <TrackPlayer
+                <DeckControls
                     deckId="A"
                     filePath={deckAFilePath}
                     playerStoreState={$playerStoreA}
@@ -157,7 +160,7 @@
                 />
             </div>
             <div class="deck-stacked deck-b-style">
-                <TrackPlayer
+                <DeckControls
                     deckId="B"
                     filePath={deckBFilePath}
                     playerStoreState={$playerStoreB}

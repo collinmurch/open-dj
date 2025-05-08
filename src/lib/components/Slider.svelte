@@ -190,7 +190,7 @@
         align-items: center;
         gap: 1rem;
         padding: 0.5rem 0 0.25rem;
-        min-width: 60px; /* Default for vertical */
+        min-width: 60px;
     }
     .slider-wrapper.vertical {
         flex-direction: column;
@@ -199,7 +199,7 @@
     .slider-wrapper.horizontal {
         flex-direction: row;
         width: 100%;
-        min-height: 60px; /* Default for horizontal */
+        min-height: 60px;
     }
 
     .slider-label {
@@ -209,7 +209,7 @@
         flex-shrink: 0;
     }
     .slider-wrapper.horizontal .slider-label {
-        min-width: 80px; /* Give some space for horizontal label */
+        min-width: 80px;
         text-align: left;
     }
 
@@ -323,7 +323,6 @@
 
     @media (prefers-color-scheme: dark) {
         .slider-wrapper {
-            /* Changed from .vertical-slider-wrapper */
             --muted-foreground: #aaa;
             --border: #444;
             --primary: #8ab4f8;

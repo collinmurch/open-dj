@@ -77,6 +77,7 @@ export interface PlayerState {
     isPlaying: boolean;
     isLoading: boolean; // Loading audio file itself
     error: string | null;
+    cuePointTime: number | null; // Added cue point time (maps from cue_point_seconds)
 }
 
 // --- Drag and Drop Types ---

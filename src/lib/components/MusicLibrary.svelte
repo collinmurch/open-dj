@@ -61,11 +61,6 @@
             {#if $libraryStore.audioFiles.length > 0}
                 <ul class="track-list">
                     {#each $libraryStore.audioFiles as track (track.path)}
-                        {@const _ = console.log(
-                            `MusicLibrary render: Track ${track.name}, TopLevelDuration: ${track.durationSeconds}, Features:`,
-                            track.features,
-                            `NestedDuration: ${track.features?.durationSeconds}`,
-                        )}
                         <li class:selected-li={isSelected(track)}>
                             <button
                                 class:selected={isSelected(track)}

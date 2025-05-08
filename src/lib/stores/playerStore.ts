@@ -10,6 +10,7 @@ export function createPlayerStore(deckId: string) {
         isPlaying: false,
         isLoading: false,
         error: null,
+        cuePointTime: null,
     };
     const { subscribe, set, update } = writable<PlayerState>(initialState);
 
@@ -22,9 +23,27 @@ export function createPlayerStore(deckId: string) {
 
         unlistenUpdate = await listen<{
             deckId: string;
-            state: PlayerState;
+            state: {
+                isPlaying: boolean;
+                isLoading: boolean;
+                currentTime: number;
+                duration: number;
+                error: string | null;
+                cuePointSeconds: number | null;
+            };
         }>("playback://update", (event) => {
-            if (event.payload.deckId === deckId) set(event.payload.state);
+            if (event.payload.deckId === deckId) {
+                const rustState = event.payload.state;
+                console.log(`[Store ${deckId}] Received Rust state:`, rustState);
+                set({
+                    isPlaying: rustState.isPlaying,
+                    isLoading: rustState.isLoading,
+                    currentTime: rustState.currentTime,
+                    duration: rustState.duration,
+                    error: rustState.error,
+                    cuePointTime: rustState.cuePointSeconds,
+                });
+            }
         });
 
         unlistenError = await listen<{ deckId: string; error: string }>(
@@ -32,10 +51,10 @@ export function createPlayerStore(deckId: string) {
             (event) => {
                 if (event.payload.deckId === deckId) {
                     console.error(
-                        `[Store ${deckId}] Received error:`,
+                        `[Store ${deckId}] Received error event:`,
                         event.payload.error,
                     );
-                    update((s) => ({ ...s, error: event.payload.error }));
+                    update((s) => ({ ...s, error: event.payload.error, isLoading: false }));
                 }
             },
         );
@@ -58,10 +77,7 @@ export function createPlayerStore(deckId: string) {
 
     async function loadTrack(path: string) {
         console.log(`[Store ${deckId}] Loading track: ${path}`);
-        update((s) => ({
-            ...initialState,
-            isLoading: true,
-        }));
+        set({ ...initialState, isLoading: true });
         try {
             await invoke("load_track", { deckId, path });
         } catch (err) {
@@ -108,12 +124,20 @@ export function createPlayerStore(deckId: string) {
         console.log(`[Store ${deckId}] Setting volume to ${level} via set_fader_level...`);
         try {
             await invoke("set_fader_level", { deckId, level: level });
-            // No state update needed here, volume is fire-and-forget for now
         } catch (err) {
             const errorMsg = `Failed to set volume (invoking set_fader_level): ${err}`;
             console.error(`[Store ${deckId}]`, errorMsg);
-            // Optionally update state with error if needed
-            // update((s) => ({ ...s, error: errorMsg }));
+        }
+    }
+
+    async function setCuePoint(positionSeconds: number) {
+        console.log(`[Store ${deckId}] Setting cue point to ${positionSeconds}s...`);
+        try {
+            await invoke("set_cue_point", { deckId, positionSeconds });
+        } catch (err) {
+            const errorMsg = `Failed to set cue point: ${err}`;
+            console.error(`[Store ${deckId}]`, errorMsg);
+            update((s) => ({ ...s, error: errorMsg }));
         }
     }
 
@@ -135,6 +159,7 @@ export function createPlayerStore(deckId: string) {
         pause,
         seek,
         setVolume,
+        setCuePoint,
         cleanup,
         deckId,
     };

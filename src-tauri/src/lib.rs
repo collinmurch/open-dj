@@ -51,8 +51,9 @@ pub fn run() {
             audio_playback::get_playback_state,
             audio_playback::set_fader_level,
             audio_playback::set_trim_gain,
-            audio_playback::cleanup_player,
-            audio_playback::set_eq_params
+            audio_playback::set_eq_params,
+            audio_playback::set_cue_point,
+            audio_playback::cleanup_player
         ])
         .on_window_event(move |window, event| {
             // Send shutdown command only once when close is requested
