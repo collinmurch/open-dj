@@ -9,17 +9,11 @@ mod playback_types;
 
 use audio_playback::AppState;
 use playback_types::AudioThreadCommand;
-use tauri::WindowEvent; // Removed Manager, AppHandle, Emitter, Runtime
+use tauri::WindowEvent;
 use tokio::sync::oneshot;
-
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Initialize logging
     // Consider using a more robust logger like tracing or fern
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
@@ -41,8 +35,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            greet,
             audio_processor::analyze_features_batch,
+            audio_processor::get_track_volume_analysis,
             audio_playback::init_player,
             audio_playback::load_track,
             audio_playback::play_track,
@@ -94,7 +88,6 @@ pub fn run() {
                     }
 
                     // Optionally wait a short moment for thread to potentially process (Probably not needed now)
-                    // tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     log::info!("Proceeding with window close after sending Shutdown command.");
                     // Now allow the window to close
                     if let Err(e) = window_clone.close() {

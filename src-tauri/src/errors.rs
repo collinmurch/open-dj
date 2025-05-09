@@ -3,11 +3,6 @@ use symphonia::core::errors::Error as SymphoniaError;
 use rodio::PlayError;
 
 #[derive(Error, Debug)]
-pub enum ConfigError {
-    // Placeholder if we need configuration loading errors later
-}
-
-#[derive(Error, Debug)]
 pub enum AudioAnalysisError {
     #[error("Invalid sample rate for volume calculation: {0}")]
     InvalidSampleRate(f32),

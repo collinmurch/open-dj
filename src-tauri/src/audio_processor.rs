@@ -1,133 +1,97 @@
-// src-tauri/src/audio_processor.rs
 use crate::{
     audio_analysis,
     bpm_analyzer,
-    // errors::{AudioProcessorError, AudioDecodingError, BpmError, AudioAnalysisError} // This line to be replaced
 };
 use crate::errors::AudioProcessorError; // Only this is needed if sub-errors are just sources
 use rayon::prelude::*;
 use std::collections::HashMap;
 
-// --- Combined Result Structure ---
-
+// --- New Struct for Basic Metadata ---
 #[derive(serde::Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct AudioFeatures {
-    // Store results directly, None if analysis failed for that part
+pub struct TrackBasicMetadata {
+    pub duration_seconds: Option<f64>,
     pub bpm: Option<f32>,
-    pub volume: Option<audio_analysis::AudioAnalysis>, // Reuse existing struct
-    pub duration_seconds: Option<f64>, // Field name in Rust remains snake_case
 }
 
-// --- Analysis Functions ---
+// --- Internal Helper Functions ---
 
-/// Analyzes a single file, performing decoding and then parallel analysis.
-fn analyze_single_file_features(path: &str) -> Result<AudioFeatures, AudioProcessorError> {
-    log::info!("Analysis: Starting combined analysis for: {}", path);
+/// Decodes audio and calculates basic metadata (duration, BPM).
+fn get_track_basic_metadata_internal(path: &str) -> Result<TrackBasicMetadata, AudioProcessorError> {
+    log::info!("Metadata Intern: Starting basic metadata analysis for: {}", path);
 
     let (samples, sample_rate) = crate::audio_playback::decode_audio_for_playback(path)
         .map_err(|e| AudioProcessorError::AnalysisDecodingError{ path: path.to_string(), source: e })?;
 
-    let duration_calc_result = if sample_rate > 0.0 && !samples.is_empty() {
+    let duration_seconds = if sample_rate > 0.0 && !samples.is_empty() {
         Ok(samples.len() as f64 / sample_rate as f64)
     } else {
-        log::warn!("Analysis: Cannot calculate duration for '{}' due to zero sample rate or empty samples.", path);
+        log::warn!("Metadata Intern: Cannot calculate duration for '{}' due to zero sample rate or empty samples.", path);
         Err(AudioProcessorError::InvalidDataForDurationCalculation{ path: path.to_string() })
     };
 
-    let (bpm_analysis_result, volume_analysis_result) = rayon::join(
-        || {
-            bpm_analyzer::calculate_bpm(&samples, sample_rate)
-                .map_err(|e| AudioProcessorError::AnalysisBpmError{ path: path.to_string(), source: e })
-        },
-        || {
-            audio_analysis::calculate_rms_intervals(&samples, sample_rate)
-                .map_err(|e| AudioProcessorError::AnalysisVolumeError{ path: path.to_string(), source: e })
-                .map(|(intervals, max_rms_amplitude)| audio_analysis::AudioAnalysis {
-                    intervals,
-                    max_rms_amplitude,
-                })
-        },
-    );
+    let bpm = bpm_analyzer::calculate_bpm(&samples, sample_rate)
+        .map_err(|e| AudioProcessorError::AnalysisBpmError{ path: path.to_string(), source: e });
 
-    let final_duration_seconds = match duration_calc_result {
-        Ok(d) => Some(d),
-        Err(e) => {
-            log::error!("Analysis: Duration calculation failed for '{}': {}", path, e);
-            None
-        }
-    };
-
-    // Combine results and handle errors from individual analyses
-    match (bpm_analysis_result, volume_analysis_result) {
-        (Ok(bpm_val), Ok(vol_analysis)) => {
-            log::info!("Analysis: BPM success for '{}': {:.2}", path, bpm_val);
-            log::info!("Analysis: Volume success for '{}': {} intervals, max RMS {:.4}", 
-                       path, vol_analysis.intervals.len(), vol_analysis.max_rms_amplitude);
-            Ok(AudioFeatures { 
-                bpm: Some(bpm_val), 
-                volume: Some(vol_analysis), 
-                duration_seconds: final_duration_seconds 
-            })
-        }
-        (Err(bpm_err), Ok(vol_analysis)) => {
-            log::error!("Analysis: BPM failed for '{}': {}", path, bpm_err);
-            log::info!("Analysis: Volume succeeded for '{}': {} intervals, max RMS {:.4}", 
-                       path, vol_analysis.intervals.len(), vol_analysis.max_rms_amplitude);
-            Ok(AudioFeatures { 
-                bpm: None, 
-                volume: Some(vol_analysis), 
-                duration_seconds: final_duration_seconds 
-            })
-        }
-        (Ok(bpm_val), Err(vol_err)) => {
-            log::info!("Analysis: BPM success for '{}': {:.2}", path, bpm_val);
-            log::error!("Analysis: Volume failed for '{}': {}", path, vol_err);
-            Ok(AudioFeatures { 
-                bpm: Some(bpm_val), 
-                volume: None, 
-                duration_seconds: final_duration_seconds 
-            })
-        }
-        (Err(bpm_err), Err(vol_err)) => {
-            log::error!("Analysis: BPM failed for '{}': {}", path, bpm_err);
-            log::error!("Analysis: Volume failed for '{}': {}", path, vol_err);
-            Err(AudioProcessorError::CombinedAnalysisFailed{ path: path.to_string() })
-            // Even if BPM/Volume fails, we might still want to return duration if it was calculated.
-            // However, current error path returns a full error. If partial success with duration is needed,
-            // this part needs restructuring, e.g., always returning Ok(AudioFeatures{...}) and putting errors inside.
-            // For now, if both BPM/Vol fail, the whole feature analysis for the file is considered failed.
-        }
-    }
+    Ok(TrackBasicMetadata {
+        duration_seconds: duration_seconds.ok(), // Store Option<f64>
+        bpm: bpm.ok(),                     // Store Option<f32>
+    })
 }
 
-// --- Batch Command ---
+/// Decodes audio and calculates full volume analysis (WaveBin levels).
+fn get_track_volume_analysis_internal(path: &str) -> Result<audio_analysis::AudioAnalysis, AudioProcessorError> {
+    log::info!("Volume Intern: Starting volume analysis for: {}", path);
+
+    let (samples, sample_rate) = crate::audio_playback::decode_audio_for_playback(path)
+        .map_err(|e| AudioProcessorError::AnalysisDecodingError{ path: path.to_string(), source: e })?;
+    
+    audio_analysis::calculate_rms_intervals(&samples, sample_rate)
+        .map_err(|e| AudioProcessorError::AnalysisVolumeError{ path: path.to_string(), source: e })
+        .map(|(levels, max_rms_amplitude)| audio_analysis::AudioAnalysis {
+            levels,
+            max_rms_amplitude,
+        })
+}
+
+// --- Batch Command (To be modified next) ---
 
 #[tauri::command(async)]
 pub fn analyze_features_batch(
     paths: Vec<String>,
-) -> HashMap<String, Result<AudioFeatures, String>> {
+) -> HashMap<String, Result<TrackBasicMetadata, String>> { // MODIFIED Return Type
     log::info!(
-        "Analysis: Starting batch analysis for {} files",
+        "Metadata Batch CMD: Starting batch analysis for {} files",
         paths.len()
     );
 
-    let results: HashMap<String, Result<AudioFeatures, String>> = paths
+    let results: HashMap<String, Result<TrackBasicMetadata, String>> = paths
         .par_iter() // Process paths in parallel
         .map(|path| {
-            // Use the updated analysis function
-            let analysis_result = analyze_single_file_features(path);
-            // Log top-level errors here, specific errors logged within analyze_single_file_features
-            match analysis_result {
-                Ok(features) => (path.clone(), Ok(features)),
+            // Use the new internal function for basic metadata
+            let metadata_result = get_track_basic_metadata_internal(path);
+            match metadata_result {
+                Ok(metadata) => (path.clone(), Ok(metadata)),
                 Err(e) => {
-                    log::error!("Feature analysis failed for path '{}': {}", path, e);
-                    (path.clone(), Err(e.to_string())) // Convert AudioProcessorError to String
+                    log::error!("Basic metadata analysis failed for path '{}': {}", path, e);
+                    (path.clone(), Err(e.to_string())) 
                 }
             }
         })
         .collect();
 
-    log::info!("Analysis: Finished batch analysis.");
+    log::info!("Metadata Batch CMD: Finished batch analysis.");
     results
+}
+
+// --- New Command for On-Demand Volume Analysis ---
+#[tauri::command(async)]
+pub fn get_track_volume_analysis(
+    path: String,
+) -> Result<audio_analysis::AudioAnalysis, String> {
+    log::info!("Volume CMD: Request for: {}", path);
+    get_track_volume_analysis_internal(&path).map_err(|e| {
+        log::error!("Volume CMD: Error for path '{}': {}", path, e);
+        e.to_string()
+    })
 }

@@ -313,9 +313,6 @@ pub fn get_playback_state(
 #[tauri::command]
 pub async fn cleanup_player(state: State<'_, AppState>, deck_id: String) -> Result<(), String> {
     log::info!("CMD Cleanup: Deck '{}'", deck_id);
-    // Remove logical state immediately (optional)
-    // state.logical_playback_states.lock().unwrap().remove(&deck_id);
-
     state
         .audio_command_sender
         .send(AudioThreadCommand::CleanupDeck(deck_id))
@@ -1012,8 +1009,6 @@ fn audio_thread_handle_time_update(
                 deck_state.paused_position = Some(deck_state.duration);
             }
         }
-        // No need for an else block to emit state for paused tracks, 
-        // as state is emitted when actions like pause, seek, set_cue occur.
     }
 }
 

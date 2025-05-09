@@ -165,8 +165,6 @@
 
     const SEEK_AMOUNT = 5; // Seek 5 seconds
 
-    // --- REMOVED Callbacks for VolumeAnalysis (seekAudioCallback) ---
-
     // --- Event Handlers for Buttons (use playerActions props) ---
     function handlePlayPause() {
         if (playerStoreState.isPlaying) {
@@ -280,8 +278,6 @@
     {:else if playerStoreState.error}
         <p class="error-message">Error: {playerStoreState.error}</p>
     {/if}
-
-    <!-- REMOVED Waveform Area -->
 
     <!-- Mixer Controls - Unchanged structurally, but parent div might change -->
     <div class="mixer-controls-horizontal">

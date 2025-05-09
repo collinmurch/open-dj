@@ -1,83 +1,68 @@
-use rayon::prelude::*;
-use crate::config;
 use crate::errors::AudioAnalysisError;
 
-#[derive(serde::Serialize, Debug, Clone)]
-pub struct VolumeInterval {
-    start_time: f64,
-    end_time: f64,
-    rms_amplitude: f32,
+#[derive(serde::Serialize, Debug, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub struct WaveBin {
+    pub low: f32,
+    pub mid: f32,
+    pub high: f32,
+}
+
+impl Default for WaveBin {
+    fn default() -> Self {
+        WaveBin { low: 0.0, mid: 0.0, high: 0.0 }
+    }
 }
 
 #[derive(serde::Serialize, Debug, Clone)]
 pub struct AudioAnalysis {
-    pub intervals: Vec<VolumeInterval>,
+    pub levels: Vec<Vec<WaveBin>>,
     pub max_rms_amplitude: f32,
 }
 
 /// Calculates RMS volume intervals from pre-decoded mono f32 samples.
 /// Made pub(crate) to be accessible from audio_processor.
 /// Accepts sample_rate as f32.
+/// TODO: This function needs a complete rewrite to implement FFT, band energy calculation, and mip-map generation.
 pub(crate) fn calculate_rms_intervals(
     samples: &[f32],
     sample_rate: f32,
-) -> Result<(Vec<VolumeInterval>, f32), AudioAnalysisError> {
-    // Return Result
+) -> Result<(Vec<Vec<WaveBin>>, f32), AudioAnalysisError> {
     if samples.is_empty() {
-        // Return empty results, not an error necessarily, but log warning
-        log::warn!("Volume Calc: Cannot calculate RMS from empty samples.");
-        return Ok((Vec::new(), 0.0));
+        log::warn!("Waveform Analysis: Cannot calculate from empty samples. Returning a single default WaveBin.");
+        return Ok((vec![vec![WaveBin::default()]], 0.0));
     }
     if sample_rate <= 0.0 {
         return Err(AudioAnalysisError::InvalidSampleRate(sample_rate));
     }
 
-    let samples_per_interval = ((sample_rate as f64) / config::TARGET_RMS_INTERVALS_PER_SECOND)
-        .round()
-        .max(1.0) as usize;
+    let n_samples_per_bin = 512;
+    let num_bins_level_0 = (samples.len() as f64 / n_samples_per_bin as f64).ceil() as usize;
 
-    let total_duration_seconds = samples.len() as f64 / sample_rate as f64;
-    let num_intervals = (samples.len() as f64 / samples_per_interval as f64).ceil() as usize;
+    let mut level_0_bins: Vec<WaveBin> = Vec::with_capacity(num_bins_level_0);
+    let mut calculated_max_rms: f32 = 0.0;
 
-    log::debug!(
-        "Volume Calc: Calculating {} intervals for {} samples at {} Hz ({} samples/interval)",
-        num_intervals,
-        samples.len(),
-        sample_rate,
-        samples_per_interval
-    );
-
-    let mut intervals: Vec<VolumeInterval> = Vec::with_capacity(num_intervals);
-    let mut max_rms_amplitude: f32 = 0.0;
-
-    for (i, chunk) in samples.chunks(samples_per_interval).enumerate() {
+    for chunk in samples.chunks(n_samples_per_bin) {
         if chunk.is_empty() {
             continue;
         }
-        let sum_sq: f64 = chunk.par_iter().map(|&s| (s as f64).powi(2)).sum(); // Parallel sum
+        let sum_sq: f64 = chunk.iter().map(|&s| (s as f64).powi(2)).sum();
         let mean_sq = sum_sq / chunk.len() as f64;
         let rms = mean_sq.sqrt().max(0.0) as f32;
+        calculated_max_rms = calculated_max_rms.max(rms);
 
-        max_rms_amplitude = max_rms_amplitude.max(rms);
-
-        let start_sample_index = i * samples_per_interval;
-        let end_sample_index = start_sample_index + chunk.len();
-
-        let start_time = start_sample_index as f64 / sample_rate as f64;
-        let end_time = (end_sample_index as f64 / sample_rate as f64).min(total_duration_seconds);
-
-        intervals.push(VolumeInterval {
-            start_time,
-            end_time,
-            rms_amplitude: rms,
+        level_0_bins.push(WaveBin {
+            low: rms * 0.3,
+            mid: rms * 0.4,
+            high: rms * 0.3,
         });
     }
-
-    // Ensure max_rms is non-zero if we have intervals, preventing division by zero later
-    // Use a small epsilon instead of 0.0001 for robustness
-    if max_rms_amplitude < f32::EPSILON && !intervals.is_empty() {
-        max_rms_amplitude = f32::EPSILON;
+    
+    if calculated_max_rms < f32::EPSILON && !level_0_bins.is_empty() {
+        calculated_max_rms = f32::EPSILON;
     }
 
-    Ok((intervals, max_rms_amplitude))
+    let pyramid: Vec<Vec<WaveBin>> = vec![level_0_bins];
+
+    Ok((pyramid, calculated_max_rms))
 }

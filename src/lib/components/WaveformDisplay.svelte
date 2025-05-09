@@ -1,23 +1,21 @@
 <script lang="ts">
-    import type { VolumeInterval } from "$lib/types";
+    import type { VolumeAnalysis, WaveBin } from "$lib/types";
 
     let {
-        results = null,
+        volumeAnalysis = null,
         audioDuration = 0,
         currentTime = 0,
         seekAudio = (time: number) => {},
-        maxRms = 0,
         isAnalysisPending = false,
         isTrackLoaded = false,
         className = "",
         waveformColor = "var(--waveform-fill-default, #6488ac)",
         cuePointTime = null as number | null,
     }: {
-        results: VolumeInterval[] | null;
+        volumeAnalysis: VolumeAnalysis | null;
         audioDuration: number;
         currentTime: number;
         seekAudio: (time: number) => void;
-        maxRms: number;
         isAnalysisPending?: boolean;
         isTrackLoaded?: boolean;
         className?: string;
@@ -42,7 +40,24 @@
         containerHeight > 0 ? Math.round(containerHeight) : 80,
     );
 
-    const translateX = $derived(() => {
+    const currentMaxRms = $derived(volumeAnalysis?.max_rms_amplitude ?? 0.0001);
+    const activeMipLevel = $derived.by(() => {
+        if (
+            volumeAnalysis &&
+            volumeAnalysis.levels &&
+            volumeAnalysis.levels.length > 0
+        ) {
+            if (
+                volumeAnalysis.levels[0] &&
+                volumeAnalysis.levels[0].length > 0
+            ) {
+                return volumeAnalysis.levels[0];
+            }
+        }
+        return null;
+    });
+
+    const translateX = $derived.by(() => {
         if (
             roundedContainerWidth > 0 &&
             duration > 0 &&
@@ -55,100 +70,92 @@
         return 0;
     });
 
-    // --- SVG Path Calculation Function ---
+    // --- SVG Path Calculation Function (Modified) ---
     function calculateSvgPath(
-        intervals: VolumeInterval[],
+        bins: WaveBin[] | null,
         currentDuration: number,
-        currentMaxRms: number,
+        currentMaxOverallRms: number,
         svgWidth: number,
         svgHeightToUse: number,
     ): string {
         if (
-            !intervals ||
-            intervals.length === 0 ||
+            !bins ||
+            bins.length === 0 ||
             currentDuration <= 0 ||
             svgWidth <= 0 ||
-            svgHeightToUse <= 0
+            svgHeightToUse <= 0 ||
+            currentMaxOverallRms <= 0
         ) {
             return "M 0 0 Z";
         }
 
-        // Round the constant height for path start/end
         const roundedSvgHeight = Math.round(svgHeightToUse);
         let path = `M 0 ${roundedSvgHeight}`;
-        const effectiveMaxRms = currentMaxRms > 0 ? currentMaxRms : 0.0001;
 
-        for (const interval of intervals) {
-            // Round calculated x and y coordinates
-            const x = Math.round(
-                (interval.start_time / currentDuration) * svgWidth,
-            );
-            const rmsClamped = Math.max(
-                0,
-                Math.min(interval.rms_amplitude, effectiveMaxRms),
-            );
-            const y = Math.round(
-                svgHeightToUse -
-                    (rmsClamped / effectiveMaxRms) * svgHeightToUse,
-            );
-            // Use integer values in the path string
-            path += ` L ${x} ${y}`;
+        const numBins = bins.length;
+        const binWidthOnSvg = svgWidth / numBins;
+        const effectiveMaxRms =
+            currentMaxOverallRms > 0 ? currentMaxOverallRms : 0.0001;
+
+        let hasLoggedNonZeroEnergy = false;
+
+        for (let i = 0; i < numBins; i++) {
+            const waveBin = bins[i];
+            const binEnergy = waveBin.low + waveBin.mid + waveBin.high;
+
+            const normalizedEnergy =
+                Math.max(0, Math.min(binEnergy, effectiveMaxRms)) /
+                effectiveMaxRms;
+            const y = Math.round(svgHeightToUse * (1 - normalizedEnergy));
+
+            const xStart = Math.round(i * binWidthOnSvg);
+            const xEnd = Math.round((i + 1) * binWidthOnSvg);
+
+            if (i === 0) {
+                path += ` L ${xStart} ${y}`;
+            }
+            path += ` L ${xEnd} ${y}`;
         }
 
-        const lastInterval = intervals[intervals.length - 1];
-        // Round final x coordinates
-        const lastX = Math.round(
-            (lastInterval.end_time / currentDuration) * svgWidth,
-        );
-        const roundedSvgWidth = Math.round(svgWidth);
-        path += ` L ${lastX} ${roundedSvgHeight}`;
-        path += ` L ${roundedSvgWidth} ${roundedSvgHeight}`;
+        path += ` L ${Math.round(svgWidth)} ${roundedSvgHeight}`;
         path += " Z";
         return path;
     }
 
     // --- Derived SVG Path Data ---
-    const svgPathData = $derived(() => {
+    const svgPathData = $derived.by(() => {
         if (
-            results &&
-            results.length > 0 &&
+            activeMipLevel &&
             duration > 0 &&
             waveformVisualWidth > 0 &&
             svgHeight > 0
         ) {
             return calculateSvgPath(
-                results,
+                activeMipLevel,
                 duration,
-                maxRms,
+                currentMaxRms,
                 waveformVisualWidth,
                 svgHeight,
             );
         }
-
-        return "M 0 0 Z"; // Default empty path
+        return "M 0 0 Z";
     });
 
     // --- NEW: Derived Cue Marker Position ---
-    const cueMarkerLeftOffset = $derived(() => {
-        // Check if cue point exists, duration is valid, and component has dimensions
-        const currentContainerWidth = roundedContainerWidth; // Access derived value directly
+    const cueMarkerLeftOffset = $derived.by(() => {
+        const currentContainerWidth = roundedContainerWidth;
         if (
             cuePointTime !== null &&
             duration > 0 &&
             waveformVisualWidth > 0 &&
             currentContainerWidth > 0
         ) {
-            // Calculate the X position within the untranslated SVG coordinate space
             const svgX = (cuePointTime / duration) * waveformVisualWidth;
-            // Calculate the final visual position within the container by applying the current translation
-            const containerX = translateX() + svgX;
-
-            // Only return a value if the calculated position is within the visible container bounds
+            const containerX = translateX + svgX;
             if (containerX >= 0 && containerX <= currentContainerWidth) {
                 return `${containerX}px`;
             }
         }
-        // Return null if no cue point, no duration, no width, or if marker is outside visible area
         return null;
     });
 
@@ -172,7 +179,7 @@
 
     $effect(() => {
         const el = waveformInnerElement;
-        const currentTranslateX = translateX();
+        const currentTranslateX = translateX;
         if (el) {
             el.style.transform = `translateX(${currentTranslateX}px)`;
         }
@@ -186,8 +193,7 @@
             roundedContainerWidth <= 0 ||
             waveformVisualWidth <= 0 ||
             duration <= 0 ||
-            !results ||
-            results.length === 0
+            !activeMipLevel
         ) {
             return;
         }
@@ -221,12 +227,12 @@
 
     // --- Derived values for template ---
     const canInteract = $derived(
-        isTrackLoaded && duration > 0 && results && results.length > 0,
+        isTrackLoaded && duration > 0 && activeMipLevel,
     );
 </script>
 
-{#if isTrackLoaded && results && results.length > 0}
-    {@const ariaValueNow = currentTime / duration}
+{#if isTrackLoaded && activeMipLevel}
+    {@const ariaValueNow = duration > 0 ? currentTime / duration : 0}
     <div
         class="analysis-container {className}"
         aria-label="Audio Volume Waveform"
@@ -256,10 +262,10 @@
                     viewBox="0 0 {waveformVisualWidth} {svgHeight}"
                     preserveAspectRatio="none"
                 >
-                    {#if svgPathData() !== "M 0 0 Z"}
+                    {#if svgPathData !== "M 0 0 Z"}
                         <path
                             class="waveform-path"
-                            d={svgPathData()}
+                            d={svgPathData}
                             style="fill: {waveformColor};"
                         ></path>
                     {/if}
@@ -270,17 +276,17 @@
             <div class="progress-indicator-fixed" aria-hidden="true"></div>
         {/if}
         <!-- NEW: Cue Marker -->
-        {#if cueMarkerLeftOffset() !== null}
+        {#if cueMarkerLeftOffset !== null}
             <div
                 class="cue-marker"
-                style:left={cueMarkerLeftOffset()}
+                style:left={cueMarkerLeftOffset}
                 aria-hidden="true"
             ></div>
         {/if}
     </div>
 {:else if isTrackLoaded && isAnalysisPending}
     <div class="loading-message">Analyzing audio...</div>
-{:else if isTrackLoaded && !results && audioDuration > 0}
+{:else if isTrackLoaded && !activeMipLevel && audioDuration > 0}
     <p class="analysis-status">Processing audio analysis...</p>
 {:else}
     <div class="analysis-container placeholder" aria-hidden="true">

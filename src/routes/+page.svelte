@@ -8,6 +8,8 @@
         createPlayerStore,
         type PlayerStore,
     } from "$lib/stores/playerStore";
+    import type { VolumeAnalysis } from "$lib/types";
+    import { invoke } from "@tauri-apps/api/core";
 
     let deckAFilePath = $state<string | null>(null);
     let deckBFilePath = $state<string | null>(null);
@@ -18,6 +20,12 @@
     // --- Player Store Instances ---
     const playerStoreA: PlayerStore = createPlayerStore("A");
     const playerStoreB: PlayerStore = createPlayerStore("B");
+
+    // --- NEW State for On-Demand Volume Analysis ---
+    let deckAVolumeAnalysis = $state<VolumeAnalysis | null>(null);
+    let deckBVolumeAnalysis = $state<VolumeAnalysis | null>(null);
+    let isDeckAWaveformLoading = $state(false);
+    let isDeckBWaveformLoading = $state(false);
 
     // --- Crossfader State ---
     let crossfaderValue = $state(0.5); // 0 = Deck A, 0.5 = Center, 1 = Deck B
@@ -51,35 +59,103 @@
         $libraryStore.audioFiles.find((track) => track.path === deckAFilePath),
     );
 
-    const analysisFeaturesA = $derived(trackInfoA?.features);
-    const volumeAnalysisResultA = $derived(
-        analysisFeaturesA === undefined
-            ? undefined
-            : (analysisFeaturesA?.volume ?? null),
-    );
     const isTrackLoadedA = $derived(!!deckAFilePath);
 
     // --- Deck B Data Derivations ---
     const trackInfoB = $derived(
         $libraryStore.audioFiles.find((track) => track.path === deckBFilePath),
     );
-    const analysisFeaturesB = $derived(trackInfoB?.features);
-    const volumeAnalysisResultB = $derived(
-        analysisFeaturesB === undefined
-            ? undefined
-            : (analysisFeaturesB?.volume ?? null),
-    );
+
     const isTrackLoadedB = $derived(!!deckBFilePath);
 
-    function loadToDeckA() {
+    async function loadToDeckA() {
         if (selectedTrack) {
-            deckAFilePath = selectedTrack.path;
+            // Check if the selected track is already loaded on this deck
+            if (deckAFilePath === selectedTrack.path) {
+                console.log(
+                    `[Page] Track ${selectedTrack.path} is already loaded on Deck A. Skipping reload.`,
+                );
+                return; // Do nothing
+            }
+
+            const trackToLoad = selectedTrack; // Capture selectedTrack
+            deckAFilePath = trackToLoad.path;
+
+            // Ensure playerStore gets the path to load audio for playback
+            // This happens implicitly when DeckControls receives the new filePath
+
+            if (trackToLoad.path) {
+                isDeckAWaveformLoading = true;
+                deckAVolumeAnalysis = null; // Clear previous waveform
+                try {
+                    console.log(
+                        `[Page] Loading volume analysis for Deck A: ${trackToLoad.path}`,
+                    );
+                    const result = await invoke<VolumeAnalysis>(
+                        "get_track_volume_analysis",
+                        { path: trackToLoad.path },
+                    );
+                    deckAVolumeAnalysis = result;
+                    // TODO: Update libraryStore to cache this result in trackToLoad.volumeAnalysisData
+                    // libraryStore.updateTrackVolumeData(trackToLoad.path, result);
+                    console.log(
+                        `[Page] Volume analysis loaded for Deck A`,
+                        result,
+                    );
+                } catch (error) {
+                    console.error(
+                        `[Page] Error loading volume analysis for Deck A: ${trackToLoad.path}`,
+                        error,
+                    );
+                    deckAVolumeAnalysis = null;
+                } finally {
+                    isDeckAWaveformLoading = false;
+                }
+            }
         }
     }
 
-    function loadToDeckB() {
+    async function loadToDeckB() {
         if (selectedTrack) {
-            deckBFilePath = selectedTrack.path;
+            // Check if the selected track is already loaded on this deck
+            if (deckBFilePath === selectedTrack.path) {
+                console.log(
+                    `[Page] Track ${selectedTrack.path} is already loaded on Deck B. Skipping reload.`,
+                );
+                return; // Do nothing
+            }
+
+            const trackToLoad = selectedTrack; // Capture selectedTrack
+            deckBFilePath = trackToLoad.path;
+
+            if (trackToLoad.path) {
+                isDeckBWaveformLoading = true;
+                deckBVolumeAnalysis = null; // Clear previous waveform
+                try {
+                    console.log(
+                        `[Page] Loading volume analysis for Deck B: ${trackToLoad.path}`,
+                    );
+                    const result = await invoke<VolumeAnalysis>(
+                        "get_track_volume_analysis",
+                        { path: trackToLoad.path },
+                    );
+                    deckBVolumeAnalysis = result;
+                    // TODO: Update libraryStore to cache this result in trackToLoad.volumeAnalysisData
+                    // libraryStore.updateTrackVolumeData(trackToLoad.path, result);
+                    console.log(
+                        `[Page] Volume analysis loaded for Deck B`,
+                        result,
+                    );
+                } catch (error) {
+                    console.error(
+                        `[Page] Error loading volume analysis for Deck B: ${trackToLoad.path}`,
+                        error,
+                    );
+                    deckBVolumeAnalysis = null;
+                } finally {
+                    isDeckBWaveformLoading = false;
+                }
+            }
         }
     }
 
@@ -106,9 +182,8 @@
             <h2>Mixer</h2>
             <div class="waveform-container deck-a-style">
                 <WaveformDisplay
-                    results={volumeAnalysisResultA?.intervals ?? null}
-                    maxRms={volumeAnalysisResultA?.max_rms_amplitude ?? 0}
-                    isAnalysisPending={analysisFeaturesA === undefined}
+                    volumeAnalysis={deckAVolumeAnalysis}
+                    isAnalysisPending={isDeckAWaveformLoading}
                     isTrackLoaded={isTrackLoadedA}
                     audioDuration={$playerStoreA.duration}
                     currentTime={$playerStoreA.currentTime}
@@ -120,9 +195,8 @@
             </div>
             <div class="waveform-container deck-b-style">
                 <WaveformDisplay
-                    results={volumeAnalysisResultB?.intervals ?? null}
-                    maxRms={volumeAnalysisResultB?.max_rms_amplitude ?? 0}
-                    isAnalysisPending={analysisFeaturesB === undefined}
+                    volumeAnalysis={deckBVolumeAnalysis}
+                    isAnalysisPending={isDeckBWaveformLoading}
                     isTrackLoaded={isTrackLoadedB}
                     audioDuration={$playerStoreB.duration}
                     currentTime={$playerStoreB.currentTime}

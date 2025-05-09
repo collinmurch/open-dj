@@ -1,5 +1,3 @@
-// src-tauri/src/config.rs
-
 // --- EQ Filter Constants ---
 pub const LOW_MID_CROSSOVER_HZ: f32 = 250.0;
 pub const MID_HIGH_CROSSOVER_HZ: f32 = 3000.0;
@@ -16,8 +14,8 @@ pub const BPM_MAX: f32 = 200.0;
 
 // --- Audio Analysis Constants ---
 // Target number of RMS volume intervals to calculate per second of audio
-pub const TARGET_RMS_INTERVALS_PER_SECOND: f64 = 25.0; 
 
 // --- Audio Playback Thread Constants ---
 // Interval for time updates from the audio thread to the frontend, in milliseconds.
 pub const AUDIO_THREAD_TIME_UPDATE_INTERVAL_MS: u64 = 50; 
+

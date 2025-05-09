@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store';
-import type { TrackInfo, LibraryState, FeaturesAnalysisBatchResult, AudioFeatures } from '$lib/types';
+import type { TrackInfo, LibraryState, BasicMetadataBatchResult, TrackBasicMetadata } from '$lib/types';
 import { open } from '@tauri-apps/plugin-dialog';
 import { readDir } from '@tauri-apps/plugin-fs';
 import { join } from '@tauri-apps/api/path';
@@ -51,7 +51,12 @@ function createLibraryStore() {
             for (const entry of entries) {
                 if (entry.isFile && entry.name?.toLowerCase().match(/\.(mp3|mpeg|wav|flac|ogg)$/)) {
                     const fullPath = await join(folderPath, entry.name);
-                    initialFiles.push({ path: fullPath, name: entry.name, features: undefined });
+                    initialFiles.push({
+                        path: fullPath,
+                        name: entry.name,
+                        metadata: undefined,
+                        volumeAnalysisData: undefined
+                    });
                     filePaths.push(fullPath);
                 }
             }
@@ -72,39 +77,29 @@ function createLibraryStore() {
 
             const runBackgroundAnalysis = async () => {
                 try {
-                    console.log("[LibraryStore] Invoking analyze_features_batch...");
-                    const results = await invoke<FeaturesAnalysisBatchResult>('analyze_features_batch', { paths: filePaths });
-                    console.log("[LibraryStore] Batch features analysis complete.");
+                    console.log("[LibraryStore] Invoking analyze_features_batch for basic metadata...");
+                    const results = await invoke<BasicMetadataBatchResult>('analyze_features_batch', { paths: filePaths });
+                    console.log("[LibraryStore] Batch basic metadata analysis complete.");
 
                     update(state => {
-                        const updatedFiles = state.audioFiles.map((file, index) => {
+                        const updatedFiles = state.audioFiles.map((file) => {
                             const result = results[file.path];
-                            let features: AudioFeatures | null | undefined = undefined;
-                            let derivedBpm: number | null | undefined = undefined;
-                            let derivedDurationSeconds: number | null | undefined = undefined;
+                            let trackMetadata: TrackBasicMetadata | null | undefined = undefined;
 
                             if (result === undefined) {
                                 console.warn(`[LibraryStore] No analysis result found for ${file.path}`);
-                                features = null;
-                                derivedBpm = null;
-                                derivedDurationSeconds = null;
+                                trackMetadata = null;
                             } else if (result?.Err) {
                                 console.error(`[LibraryStore] Analysis error for ${file.path}:`, result.Err);
-                                features = null;
-                                derivedBpm = null;
-                                derivedDurationSeconds = null;
+                                trackMetadata = null;
                             } else if (result?.Ok) {
-                                features = result.Ok;
-                                derivedBpm = result.Ok.bpm;
-                                derivedDurationSeconds = result.Ok.durationSeconds;
+                                trackMetadata = result.Ok;
                             } else {
                                 console.warn(`[LibraryStore] Unexpected result structure for ${file.path}:`, result);
-                                features = null;
-                                derivedBpm = null;
-                                derivedDurationSeconds = null;
+                                trackMetadata = null;
                             }
 
-                            return { ...file, features: features, bpm: derivedBpm, durationSeconds: derivedDurationSeconds };
+                            return { ...file, metadata: trackMetadata };
                         });
                         return { ...state, audioFiles: updatedFiles };
                     });
@@ -114,7 +109,7 @@ function createLibraryStore() {
                     const message = batchError instanceof Error ? batchError.message : String(batchError);
                     update(state => {
                         const updatedFiles = state.audioFiles.map(file =>
-                            file.features === undefined ? { ...file, features: null, bpm: null } : file
+                            file.metadata === undefined ? { ...file, metadata: null } : file
                         );
                         return { ...state, audioFiles: updatedFiles, error: `Analysis failed: ${message}` };
                     });
