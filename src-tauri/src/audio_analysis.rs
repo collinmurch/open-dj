@@ -1,7 +1,7 @@
 use crate::errors::AudioAnalysisError;
-use crate::config; // Added for crossover frequencies
-use rustfft::{FftPlanner, num_complex::Complex, num_traits::Zero}; // For FFT
-use std::f32::consts::PI; // For Hann window
+use crate::config; 
+use rustfft::{FftPlanner, num_complex::Complex, num_traits::Zero}; 
+use std::f32::consts::PI; 
 
 #[derive(serde::Serialize, Debug, Clone, Copy)]
 #[serde(rename_all = "camelCase")]

@@ -1,6 +1,16 @@
 <script lang="ts">
     import type { VolumeAnalysis, WaveBin } from "$lib/types";
     import { onDestroy, onMount } from "svelte";
+    import {
+        waveformVertexShaderSource,
+        waveformFragmentShaderSource,
+        playheadVertexShaderSource,
+        playheadFragmentShaderSource,
+        cueLineVertexShaderSource,
+        cueLineFragmentShaderSource,
+        createShader,
+        createProgram,
+    } from "$lib/utils/webglWaveformUtils";
 
     // --- Component Props ---
     let {
@@ -151,6 +161,8 @@
     const CUE_LINE_COLOR = [0.14, 0.55, 0.96]; // Changed to selection blue (approx hsl(210, 90%, 55%))
     const INITIAL_ZOOM_FACTOR = 75.0;
     const HEIGHT_GAIN_FACTOR = 2.0;
+    const PLAYHEAD_NDC_HALF_WIDTH = 0.002; // For a total width of 0.008 NDC
+    const CUE_LINE_NDC_HALF_WIDTH = 0.002; // For a total width of 0.008 NDC
 
     // --- State for controlling geometry updates ---
     let lastProcessedVolumeAnalysis: VolumeAnalysis | null | undefined =
@@ -315,123 +327,23 @@
         seekAudio(clampedTargetTimeSeconds);
     }
 
-    // --- Shader Definitions (waveformVertexShaderSource includes u_normalized_time_at_playhead and u_zoom_factor) ---
-    const waveformVertexShaderSource = `#version 300 es
-        layout(location = 0) in float a_normalized_time_x; // Song's normalized time [0, 1]
-        layout(location = 1) in float a_normalized_y_value;
-
-        uniform float u_normalized_time_at_playhead;
-        uniform float u_zoom_factor;
-
-        void main() {
-            float x_ndc = (a_normalized_time_x - u_normalized_time_at_playhead) * u_zoom_factor;
-            gl_Position = vec4(x_ndc, a_normalized_y_value, 0.0, 1.0);
-        }
-    `.trim();
-
-    const waveformFragmentShaderSource = `#version 300 es
-        precision mediump float;
-        uniform vec4 u_waveform_color_with_alpha; // Changed to vec4
-        out vec4 fragColor;
-        void main() {
-            fragColor = u_waveform_color_with_alpha; // Use directly
-        }
-    `.trim();
-
-    const playheadVertexShaderSource = `#version 300 es
-        layout(location = 0) in vec2 a_pos;
-        void main() {
-            gl_Position = vec4(0.0, a_pos.y, 0.0, 1.0);
-        }
-    `.trim();
-
-    const playheadFragmentShaderSource = `#version 300 es
-        precision mediump float;
-        uniform vec3 u_playhead_color;
-        out vec4 fragColor;
-        void main() {
-            fragColor = vec4(u_playhead_color, 1.0);
-        }
-    `.trim();
-
-    // --- NEW: Cue Line Shaders ---
-    const cueLineVertexShaderSource = `#version 300 es
-        layout(location = 0) in vec2 a_line_pos; // Simple line vertices (-1 to 1 for y)
-        uniform float u_cue_line_ndc_x; // The NDC x-coordinate for the cue line
-
-        void main() {
-            gl_Position = vec4(u_cue_line_ndc_x, a_line_pos.y, 0.0, 1.0);
-        }
-    `.trim();
-
-    const cueLineFragmentShaderSource = `#version 300 es
-        precision mediump float;
-        uniform vec3 u_cue_line_color;
-        out vec4 fragColor;
-
-        void main() {
-            fragColor = vec4(u_cue_line_color, 1.0);
-        }
-    `.trim();
-
-    // --- WebGL Helper Functions (createShader, createProgram - unchanged) ---
-    function createShader(
-        ctx: WebGL2RenderingContext,
-        type: number,
-        source: string,
-    ): WebGLShader | null {
-        const shader = ctx.createShader(type);
-        if (!shader) return null;
-        ctx.shaderSource(shader, source);
-        ctx.compileShader(shader);
-        if (!ctx.getShaderParameter(shader, ctx.COMPILE_STATUS)) {
-            console.error(
-                `Error compiling shader (${type === ctx.VERTEX_SHADER ? "Vertex" : "Fragment"}):`,
-                ctx.getShaderInfoLog(shader),
-            );
-            ctx.deleteShader(shader);
-            return null;
-        }
-        return shader;
-    }
-
-    function createProgram(
-        ctx: WebGL2RenderingContext,
-        vertexShader: WebGLShader,
-        fragmentShader: WebGLShader,
-    ): WebGLProgram | null {
-        const program = ctx.createProgram();
-        if (!program) return null;
-        ctx.attachShader(program, vertexShader);
-        ctx.attachShader(program, fragmentShader);
-        ctx.linkProgram(program);
-        if (!ctx.getProgramParameter(program, ctx.LINK_STATUS)) {
-            console.error(
-                "Error linking program:",
-                ctx.getProgramInfoLog(program),
-            );
-            ctx.deleteProgram(program);
-            return null;
-        }
-        return program;
-    }
-
-    // --- WebGL Initialization (includes playhead setup) ---
-    function initWebGL() {
-        if (!glContext.canvas) return;
-        const context = glContext.canvas.getContext("webgl2");
+    // --- Helper: Setup WebGL Context ---
+    function setupWebGLContext(
+        canvas: HTMLCanvasElement,
+    ): WebGL2RenderingContext | null {
+        const context = canvas.getContext("webgl2");
         if (!context) {
             console.error("WebGL2 not supported or context creation failed");
-            return;
+            return null;
         }
-        glContext.ctx = context;
-        const gl = glContext.ctx; // local alias for convenience
+        // Enable additive blending - consider if this is always wanted or should be per-draw
+        context.enable(context.BLEND);
+        context.blendFunc(context.SRC_ALPHA, context.ONE);
+        return context;
+    }
 
-        // Enable additive blending
-        gl.enable(gl.BLEND);
-        gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
-
-        // Waveform program
+    // --- Helper: Initialize Waveform Rendering Resources ---
+    function initWaveformResources(gl: WebGL2RenderingContext): boolean {
         const wfVert = createShader(
             gl,
             gl.VERTEX_SHADER,
@@ -442,38 +354,39 @@
             gl.FRAGMENT_SHADER,
             waveformFragmentShaderSource,
         );
-        if (wfVert && wfFrag) {
-            waveformRendering.program = createProgram(gl, wfVert, wfFrag);
-            gl.deleteShader(wfVert);
-            gl.deleteShader(wfFrag);
-        }
+        if (!wfVert || !wfFrag) return false;
 
-        if (waveformRendering.program) {
-            waveformRendering.uniforms.colorLoc = gl.getUniformLocation(
-                waveformRendering.program,
-                "u_waveform_color_with_alpha", // Updated uniform name
-            );
-            waveformRendering.uniforms.timeAtPlayheadLoc =
-                gl.getUniformLocation(
-                    waveformRendering.program,
-                    "u_normalized_time_at_playhead",
-                );
-            waveformRendering.uniforms.zoomFactorLoc = gl.getUniformLocation(
-                waveformRendering.program,
-                "u_zoom_factor",
-            );
-            waveformRendering.low.vao = gl.createVertexArray();
-            waveformRendering.low.vbo = gl.createBuffer();
-            waveformRendering.mid.vao = gl.createVertexArray();
-            waveformRendering.mid.vbo = gl.createBuffer();
-            waveformRendering.high.vao = gl.createVertexArray();
-            waveformRendering.high.vbo = gl.createBuffer();
-        } else {
+        waveformRendering.program = createProgram(gl, wfVert, wfFrag);
+        gl.deleteShader(wfVert);
+        gl.deleteShader(wfFrag);
+
+        if (!waveformRendering.program) {
             console.error("Failed to create waveform program");
-            return;
+            return false;
         }
+        waveformRendering.uniforms.colorLoc = gl.getUniformLocation(
+            waveformRendering.program,
+            "u_waveform_color_with_alpha",
+        );
+        waveformRendering.uniforms.timeAtPlayheadLoc = gl.getUniformLocation(
+            waveformRendering.program,
+            "u_normalized_time_at_playhead",
+        );
+        waveformRendering.uniforms.zoomFactorLoc = gl.getUniformLocation(
+            waveformRendering.program,
+            "u_zoom_factor",
+        );
+        waveformRendering.low.vao = gl.createVertexArray();
+        waveformRendering.low.vbo = gl.createBuffer();
+        waveformRendering.mid.vao = gl.createVertexArray();
+        waveformRendering.mid.vbo = gl.createBuffer();
+        waveformRendering.high.vao = gl.createVertexArray();
+        waveformRendering.high.vbo = gl.createBuffer();
+        return true;
+    }
 
-        // Playhead program
+    // --- Helper: Initialize Playhead Rendering Resources ---
+    function initPlayheadResources(gl: WebGL2RenderingContext): boolean {
         const phVert = createShader(
             gl,
             gl.VERTEX_SHADER,
@@ -484,33 +397,44 @@
             gl.FRAGMENT_SHADER,
             playheadFragmentShaderSource,
         );
-        if (phVert && phFrag) {
-            playheadRendering.program = createProgram(gl, phVert, phFrag);
-            gl.deleteShader(phVert);
-            gl.deleteShader(phFrag);
-        }
+        if (!phVert || !phFrag) return false;
 
-        if (playheadRendering.program) {
-            playheadRendering.uniforms.colorLoc = gl.getUniformLocation(
-                playheadRendering.program,
-                "u_playhead_color",
-            );
-            playheadRendering.vao = gl.createVertexArray();
-            playheadRendering.vbo = gl.createBuffer();
-            gl.bindBuffer(gl.ARRAY_BUFFER, playheadRendering.vbo);
-            const lineVerts = new Float32Array([0.0, -1.0, 0.0, 1.0]);
-            gl.bufferData(gl.ARRAY_BUFFER, lineVerts, gl.STATIC_DRAW);
-            gl.bindVertexArray(playheadRendering.vao);
-            gl.enableVertexAttribArray(0);
-            gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
-            gl.bindVertexArray(null);
-            gl.bindBuffer(gl.ARRAY_BUFFER, null);
-        } else {
+        playheadRendering.program = createProgram(gl, phVert, phFrag);
+        gl.deleteShader(phVert);
+        gl.deleteShader(phFrag);
+
+        if (!playheadRendering.program) {
             console.error("Failed to create playhead program");
-            return;
+            return false;
         }
+        playheadRendering.uniforms.colorLoc = gl.getUniformLocation(
+            playheadRendering.program,
+            "u_playhead_color",
+        );
+        playheadRendering.vao = gl.createVertexArray();
+        playheadRendering.vbo = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, playheadRendering.vbo);
+        const playheadVerts = new Float32Array([
+            -PLAYHEAD_NDC_HALF_WIDTH,
+            1.0, // Top-left
+            PLAYHEAD_NDC_HALF_WIDTH,
+            1.0, // Top-right
+            -PLAYHEAD_NDC_HALF_WIDTH,
+            -1.0, // Bottom-left
+            PLAYHEAD_NDC_HALF_WIDTH,
+            -1.0, // Bottom-right
+        ]);
+        gl.bufferData(gl.ARRAY_BUFFER, playheadVerts, gl.STATIC_DRAW);
+        gl.bindVertexArray(playheadRendering.vao);
+        gl.enableVertexAttribArray(0);
+        gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+        gl.bindVertexArray(null);
+        gl.bindBuffer(gl.ARRAY_BUFFER, null);
+        return true;
+    }
 
-        // --- Cue Line Program Setup ---
+    // --- Helper: Initialize Cue Line Rendering Resources ---
+    function initCueLineResources(gl: WebGL2RenderingContext): boolean {
         const clVert = createShader(
             gl,
             gl.VERTEX_SHADER,
@@ -521,44 +445,63 @@
             gl.FRAGMENT_SHADER,
             cueLineFragmentShaderSource,
         );
-        if (clVert && clFrag) {
-            cueLineRendering.program = createProgram(gl, clVert, clFrag);
-            gl.deleteShader(clVert);
-            gl.deleteShader(clFrag);
-        }
+        if (!clVert || !clFrag) return false;
 
-        if (cueLineRendering.program) {
-            cueLineRendering.uniforms.ndcXLoc = gl.getUniformLocation(
-                cueLineRendering.program,
-                "u_cue_line_ndc_x",
-            );
-            cueLineRendering.uniforms.colorLoc = gl.getUniformLocation(
-                cueLineRendering.program,
-                "u_cue_line_color",
-            );
+        cueLineRendering.program = createProgram(gl, clVert, clFrag);
+        gl.deleteShader(clVert);
+        gl.deleteShader(clFrag);
 
-            cueLineRendering.vao = gl.createVertexArray();
-            cueLineRendering.vbo = gl.createBuffer();
-            gl.bindBuffer(gl.ARRAY_BUFFER, cueLineRendering.vbo);
-            const cueLineVerts = new Float32Array([0.0, -1.0, 0.0, 1.0]); // X is unused here, will be set by uniform
-            gl.bufferData(gl.ARRAY_BUFFER, cueLineVerts, gl.STATIC_DRAW);
-
-            gl.bindVertexArray(cueLineRendering.vao);
-            gl.enableVertexAttribArray(0); // a_line_pos
-            // For a_line_pos, we only need the Y component from the VBO for this shader logic.
-            // The X component in the VBO is effectively ignored by the cueLineVertexShader
-            // as gl_Position.x is directly set by u_cue_line_ndc_x.
-            // However, we still define the attribute as vec2 a_line_pos, so we pass 2 components.
-            gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
-
-            gl.bindVertexArray(null);
-            gl.bindBuffer(gl.ARRAY_BUFFER, null);
-        } else {
+        if (!cueLineRendering.program) {
             console.error("Failed to create cue line program");
-            // No need to return early from entire initWebGL if only cue line fails, rest might work.
+            return false;
         }
+        cueLineRendering.uniforms.ndcXLoc = gl.getUniformLocation(
+            cueLineRendering.program,
+            "u_cue_line_ndc_x",
+        );
+        cueLineRendering.uniforms.colorLoc = gl.getUniformLocation(
+            cueLineRendering.program,
+            "u_cue_line_color",
+        );
+        cueLineRendering.vao = gl.createVertexArray();
+        cueLineRendering.vbo = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, cueLineRendering.vbo);
+        const cueLineVerts = new Float32Array([
+            -CUE_LINE_NDC_HALF_WIDTH,
+            1.0, // Top-left
+            CUE_LINE_NDC_HALF_WIDTH,
+            1.0, // Top-right
+            -CUE_LINE_NDC_HALF_WIDTH,
+            -1.0, // Bottom-left
+            CUE_LINE_NDC_HALF_WIDTH,
+            -1.0, // Bottom-right
+        ]);
+        gl.bufferData(gl.ARRAY_BUFFER, cueLineVerts, gl.STATIC_DRAW);
+        gl.bindVertexArray(cueLineRendering.vao);
+        gl.enableVertexAttribArray(0);
+        gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+        gl.bindVertexArray(null);
+        gl.bindBuffer(gl.ARRAY_BUFFER, null);
+        return true;
+    }
 
-        handleResize(); // Sets initial dimensions and calls render if ready
+    // --- WebGL Initialization (Main Orchestrator) ---
+    function initWebGL() {
+        if (!glContext.canvas) return;
+        const gl = setupWebGLContext(glContext.canvas);
+        if (!gl) return;
+        glContext.ctx = gl;
+
+        if (!initWaveformResources(gl)) {
+            console.error("Waveform resource initialization failed.");
+        }
+        if (!initPlayheadResources(gl)) {
+            console.error("Playhead resource initialization failed.");
+        }
+        if (!initCueLineResources(gl)) {
+            console.error("Cue line resource initialization failed.");
+        }
+        handleResize();
     }
 
     function resizeCanvas() {
@@ -825,7 +768,7 @@
             gl.useProgram(playheadRendering.program);
             gl.uniform3fv(playheadRendering.uniforms.colorLoc, PLAYHEAD_COLOR);
             gl.bindVertexArray(playheadRendering.vao);
-            gl.drawArrays(gl.LINES, 0, 2);
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
             gl.bindVertexArray(null);
         }
 
@@ -857,7 +800,7 @@
                 );
 
                 gl.bindVertexArray(cueLineRendering.vao);
-                gl.drawArrays(gl.LINES, 0, 2);
+                gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
                 gl.bindVertexArray(null);
             }
         }

@@ -3,6 +3,7 @@
     import { invoke } from "@tauri-apps/api/core";
     import type { PlayerStore } from "$lib/stores/playerStore";
     import type { PlayerState } from "$lib/types";
+    import { formatTime } from "$lib/utils/timeUtils";
 
     let {
         filePath = null,
@@ -34,17 +35,6 @@
         midGainDb?: number;
         highGainDb?: number;
     } = $props();
-
-    function formatTime(totalSeconds: number): string {
-        if (isNaN(totalSeconds) || totalSeconds < 0) {
-            return "00:00";
-        }
-        const minutes = Math.floor(totalSeconds / 60);
-        const seconds = Math.floor(totalSeconds % 60);
-        const paddedMinutes = String(minutes).padStart(2, "0");
-        const paddedSeconds = String(seconds).padStart(2, "0");
-        return `${paddedMinutes}:${paddedSeconds}`;
-    }
 
     // --- Volume, Trim & EQ State (remains the same) ---
     let trimDebounceTimeout: number | undefined = undefined;

@@ -1,6 +1,7 @@
 <script lang="ts">
     import { libraryStore } from "$lib/stores/libraryStore";
     import type { TrackInfo } from "$lib/types";
+    import { formatTime } from "$lib/utils/timeUtils";
 
     const { selectLibraryFolder, setSelectedTrack } = libraryStore;
 
@@ -10,23 +11,6 @@
 
     function isSelected(track: TrackInfo): boolean {
         return $libraryStore.selectedTrack?.path === track.path;
-    }
-
-    // Helper function to format time from seconds to MM:SS
-    function formatTime(totalSeconds: number | undefined | null): string {
-        if (
-            totalSeconds === undefined ||
-            totalSeconds === null ||
-            isNaN(totalSeconds) ||
-            totalSeconds < 0
-        ) {
-            return "--:--"; // Or some other placeholder for unknown duration
-        }
-        const minutes = Math.floor(totalSeconds / 60);
-        const seconds = Math.floor(totalSeconds % 60);
-        const paddedMinutes = String(minutes).padStart(2, "0");
-        const paddedSeconds = String(seconds).padStart(2, "0");
-        return `${paddedMinutes}:${paddedSeconds}`;
     }
 </script>
 
