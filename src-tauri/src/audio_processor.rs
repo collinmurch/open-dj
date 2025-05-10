@@ -2,7 +2,7 @@ use crate::{
     audio_analysis,
     bpm_analyzer,
 };
-use crate::errors::AudioProcessorError; // Only this is needed if sub-errors are just sources
+use crate::errors::AudioProcessorError; 
 use rayon::prelude::*;
 use std::collections::HashMap;
 
@@ -64,9 +64,9 @@ fn get_track_volume_analysis_internal(path: &str) -> Result<audio_analysis::Audi
     
     audio_analysis::calculate_rms_intervals(&samples, sample_rate)
         .map_err(|e| AudioProcessorError::AnalysisVolumeError{ path: path.to_string(), source: e })
-        .map(|(levels, max_rms_amplitude)| audio_analysis::AudioAnalysis {
+        .map(|(levels, max_band_energy)| audio_analysis::AudioAnalysis {
             levels,
-            max_rms_amplitude,
+            max_band_energy,
         })
 }
 

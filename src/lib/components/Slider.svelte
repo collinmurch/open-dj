@@ -128,10 +128,15 @@
         const valueToEmit = actualOutputValue;
         if (debounceTimeoutId !== undefined) clearTimeout(debounceTimeoutId);
 
-        debounceTimeoutId = setTimeout(() => {
-            // Update the externally bound value after debounce
+        if (debounceMs === 0) {
+            // If debounceMs is 0, update immediately
             if (value !== valueToEmit) value = valueToEmit;
-        }, debounceMs);
+        } else {
+            debounceTimeoutId = setTimeout(() => {
+                // Update the externally bound value after debounce
+                if (value !== valueToEmit) value = valueToEmit;
+            }, debounceMs);
+        }
     });
 
     // --- Input Handler ---

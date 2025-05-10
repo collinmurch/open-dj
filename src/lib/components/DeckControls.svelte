@@ -1,7 +1,6 @@
 <script lang="ts">
     import Slider from "./Slider.svelte";
     import { invoke } from "@tauri-apps/api/core";
-    import { onDestroy } from "svelte";
     import type { PlayerStore } from "$lib/stores/playerStore";
     import type { PlayerState } from "$lib/types";
 
@@ -10,6 +9,11 @@
         deckId,
         playerStoreState,
         playerActions,
+        trimDb = $bindable(0.0),
+        faderLevel = $bindable(1.0),
+        lowGainDb = $bindable(0.0),
+        midGainDb = $bindable(0.0),
+        highGainDb = $bindable(0.0),
     }: {
         filePath: string | null;
         deckId: string;
@@ -24,6 +28,11 @@
             | "setVolume"
             | "setCuePoint"
         >;
+        trimDb?: number;
+        faderLevel?: number;
+        lowGainDb?: number;
+        midGainDb?: number;
+        highGainDb?: number;
     } = $props();
 
     function formatTime(totalSeconds: number): string {
@@ -38,11 +47,6 @@
     }
 
     // --- Volume, Trim & EQ State (remains the same) ---
-    let trimDb = $state(0.0);
-    let faderLevel = $state(1.0);
-    let lowGainDb = $state(0.0);
-    let midGainDb = $state(0.0);
-    let highGainDb = $state(0.0);
     let trimDebounceTimeout: number | undefined = undefined;
     let faderDebounceTimeout: number | undefined = undefined;
     let eqDebounceTimeout: number | undefined = undefined;
@@ -67,12 +71,6 @@
     $effect(() => {
         const currentFilePath = filePath;
         if (!currentFilePath) {
-            trimDb = 0;
-            faderLevel = 1.0;
-            lowGainDb = 0;
-            midGainDb = 0;
-            highGainDb = 0;
-            // playerActions.cleanup(); // Let parent handle cleanup if store is managed by parent or do it on $destroy
             return;
         }
         // Use the loadTrack action passed via props

@@ -11,9 +11,7 @@
     import type { VolumeAnalysis } from "$lib/types";
     import { invoke } from "@tauri-apps/api/core";
 
-    let deckAFilePath = $state<string | null>(null);
-    let deckBFilePath = $state<string | null>(null);
-
+    // --- Library and Track Selection ---
     const selectedTrack = $derived($libraryStore.selectedTrack);
     const isFolderSelected = $derived(!!$libraryStore.selectedFolder);
 
@@ -21,16 +19,28 @@
     const playerStoreA: PlayerStore = createPlayerStore("A");
     const playerStoreB: PlayerStore = createPlayerStore("B");
 
-    // --- NEW State for On-Demand Volume Analysis ---
+    // --- Deck A: File Path, Analysis, EQ, Fader ---
+    let deckAFilePath = $state<string | null>(null);
     let deckAVolumeAnalysis = $state<VolumeAnalysis | null>(null);
-    let deckBVolumeAnalysis = $state<VolumeAnalysis | null>(null);
     let isDeckAWaveformLoading = $state(false);
-    let isDeckBWaveformLoading = $state(false);
+    let deckALowGain = $state(0.0);
+    let deckAMidGain = $state(0.0);
+    let deckAHighGain = $state(0.0);
+    let deckAFaderLevel = $state(1.0);
 
-    // --- Crossfader State ---
+    // --- Deck B: File Path, Analysis, EQ, Fader ---
+    let deckBFilePath = $state<string | null>(null);
+    let deckBVolumeAnalysis = $state<VolumeAnalysis | null>(null);
+    let isDeckBWaveformLoading = $state(false);
+    let deckBLowGain = $state(0.0);
+    let deckBMidGain = $state(0.0);
+    let deckBHighGain = $state(0.0);
+    let deckBFaderLevel = $state(1.0);
+
+    // --- Global Mixer Controls ---
     let crossfaderValue = $state(0.5);
 
-    // --- Deck Volume Derivations for Crossfader ---
+    // --- Deck Volume Derivations (from Crossfader) ---
     const deckAVolume = $derived(() => {
         return 1 - crossfaderValue;
     });
@@ -39,19 +49,29 @@
     });
 
     // --- Waveform Colors ---
-    const deckAWaveformColor: [number, number, number] = [0.43, 0.3, 0.7]; // Less saturated Purple HSL(255, 40%, 50%)
-    const deckBWaveformColor: [number, number, number] = [0.7125, 0.75, 0.7875]; // HSL(210, 15%, 75%)
+    // const deckAWaveformColor: [number, number, number] = [0.43, 0.3, 0.7]; // Less saturated Purple HSL(255, 40%, 50%)
+    // const deckBWaveformColor: [number, number, number] = [0.7125, 0.75, 0.7875]; // HSL(210, 15%, 75%)
+
+    // Deck A Band Colors (Purple-based)
+    const deckALowBandColor: [number, number, number] = [0.3, 0.2, 0.6]; // Deeper Purple HSL(270, 50%, 40%)
+    const deckAMidBandColor: [number, number, number] = [0.48, 0.38, 0.72]; // Main Purple HSL(255, 45%, 55%)
+    const deckAHighBandColor: [number, number, number] = [0.55, 0.55, 0.85]; // Lighter Lavender HSL(240, 50%, 70%)
+
+    // Deck B Band Colors (Gray-based)
+    const deckBLowBandColor: [number, number, number] = [0.475, 0.5, 0.525]; // Darker Gray HSL(210, 10%, 50%)
+    const deckBMidBandColor: [number, number, number] = [0.66, 0.7, 0.74]; // Main Gray HSL(210, 12%, 70%)
+    const deckBHighBandColor: [number, number, number] = [0.88, 0.9, 0.92]; // Light Gray/Off-white HSL(210, 20%, 90%)
 
     // --- Effects to apply derived volumes to player stores ---
     $effect(() => {
         const volumeA = deckAVolume();
-        console.log(`Effect: Setting Deck A Volume to ${volumeA}`);
+        // console.log(`Effect: Setting Deck A Volume to ${volumeA}`);
         playerStoreA.setVolume(volumeA);
     });
 
     $effect(() => {
         const volumeB = deckBVolume();
-        console.log(`Effect: Setting Deck B Volume to ${volumeB}`);
+        // console.log(`Effect: Setting Deck B Volume to ${volumeB}`);
         playerStoreB.setVolume(volumeB);
     });
 
@@ -69,91 +89,65 @@
 
     const isTrackLoadedB = $derived(!!deckBFilePath);
 
-    async function loadToDeckA() {
-        if (selectedTrack) {
-            // Check if the selected track is already loaded on this deck
-            if (deckAFilePath === selectedTrack.path) {
-                console.log(
-                    `[Page] Track ${selectedTrack.path} is already loaded on Deck A. Skipping reload.`,
-                );
-                return;
-            }
+    async function loadTrackToDeck(deckId: "A" | "B") {
+        if (!selectedTrack) return;
 
-            const trackToLoad = selectedTrack; // Capture selectedTrack
+        const currentFilePath = deckId === "A" ? deckAFilePath : deckBFilePath;
+        if (currentFilePath === selectedTrack.path) {
+            console.log(
+                `[Page] Track ${selectedTrack.path} is already loaded on Deck ${deckId}. Skipping reload.`,
+            );
+            return;
+        }
+
+        const trackToLoad = selectedTrack; // Capture selectedTrack
+
+        if (deckId === "A") {
             deckAFilePath = trackToLoad.path;
+        } else {
+            deckBFilePath = trackToLoad.path;
+        }
 
-            // Ensure playerStore gets the path to load audio for playback
-            // This happens implicitly when DeckControls receives the new filePath
-
-            if (trackToLoad.path) {
+        if (trackToLoad.path) {
+            if (deckId === "A") {
                 isDeckAWaveformLoading = true;
                 deckAVolumeAnalysis = null; // Clear previous waveform
-                try {
-                    console.log(
-                        `[Page] Loading volume analysis for Deck A: ${trackToLoad.path}`,
-                    );
-                    const result = await invoke<VolumeAnalysis>(
-                        "get_track_volume_analysis",
-                        { path: trackToLoad.path },
-                    );
-                    deckAVolumeAnalysis = result;
-                    // TODO: Update libraryStore to cache this result in trackToLoad.volumeAnalysisData
-                    // libraryStore.updateTrackVolumeData(trackToLoad.path, result);
-                    console.log(
-                        `[Page] Volume analysis loaded for Deck A`,
-                        result,
-                    );
-                } catch (error) {
-                    console.error(
-                        `[Page] Error loading volume analysis for Deck A: ${trackToLoad.path}`,
-                        error,
-                    );
-                    deckAVolumeAnalysis = null;
-                } finally {
-                    isDeckAWaveformLoading = false;
-                }
-            }
-        }
-    }
-
-    async function loadToDeckB() {
-        if (selectedTrack) {
-            // Check if the selected track is already loaded on this deck
-            if (deckBFilePath === selectedTrack.path) {
-                console.log(
-                    `[Page] Track ${selectedTrack.path} is already loaded on Deck B. Skipping reload.`,
-                );
-                return; // Do nothing
-            }
-
-            const trackToLoad = selectedTrack; // Capture selectedTrack
-            deckBFilePath = trackToLoad.path;
-
-            if (trackToLoad.path) {
+            } else {
                 isDeckBWaveformLoading = true;
                 deckBVolumeAnalysis = null; // Clear previous waveform
-                try {
-                    console.log(
-                        `[Page] Loading volume analysis for Deck B: ${trackToLoad.path}`,
-                    );
-                    const result = await invoke<VolumeAnalysis>(
-                        "get_track_volume_analysis",
-                        { path: trackToLoad.path },
-                    );
+            }
+
+            try {
+                console.log(
+                    `[Page] Loading volume analysis for Deck ${deckId}: ${trackToLoad.path}`,
+                );
+                const result = await invoke<VolumeAnalysis>(
+                    "get_track_volume_analysis",
+                    { path: trackToLoad.path },
+                );
+                if (deckId === "A") {
+                    deckAVolumeAnalysis = result;
+                } else {
                     deckBVolumeAnalysis = result;
-                    // TODO: Update libraryStore to cache this result in trackToLoad.volumeAnalysisData
-                    // libraryStore.updateTrackVolumeData(trackToLoad.path, result);
-                    console.log(
-                        `[Page] Volume analysis loaded for Deck B`,
-                        result,
-                    );
-                } catch (error) {
-                    console.error(
-                        `[Page] Error loading volume analysis for Deck B: ${trackToLoad.path}`,
-                        error,
-                    );
+                }
+                console.log(
+                    `[Page] Volume analysis loaded for Deck ${deckId}`,
+                    result,
+                );
+            } catch (error) {
+                console.error(
+                    `[Page] Error loading volume analysis for Deck ${deckId}: ${trackToLoad.path}`,
+                    error,
+                );
+                if (deckId === "A") {
+                    deckAVolumeAnalysis = null;
+                } else {
                     deckBVolumeAnalysis = null;
-                } finally {
+                }
+            } finally {
+                if (deckId === "A") {
+                    isDeckAWaveformLoading = false;
+                } else {
                     isDeckBWaveformLoading = false;
                 }
             }
@@ -191,7 +185,13 @@
                     isPlaying={$playerStoreA.isPlaying}
                     seekAudio={seekDeckA}
                     cuePointTime={$playerStoreA.cuePointTime}
-                    waveformColor={deckAWaveformColor}
+                    lowBandColor={deckALowBandColor}
+                    midBandColor={deckAMidBandColor}
+                    highBandColor={deckAHighBandColor}
+                    lowGainDb={deckALowGain}
+                    midGainDb={deckAMidGain}
+                    highGainDb={deckAHighGain}
+                    masterFaderLevel={deckAFaderLevel}
                 />
             </div>
             <div class="waveform-container deck-b-style">
@@ -204,7 +204,13 @@
                     isPlaying={$playerStoreB.isPlaying}
                     seekAudio={seekDeckB}
                     cuePointTime={$playerStoreB.cuePointTime}
-                    waveformColor={deckBWaveformColor}
+                    lowBandColor={deckBLowBandColor}
+                    midBandColor={deckBMidBandColor}
+                    highBandColor={deckBHighBandColor}
+                    lowGainDb={deckBLowGain}
+                    midGainDb={deckBMidGain}
+                    highGainDb={deckBHighGain}
+                    masterFaderLevel={deckBFaderLevel}
                 />
             </div>
             <div class="crossfader-container">
@@ -229,6 +235,10 @@
                     filePath={deckAFilePath}
                     playerStoreState={$playerStoreA}
                     playerActions={playerStoreA}
+                    bind:lowGainDb={deckALowGain}
+                    bind:midGainDb={deckAMidGain}
+                    bind:highGainDb={deckAHighGain}
+                    bind:faderLevel={deckAFaderLevel}
                 />
             </div>
             <div class="deck-stacked deck-b-style">
@@ -237,6 +247,10 @@
                     filePath={deckBFilePath}
                     playerStoreState={$playerStoreB}
                     playerActions={playerStoreB}
+                    bind:lowGainDb={deckBLowGain}
+                    bind:midGainDb={deckBMidGain}
+                    bind:highGainDb={deckBHighGain}
+                    bind:faderLevel={deckBFaderLevel}
                 />
             </div>
         </section>
@@ -247,12 +261,12 @@
             <div class="load-controls">
                 <button
                     class="load-deck-a-button"
-                    onclick={loadToDeckA}
+                    onclick={() => loadTrackToDeck("A")}
                     disabled={!selectedTrack}>Load Selected to Deck A</button
                 >
                 <button
                     class="load-deck-b-button"
-                    onclick={loadToDeckB}
+                    onclick={() => loadTrackToDeck("B")}
                     disabled={!selectedTrack}>Load Selected to Deck B</button
                 >
             </div>

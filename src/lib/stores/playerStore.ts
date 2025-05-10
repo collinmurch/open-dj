@@ -37,15 +37,32 @@ export function createPlayerStore(deckId: string) {
             if (event.payload.deckId === deckId) {
                 const rustState = event.payload.state;
                 console.log(`[Store ${deckId}] Received full state update:`, rustState);
-                update(s => ({
-                    ...s,
-                    isPlaying: rustState.isPlaying,
-                    isLoading: rustState.isLoading,
-                    currentTime: rustState.currentTime,
-                    duration: rustState.duration !== null ? rustState.duration : s.duration,
-                    error: rustState.error,
-                    cuePointTime: rustState.cuePointSeconds !== null ? rustState.cuePointSeconds : s.cuePointTime,
-                }));
+
+                update(s => {
+                    const newDuration = rustState.duration !== null ? rustState.duration : s.duration;
+                    const newCuePointTime = rustState.cuePointSeconds !== null ? rustState.cuePointSeconds : s.cuePointTime;
+
+                    // Check if critical parts of the state actually changed
+                    const hasMeaningfulChange = s.isPlaying !== rustState.isPlaying ||
+                        s.isLoading !== rustState.isLoading ||
+                        s.currentTime !== rustState.currentTime ||
+                        s.duration !== newDuration ||
+                        s.error !== rustState.error ||
+                        s.cuePointTime !== newCuePointTime;
+
+                    if (hasMeaningfulChange) {
+                        return {
+                            ...s,
+                            isPlaying: rustState.isPlaying,
+                            isLoading: rustState.isLoading,
+                            currentTime: rustState.currentTime,
+                            duration: newDuration,
+                            error: rustState.error,
+                            cuePointTime: newCuePointTime,
+                        };
+                    }
+                    return s; // No meaningful change, return current state to prevent redundant updates
+                });
             }
         });
 

@@ -4,69 +4,145 @@
 
     // --- Component Props ---
     let {
+        // Core Data & State
         volumeAnalysis = null as VolumeAnalysis | null,
         audioDuration = 0,
         currentTime = 0,
         isPlaying = false,
         isAnalysisPending = false,
         isTrackLoaded = false,
-        seekAudio = (time: number) => {},
         cuePointTime = null as number | null,
-        waveformColor = [0.3, 0.6, 0.8] as [number, number, number],
+
+        // Callbacks
+        seekAudio = (time: number) => {},
+
+        // Appearance & Styling
+        lowBandColor = [0.1, 0.2, 0.7] as [number, number, number],
+        midBandColor = [0.2, 0.7, 0.2] as [number, number, number],
+        highBandColor = [0.3, 0.7, 0.9] as [number, number, number],
+
+        // EQ & Fader Levels
+        lowGainDb = 0.0,
+        midGainDb = 0.0,
+        highGainDb = 0.0,
+        masterFaderLevel = 1.0,
     }: {
+        // Core Data & State
         volumeAnalysis: VolumeAnalysis | null;
         audioDuration: number;
         currentTime?: number;
         isPlaying?: boolean;
         isAnalysisPending?: boolean;
         isTrackLoaded?: boolean;
-        seekAudio?: (time: number) => void;
         cuePointTime?: number | null;
-        waveformColor?: [number, number, number];
+
+        // Callbacks
+        seekAudio?: (time: number) => void;
+
+        // Appearance & Styling
+        lowBandColor?: [number, number, number];
+        midBandColor?: [number, number, number];
+        highBandColor?: [number, number, number];
+
+        // EQ & Fader Levels
+        lowGainDb?: number;
+        midGainDb?: number;
+        highGainDb?: number;
+        masterFaderLevel?: number;
     } = $props();
 
     // --- WebGL State & Refs ---
-    let canvasElement: HTMLCanvasElement | null = $state(null);
-    let gl: WebGL2RenderingContext | null = $state(null);
+    let glContext = $state<{
+        canvas: HTMLCanvasElement | null;
+        ctx: WebGL2RenderingContext | null;
+    }>({
+        canvas: null,
+        ctx: null,
+    });
 
-    // Waveform resources
-    let waveformProgram: WebGLProgram | null = $state(null);
-    let waveformVao: WebGLVertexArrayObject | null = $state(null);
-    let waveformVbo: WebGLBuffer | null = $state(null);
-    let waveformVertexCount = $state(0);
+    // Band/Waveform resources
+    interface BandResources {
+        vao: WebGLVertexArrayObject | null;
+        vbo: WebGLBuffer | null;
+        vertexCount: number;
+    }
+
+    let waveformRendering = $state<{
+        program: WebGLProgram | null;
+        low: BandResources;
+        mid: BandResources;
+        high: BandResources;
+        uniforms: {
+            colorLoc: WebGLUniformLocation | null;
+            timeAtPlayheadLoc: WebGLUniformLocation | null;
+            zoomFactorLoc: WebGLUniformLocation | null;
+        };
+    }>({
+        program: null,
+        low: { vao: null, vbo: null, vertexCount: 0 },
+        mid: { vao: null, vbo: null, vertexCount: 0 },
+        high: { vao: null, vbo: null, vertexCount: 0 },
+        uniforms: {
+            colorLoc: null,
+            timeAtPlayheadLoc: null,
+            zoomFactorLoc: null,
+        },
+    });
 
     // Playhead resources
-    let playheadProgram: WebGLProgram | null = $state(null);
-    let playheadVao: WebGLVertexArrayObject | null = $state(null);
-    let playheadVbo: WebGLBuffer | null = $state(null);
+    let playheadRendering = $state<{
+        program: WebGLProgram | null;
+        vao: WebGLVertexArrayObject | null;
+        vbo: WebGLBuffer | null;
+        uniforms: {
+            colorLoc: WebGLUniformLocation | null;
+        };
+    }>({
+        program: null,
+        vao: null,
+        vbo: null,
+        uniforms: {
+            colorLoc: null,
+        },
+    });
 
     // Cue Line resources
-    let cueLineProgram: WebGLProgram | null = $state(null);
-    let cueLineVao: WebGLVertexArrayObject | null = $state(null);
-    let cueLineVbo: WebGLBuffer | null = $state(null);
-    let uCueLineNdcXLoc: WebGLUniformLocation | null = $state(null);
-    let uCueLineColorLoc: WebGLUniformLocation | null = $state(null);
-
-    // --- Uniform Locations ---
-    let uWaveformColorLoc: WebGLUniformLocation | null = $state(null);
-    let uNormalizedTimeAtPlayheadLoc: WebGLUniformLocation | null =
-        $state(null);
-    let uZoomFactorLoc: WebGLUniformLocation | null = $state(null);
-    let uPlayheadColorLoc: WebGLUniformLocation | null = $state(null);
+    let cueLineRendering = $state<{
+        program: WebGLProgram | null;
+        vao: WebGLVertexArrayObject | null;
+        vbo: WebGLBuffer | null;
+        uniforms: {
+            ndcXLoc: WebGLUniformLocation | null;
+            colorLoc: WebGLUniformLocation | null;
+        };
+    }>({
+        program: null,
+        vao: null,
+        vbo: null,
+        uniforms: {
+            ndcXLoc: null,
+            colorLoc: null,
+        },
+    });
 
     let initialDimensionsSet = $state(false);
 
     // --- Interpolation State ---
-    let internalDisplayTime = $state(0);
-    let lastHostUpdateTime = $state(performance.now());
-    let lastHostTimeValue = $state(0);
-    let hostIsPlaying = $state(false);
+    let interpolationCtx = $state({
+        internalDisplayTime: 0,
+        lastHostUpdateTime: performance.now(),
+        lastHostTimeValue: 0,
+        hostIsPlaying: false,
+    });
 
     // --- Animation State ---
-    let isSeekingAnimationActive = $state(false);
-    let seekAnimationStartTime = $state(0);
-    let seekAnimationStartDisplayTime = $state(0);
-    let seekAnimationTargetDisplayTime = $state(0);
+    let seekAnimationCtx = $state({
+        isActive: false,
+        startTime: 0,
+        startDisplayTime: 0,
+        targetDisplayTime: 0,
+    });
+
     const SEEK_ANIMATION_DURATION_MS = 80;
     const SEEK_TRIGGER_THRESHOLD_SECONDS = 0.2; // If currentTime jumps by more than this, animate
 
@@ -80,6 +156,9 @@
     let lastProcessedVolumeAnalysis: VolumeAnalysis | null | undefined =
         $state(undefined);
     let lastProcessedAudioDuration: number = $state(NaN);
+    let lastProcessedLowGain: number = $state(NaN);
+    let lastProcessedMidGain: number = $state(NaN);
+    let lastProcessedHighGain: number = $state(NaN);
     let animationFrameId: number | null = $state(null);
 
     // --- Derived values ---
@@ -99,45 +178,48 @@
     $effect(() => {
         const newVolumeAnalysis = volumeAnalysis;
         const newAudioDuration = audioDuration;
+        // Capture EQ gains for dependency tracking by $effect
+        const currentLowGain = lowGainDb;
+        const currentMidGain = midGainDb;
+        const currentHighGain = highGainDb;
 
         const analysisObjectChanged =
             newVolumeAnalysis !== lastProcessedVolumeAnalysis;
         const durationChangedSignificantly =
             newAudioDuration !== lastProcessedAudioDuration &&
             newAudioDuration > 0;
+        const eqGainsChanged =
+            currentLowGain !== lastProcessedLowGain ||
+            currentMidGain !== lastProcessedMidGain ||
+            currentHighGain !== lastProcessedHighGain;
 
         if (
             analysisObjectChanged ||
-            (newVolumeAnalysis && durationChangedSignificantly)
+            (newVolumeAnalysis && durationChangedSignificantly) ||
+            (newVolumeAnalysis && eqGainsChanged) // Added eqGainsChanged condition
         ) {
-            console.log(
-                `[WebGLWaveform] Geometry update criteria met. analysisObjectChanged: ${analysisObjectChanged}, durationChangedSignificantly: ${durationChangedSignificantly}. New duration: ${newAudioDuration}`,
-            );
-
             lastProcessedVolumeAnalysis = newVolumeAnalysis;
             lastProcessedAudioDuration = newAudioDuration;
+            lastProcessedLowGain = currentLowGain;
+            lastProcessedMidGain = currentMidGain;
+            lastProcessedHighGain = currentHighGain;
 
-            if (activeMipLevel() && gl && newAudioDuration > 0) {
-                console.log("[WebGLWaveform] Updating waveform geometry.");
+            if (activeMipLevel() && glContext.ctx && newAudioDuration > 0) {
                 updateWaveformGeometry(); // Uses activeMipLevel() and newAudioDuration implicitly
                 // render() will be called by the continuousRender loop if active
             } else {
-                console.log(
-                    "[WebGLWaveform] Clearing waveform geometry due to invalid analysis/duration.",
-                );
-                waveformVertexCount = 0;
+                waveformRendering.low.vertexCount = 0;
+                waveformRendering.mid.vertexCount = 0;
+                waveformRendering.high.vertexCount = 0;
             }
         } else if (!newVolumeAnalysis && lastProcessedVolumeAnalysis !== null) {
             // Explicitly clear if volumeAnalysis becomes null (track unloaded)
-            console.log(
-                "[WebGLWaveform] Track unloaded (volumeAnalysis is null), clearing geometry.",
-            );
-            waveformVertexCount = 0;
+            waveformRendering.low.vertexCount = 0;
+            waveformRendering.mid.vertexCount = 0;
+            waveformRendering.high.vertexCount = 0;
             lastProcessedVolumeAnalysis = null;
             lastProcessedAudioDuration = NaN;
         }
-        // If only currentTime changes, this effect should NOT re-run updateWaveformGeometry.
-        // The render() call is handled by the continuousRender loop.
     });
 
     // Effect to sync with host state for interpolation
@@ -145,33 +227,36 @@
         const hostTimeProp = currentTime; // Prop value from playerStore
         const hostPlayingStatusProp = isPlaying; // Prop value
 
-        const timeDelta = Math.abs(hostTimeProp - lastHostTimeValue);
+        const timeDelta = Math.abs(
+            hostTimeProp - interpolationCtx.lastHostTimeValue,
+        );
 
         if (
             timeDelta > SEEK_TRIGGER_THRESHOLD_SECONDS &&
-            !isSeekingAnimationActive
+            !seekAnimationCtx.isActive
         ) {
             // Likely a seek or significant jump, trigger animation
             console.log(
-                `[WebGLWaveform] Animation triggered. From: ${internalDisplayTime.toFixed(3)}s to: ${hostTimeProp.toFixed(3)}s`,
+                `[WebGLWaveform] Animation triggered. From: ${interpolationCtx.internalDisplayTime.toFixed(3)}s to: ${hostTimeProp.toFixed(3)}s`,
             );
-            isSeekingAnimationActive = true;
-            seekAnimationStartTime = performance.now();
-            seekAnimationStartDisplayTime = internalDisplayTime; // Current visual position
-            seekAnimationTargetDisplayTime = hostTimeProp; // Target from prop
-        } else if (!isSeekingAnimationActive) {
+            seekAnimationCtx.isActive = true;
+            seekAnimationCtx.startTime = performance.now();
+            seekAnimationCtx.startDisplayTime =
+                interpolationCtx.internalDisplayTime; // Current visual position
+            seekAnimationCtx.targetDisplayTime = hostTimeProp; // Target from prop
+        } else if (!seekAnimationCtx.isActive) {
             // Not animating, so update baseline for normal interpolation or static display
-            internalDisplayTime = hostTimeProp;
+            interpolationCtx.internalDisplayTime = hostTimeProp;
         }
         // Always update these for the next frame's interpolation logic or delta check
-        lastHostTimeValue = hostTimeProp;
-        lastHostUpdateTime = performance.now();
-        hostIsPlaying = hostPlayingStatusProp;
+        interpolationCtx.lastHostTimeValue = hostTimeProp;
+        interpolationCtx.lastHostUpdateTime = performance.now();
+        interpolationCtx.hostIsPlaying = hostPlayingStatusProp;
     });
 
     // Effect to manage the continuous render loop
     $effect(() => {
-        if (isTrackLoaded && initialDimensionsSet && gl) {
+        if (isTrackLoaded && initialDimensionsSet && glContext.ctx) {
             if (animationFrameId === null) {
                 console.log("[WebGLWaveform] Starting continuous render loop.");
                 animationFrameId = requestAnimationFrame(continuousRender);
@@ -187,20 +272,27 @@
 
     // --- Event Handlers ---
     function handleWaveformClick(event: MouseEvent) {
-        if (!gl || !canvasElement || audioDuration <= 0 || !isTrackLoaded) {
+        if (
+            !glContext.ctx ||
+            !glContext.canvas ||
+            audioDuration <= 0 ||
+            !isTrackLoaded
+        ) {
             return;
         }
 
-        const rect = canvasElement.getBoundingClientRect();
+        const rect = glContext.canvas.getBoundingClientRect();
         const clickXInCanvas = event.clientX - rect.left;
-        const canvasWidth = canvasElement.clientWidth;
+        const canvasWidth = glContext.canvas.clientWidth;
 
         // Convert click X to NDC space (-1 to 1)
         const clickedNdcX = (clickXInCanvas / canvasWidth) * 2.0 - 1.0;
 
         // Current normalized time at the center of the view (playhead position)
         const normalizedCenterTime =
-            audioDuration > 0 ? internalDisplayTime / audioDuration : 0;
+            audioDuration > 0
+                ? interpolationCtx.internalDisplayTime / audioDuration
+                : 0;
 
         // Calculate target normalized time based on click offset from center
         let normalizedTargetTime =
@@ -239,10 +331,10 @@
 
     const waveformFragmentShaderSource = `#version 300 es
         precision mediump float;
-        uniform vec3 u_waveform_color;
+        uniform vec4 u_waveform_color_with_alpha; // Changed to vec4
         out vec4 fragColor;
         void main() {
-            fragColor = vec4(u_waveform_color, 1.0);
+            fragColor = u_waveform_color_with_alpha; // Use directly
         }
     `.trim();
 
@@ -326,13 +418,18 @@
 
     // --- WebGL Initialization (includes playhead setup) ---
     function initWebGL() {
-        if (!canvasElement) return;
-        const context = canvasElement.getContext("webgl2");
+        if (!glContext.canvas) return;
+        const context = glContext.canvas.getContext("webgl2");
         if (!context) {
             console.error("WebGL2 not supported or context creation failed");
             return;
         }
-        gl = context;
+        glContext.ctx = context;
+        const gl = glContext.ctx; // local alias for convenience
+
+        // Enable additive blending
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
 
         // Waveform program
         const wfVert = createShader(
@@ -346,26 +443,31 @@
             waveformFragmentShaderSource,
         );
         if (wfVert && wfFrag) {
-            waveformProgram = createProgram(gl, wfVert, wfFrag);
+            waveformRendering.program = createProgram(gl, wfVert, wfFrag);
             gl.deleteShader(wfVert);
             gl.deleteShader(wfFrag);
         }
 
-        if (waveformProgram) {
-            uWaveformColorLoc = gl.getUniformLocation(
-                waveformProgram,
-                "u_waveform_color",
+        if (waveformRendering.program) {
+            waveformRendering.uniforms.colorLoc = gl.getUniformLocation(
+                waveformRendering.program,
+                "u_waveform_color_with_alpha", // Updated uniform name
             );
-            uNormalizedTimeAtPlayheadLoc = gl.getUniformLocation(
-                waveformProgram,
-                "u_normalized_time_at_playhead",
-            );
-            uZoomFactorLoc = gl.getUniformLocation(
-                waveformProgram,
+            waveformRendering.uniforms.timeAtPlayheadLoc =
+                gl.getUniformLocation(
+                    waveformRendering.program,
+                    "u_normalized_time_at_playhead",
+                );
+            waveformRendering.uniforms.zoomFactorLoc = gl.getUniformLocation(
+                waveformRendering.program,
                 "u_zoom_factor",
             );
-            waveformVao = gl.createVertexArray();
-            waveformVbo = gl.createBuffer();
+            waveformRendering.low.vao = gl.createVertexArray();
+            waveformRendering.low.vbo = gl.createBuffer();
+            waveformRendering.mid.vao = gl.createVertexArray();
+            waveformRendering.mid.vbo = gl.createBuffer();
+            waveformRendering.high.vao = gl.createVertexArray();
+            waveformRendering.high.vbo = gl.createBuffer();
         } else {
             console.error("Failed to create waveform program");
             return;
@@ -383,22 +485,22 @@
             playheadFragmentShaderSource,
         );
         if (phVert && phFrag) {
-            playheadProgram = createProgram(gl, phVert, phFrag);
+            playheadRendering.program = createProgram(gl, phVert, phFrag);
             gl.deleteShader(phVert);
             gl.deleteShader(phFrag);
         }
 
-        if (playheadProgram) {
-            uPlayheadColorLoc = gl.getUniformLocation(
-                playheadProgram,
+        if (playheadRendering.program) {
+            playheadRendering.uniforms.colorLoc = gl.getUniformLocation(
+                playheadRendering.program,
                 "u_playhead_color",
             );
-            playheadVao = gl.createVertexArray();
-            playheadVbo = gl.createBuffer();
-            gl.bindBuffer(gl.ARRAY_BUFFER, playheadVbo);
+            playheadRendering.vao = gl.createVertexArray();
+            playheadRendering.vbo = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, playheadRendering.vbo);
             const lineVerts = new Float32Array([0.0, -1.0, 0.0, 1.0]);
             gl.bufferData(gl.ARRAY_BUFFER, lineVerts, gl.STATIC_DRAW);
-            gl.bindVertexArray(playheadVao);
+            gl.bindVertexArray(playheadRendering.vao);
             gl.enableVertexAttribArray(0);
             gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
             gl.bindVertexArray(null);
@@ -420,28 +522,28 @@
             cueLineFragmentShaderSource,
         );
         if (clVert && clFrag) {
-            cueLineProgram = createProgram(gl, clVert, clFrag);
+            cueLineRendering.program = createProgram(gl, clVert, clFrag);
             gl.deleteShader(clVert);
             gl.deleteShader(clFrag);
         }
 
-        if (cueLineProgram) {
-            uCueLineNdcXLoc = gl.getUniformLocation(
-                cueLineProgram,
+        if (cueLineRendering.program) {
+            cueLineRendering.uniforms.ndcXLoc = gl.getUniformLocation(
+                cueLineRendering.program,
                 "u_cue_line_ndc_x",
             );
-            uCueLineColorLoc = gl.getUniformLocation(
-                cueLineProgram,
+            cueLineRendering.uniforms.colorLoc = gl.getUniformLocation(
+                cueLineRendering.program,
                 "u_cue_line_color",
             );
 
-            cueLineVao = gl.createVertexArray();
-            cueLineVbo = gl.createBuffer();
-            gl.bindBuffer(gl.ARRAY_BUFFER, cueLineVbo);
+            cueLineRendering.vao = gl.createVertexArray();
+            cueLineRendering.vbo = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, cueLineRendering.vbo);
             const cueLineVerts = new Float32Array([0.0, -1.0, 0.0, 1.0]); // X is unused here, will be set by uniform
             gl.bufferData(gl.ARRAY_BUFFER, cueLineVerts, gl.STATIC_DRAW);
 
-            gl.bindVertexArray(cueLineVao);
+            gl.bindVertexArray(cueLineRendering.vao);
             gl.enableVertexAttribArray(0); // a_line_pos
             // For a_line_pos, we only need the Y component from the VBO for this shader logic.
             // The X component in the VBO is effectively ignored by the cueLineVertexShader
@@ -460,19 +562,19 @@
     }
 
     function resizeCanvas() {
-        if (!gl || !canvasElement) return;
-        const newWidth = canvasElement.clientWidth;
-        const newHeight = canvasElement.clientHeight;
+        if (!glContext.ctx || !glContext.canvas) return;
+        const gl = glContext.ctx; // local alias
+        const canvas = glContext.canvas;
 
-        if (
-            canvasElement.width !== newWidth ||
-            canvasElement.height !== newHeight
-        ) {
-            canvasElement.width = newWidth;
-            canvasElement.height = newHeight;
-            gl.viewport(0, 0, canvasElement.width, canvasElement.height);
+        const newWidth = canvas.clientWidth;
+        const newHeight = canvas.clientHeight;
+
+        if (canvas.width !== newWidth || canvas.height !== newHeight) {
+            canvas.width = newWidth;
+            canvas.height = newHeight;
+            gl.viewport(0, 0, canvas.width, canvas.height);
             console.log(
-                `[WebGLWaveform] Canvas resized to: ${canvasElement.width}x${canvasElement.height}.`,
+                `[WebGLWaveform] Canvas resized to: ${canvas.width}x${canvas.height}.`,
             );
         }
         if (newWidth > 0 && newHeight > 0 && !initialDimensionsSet) {
@@ -481,35 +583,52 @@
         // render() is now primarily driven by continuousRender or geometry updates
     }
 
-    // --- Data Preparation for Waveform (unchanged from previous step, uses audioDuration from prop) ---
+    // --- Data Preparation for Waveform (uses audioDuration from prop) ---
     function updateWaveformGeometry() {
-        const currentAudioDuration = audioDuration; // Use prop directly
-        const currentActiveMip = activeMipLevel(); // Use derived value
+        const currentAudioDuration = audioDuration;
+        const currentActiveMip = activeMipLevel();
+        const gl = glContext.ctx;
 
         if (
             !gl ||
-            !waveformVao ||
-            !waveformVbo ||
+            !waveformRendering.low.vao ||
+            !waveformRendering.low.vbo ||
+            !waveformRendering.mid.vao ||
+            !waveformRendering.mid.vbo ||
+            !waveformRendering.high.vao ||
+            !waveformRendering.high.vbo ||
             !currentActiveMip ||
             !volumeAnalysis ||
             currentAudioDuration <= 0
         ) {
-            waveformVertexCount = 0;
+            waveformRendering.low.vertexCount = 0;
+            waveformRendering.mid.vertexCount = 0;
+            waveformRendering.high.vertexCount = 0;
             return;
         }
 
+        // Calculate gain multipliers from dB
+        const lowMultiplier = Math.pow(10, lowGainDb / 20);
+        const midMultiplier = Math.pow(10, midGainDb / 20);
+        const highMultiplier = Math.pow(10, highGainDb / 20);
+
         const bins = currentActiveMip;
         if (!bins || bins.length === 0) {
-            waveformVertexCount = 0;
+            waveformRendering.low.vertexCount = 0;
+            waveformRendering.mid.vertexCount = 0;
+            waveformRendering.high.vertexCount = 0;
             return;
         }
 
         const maxRms =
-            volumeAnalysis.max_rms_amplitude > 0
-                ? volumeAnalysis.max_rms_amplitude
+            volumeAnalysis.max_band_energy > 0
+                ? volumeAnalysis.max_band_energy
                 : 0.0001;
 
-        const vertexData: number[] = [];
+        const vertexDataLow: number[] = [];
+        const vertexDataMid: number[] = [];
+        const vertexDataHigh: number[] = [];
+
         bins.forEach((bin: WaveBin, index: number) => {
             const binDurationForThisMip = currentAudioDuration / bins.length; // Duration of one bin at this MIP level
             const timeSec = index * binDurationForThisMip;
@@ -517,97 +636,195 @@
                 currentAudioDuration > 0 ? timeSec / currentAudioDuration : 0;
 
             // Apply height gain factor here
-            const baseNormalizedAmplitude = Math.min(1.0, bin.mid / maxRms);
-            const amplifiedNormalizedAmplitude = Math.min(
+            const yTopLow = Math.min(
                 1.0,
-                baseNormalizedAmplitude * HEIGHT_GAIN_FACTOR,
+                ((bin.low * lowMultiplier) / maxRms) * HEIGHT_GAIN_FACTOR, // Applied lowMultiplier
             );
+            const yBottomLow = -yTopLow;
+            vertexDataLow.push(normalizedTimeX, yBottomLow);
+            vertexDataLow.push(normalizedTimeX, yTopLow);
 
-            const yTopNdc = amplifiedNormalizedAmplitude;
-            const yBottomNdc = -amplifiedNormalizedAmplitude;
+            const yTopMid = Math.min(
+                1.0,
+                ((bin.mid * midMultiplier) / maxRms) * HEIGHT_GAIN_FACTOR, // Applied midMultiplier
+            );
+            const yBottomMid = -yTopMid;
+            vertexDataMid.push(normalizedTimeX, yBottomMid);
+            vertexDataMid.push(normalizedTimeX, yTopMid);
 
-            vertexData.push(normalizedTimeX, yBottomNdc);
-            vertexData.push(normalizedTimeX, yTopNdc);
+            const yTopHigh = Math.min(
+                1.0,
+                ((bin.high * highMultiplier) / maxRms) * HEIGHT_GAIN_FACTOR, // Applied highMultiplier
+            );
+            const yBottomHigh = -yTopHigh;
+            vertexDataHigh.push(normalizedTimeX, yBottomHigh);
+            vertexDataHigh.push(normalizedTimeX, yTopHigh);
         });
 
-        waveformVertexCount = vertexData.length / 2;
+        waveformRendering.low.vertexCount = vertexDataLow.length / 2;
+        waveformRendering.mid.vertexCount = vertexDataMid.length / 2;
+        waveformRendering.high.vertexCount = vertexDataHigh.length / 2;
 
-        gl.bindBuffer(gl.ARRAY_BUFFER, waveformVbo);
-        gl.bufferData(
-            gl.ARRAY_BUFFER,
+        setupBandGeometry(
+            gl,
+            waveformRendering.low.vao,
+            waveformRendering.low.vbo,
+            vertexDataLow,
+        );
+        setupBandGeometry(
+            gl,
+            waveformRendering.mid.vao,
+            waveformRendering.mid.vbo,
+            vertexDataMid,
+        );
+        setupBandGeometry(
+            gl,
+            waveformRendering.high.vao,
+            waveformRendering.high.vbo,
+            vertexDataHigh,
+        );
+    }
+
+    function setupBandGeometry(
+        ctx: WebGL2RenderingContext,
+        vao: WebGLVertexArrayObject,
+        vbo: WebGLBuffer,
+        vertexData: number[],
+    ) {
+        ctx.bindBuffer(ctx.ARRAY_BUFFER, vbo);
+        ctx.bufferData(
+            ctx.ARRAY_BUFFER,
             new Float32Array(vertexData),
-            gl.STATIC_DRAW,
+            ctx.STATIC_DRAW,
         );
 
-        gl.bindVertexArray(waveformVao);
-        gl.enableVertexAttribArray(0);
-        gl.vertexAttribPointer(
-            0,
-            1,
-            gl.FLOAT,
-            false,
-            2 * Float32Array.BYTES_PER_ELEMENT,
-            0,
+        ctx.bindVertexArray(vao);
+        // Attribute 0: Normalized Time X (a_normalized_time_x)
+        ctx.enableVertexAttribArray(0);
+        ctx.vertexAttribPointer(
+            0, // Attribute location
+            1, // Number of elements per attribute (just x)
+            ctx.FLOAT,
+            false, // Normalized
+            2 * Float32Array.BYTES_PER_ELEMENT, // Stride: 2 floats per vertex (x, y)
+            0, // Offset
         );
-        gl.enableVertexAttribArray(1);
-        gl.vertexAttribPointer(
-            1,
-            1,
-            gl.FLOAT,
-            false,
-            2 * Float32Array.BYTES_PER_ELEMENT,
-            1 * Float32Array.BYTES_PER_ELEMENT,
+        // Attribute 1: Normalized Y Value (a_normalized_y_value)
+        ctx.enableVertexAttribArray(1);
+        ctx.vertexAttribPointer(
+            1, // Attribute location
+            1, // Number of elements per attribute (just y)
+            ctx.FLOAT,
+            false, // Normalized
+            2 * Float32Array.BYTES_PER_ELEMENT, // Stride: 2 floats per vertex (x, y)
+            1 * Float32Array.BYTES_PER_ELEMENT, // Offset: skip x (1 float)
         );
 
-        gl.bindVertexArray(null);
-        gl.bindBuffer(gl.ARRAY_BUFFER, null);
+        // Unbind after setup is good practice, though render will rebind
+        ctx.bindVertexArray(null);
+        ctx.bindBuffer(ctx.ARRAY_BUFFER, null);
     }
 
     // --- Main Render Function ---
     function render() {
-        if (!gl || !canvasElement || !initialDimensionsSet) return;
-        if (canvasElement.width === 0 || canvasElement.height === 0) return;
+        if (!glContext.ctx || !glContext.canvas || !initialDimensionsSet)
+            return;
+        const gl = glContext.ctx; // local alias
+        if (glContext.canvas.width === 0 || glContext.canvas.height === 0)
+            return;
 
         gl.clearColor(0.0, 0.0, 0.0, 0.0);
         gl.clear(gl.COLOR_BUFFER_BIT);
 
         // Draw Waveform
         if (
-            waveformProgram &&
-            waveformVao &&
-            waveformVertexCount > 0 &&
-            uWaveformColorLoc &&
-            uNormalizedTimeAtPlayheadLoc &&
-            uZoomFactorLoc
+            waveformRendering.program &&
+            waveformRendering.low.vao &&
+            waveformRendering.mid.vao &&
+            waveformRendering.high.vao &&
+            waveformRendering.low.vertexCount > 0 &&
+            waveformRendering.mid.vertexCount > 0 &&
+            waveformRendering.high.vertexCount > 0 &&
+            waveformRendering.uniforms.colorLoc &&
+            waveformRendering.uniforms.timeAtPlayheadLoc &&
+            waveformRendering.uniforms.zoomFactorLoc
         ) {
-            gl.useProgram(waveformProgram);
-            gl.uniform3fv(uWaveformColorLoc, waveformColor);
+            gl.useProgram(waveformRendering.program);
 
-            const currentTrackTimeToRender = internalDisplayTime;
-            const currentTrackDuration = audioDuration;
-            const normalizedCurrentTime =
-                currentTrackDuration > 0 && currentTrackTimeToRender >= 0
-                    ? currentTrackTimeToRender / currentTrackDuration
-                    : 0.0;
+            // Set shared uniforms once
+            const normalizedTimeAtPlayhead =
+                audioDuration > 0
+                    ? interpolationCtx.internalDisplayTime / audioDuration
+                    : 0;
+            gl.uniform1f(
+                waveformRendering.uniforms.timeAtPlayheadLoc,
+                normalizedTimeAtPlayhead,
+            );
+            gl.uniform1f(
+                waveformRendering.uniforms.zoomFactorLoc,
+                INITIAL_ZOOM_FACTOR,
+            );
 
-            gl.uniform1f(uNormalizedTimeAtPlayheadLoc, normalizedCurrentTime);
-            gl.uniform1f(uZoomFactorLoc, INITIAL_ZOOM_FACTOR);
+            const faderAlpha = Math.max(0, Math.min(1, masterFaderLevel)); // Clamp fader level to [0,1]
 
-            gl.bindVertexArray(waveformVao);
-            gl.drawArrays(gl.TRIANGLE_STRIP, 0, waveformVertexCount);
-            gl.bindVertexArray(null);
+            // Draw Low Band
+            gl.uniform4f(
+                waveformRendering.uniforms.colorLoc,
+                lowBandColor[0],
+                lowBandColor[1],
+                lowBandColor[2],
+                faderAlpha,
+            );
+            gl.bindVertexArray(waveformRendering.low.vao);
+            gl.drawArrays(
+                gl.TRIANGLE_STRIP,
+                0,
+                waveformRendering.low.vertexCount,
+            );
+
+            // Draw Mid Band
+            gl.uniform4f(
+                waveformRendering.uniforms.colorLoc,
+                midBandColor[0],
+                midBandColor[1],
+                midBandColor[2],
+                faderAlpha,
+            );
+            gl.bindVertexArray(waveformRendering.mid.vao);
+            gl.drawArrays(
+                gl.TRIANGLE_STRIP,
+                0,
+                waveformRendering.mid.vertexCount,
+            );
+
+            // Draw High Band
+            gl.uniform4f(
+                waveformRendering.uniforms.colorLoc,
+                highBandColor[0],
+                highBandColor[1],
+                highBandColor[2],
+                faderAlpha,
+            );
+            gl.bindVertexArray(waveformRendering.high.vao);
+            gl.drawArrays(
+                gl.TRIANGLE_STRIP,
+                0,
+                waveformRendering.high.vertexCount,
+            );
+
+            gl.bindVertexArray(null); // Unbind after all bands
         }
 
         // Draw Playhead
         if (
-            playheadProgram &&
-            playheadVao &&
-            playheadVbo &&
-            uPlayheadColorLoc
+            playheadRendering.program &&
+            playheadRendering.vao &&
+            playheadRendering.vbo && // vbo check added for completeness, though not strictly needed if vao is good
+            playheadRendering.uniforms.colorLoc
         ) {
-            gl.useProgram(playheadProgram);
-            gl.uniform3fv(uPlayheadColorLoc, PLAYHEAD_COLOR);
-            gl.bindVertexArray(playheadVao);
+            gl.useProgram(playheadRendering.program);
+            gl.uniform3fv(playheadRendering.uniforms.colorLoc, PLAYHEAD_COLOR);
+            gl.bindVertexArray(playheadRendering.vao);
             gl.drawArrays(gl.LINES, 0, 2);
             gl.bindVertexArray(null);
         }
@@ -615,17 +832,17 @@
         // Draw Cue Line (if active)
         if (
             cuePointTime !== null &&
-            cueLineProgram &&
-            cueLineVao &&
-            uCueLineNdcXLoc &&
-            uCueLineColorLoc &&
+            cueLineRendering.program &&
+            cueLineRendering.vao &&
+            cueLineRendering.uniforms.ndcXLoc &&
+            cueLineRendering.uniforms.colorLoc &&
             audioDuration > 0
         ) {
-            gl.useProgram(cueLineProgram);
+            gl.useProgram(cueLineRendering.program);
 
             const normalizedCueTime = cuePointTime / audioDuration;
             const normalizedPlayheadCenterTime =
-                internalDisplayTime / audioDuration;
+                interpolationCtx.internalDisplayTime / audioDuration;
 
             const cueNdcX =
                 (normalizedCueTime - normalizedPlayheadCenterTime) *
@@ -633,10 +850,13 @@
 
             // Only draw if within visible NDC range (plus a small buffer)
             if (cueNdcX >= -1.1 && cueNdcX <= 1.1) {
-                gl.uniform1f(uCueLineNdcXLoc, cueNdcX);
-                gl.uniform3fv(uCueLineColorLoc, CUE_LINE_COLOR);
+                gl.uniform1f(cueLineRendering.uniforms.ndcXLoc, cueNdcX);
+                gl.uniform3fv(
+                    cueLineRendering.uniforms.colorLoc,
+                    CUE_LINE_COLOR,
+                );
 
-                gl.bindVertexArray(cueLineVao);
+                gl.bindVertexArray(cueLineRendering.vao);
                 gl.drawArrays(gl.LINES, 0, 2);
                 gl.bindVertexArray(null);
             }
@@ -645,7 +865,7 @@
 
     // --- Continuous Render Loop Function ---
     function continuousRender() {
-        if (!isTrackLoaded || !gl || !initialDimensionsSet) {
+        if (!isTrackLoaded || !glContext.ctx || !initialDimensionsSet) {
             animationFrameId = null;
             console.log(
                 "[WebGLWaveform] continuousRender: stopping due to unmet conditions.",
@@ -653,43 +873,47 @@
             return;
         }
 
-        if (isSeekingAnimationActive) {
+        if (seekAnimationCtx.isActive) {
             const elapsedAnimationTime =
-                performance.now() - seekAnimationStartTime;
+                performance.now() - seekAnimationCtx.startTime;
             if (elapsedAnimationTime < SEEK_ANIMATION_DURATION_MS) {
                 const animationProgress =
                     elapsedAnimationTime / SEEK_ANIMATION_DURATION_MS;
                 // Simple linear interpolation, can be replaced with easing function
-                internalDisplayTime =
-                    seekAnimationStartDisplayTime +
-                    (seekAnimationTargetDisplayTime -
-                        seekAnimationStartDisplayTime) *
+                interpolationCtx.internalDisplayTime =
+                    seekAnimationCtx.startDisplayTime +
+                    (seekAnimationCtx.targetDisplayTime -
+                        seekAnimationCtx.startDisplayTime) *
                         animationProgress;
             } else {
-                internalDisplayTime = seekAnimationTargetDisplayTime;
-                isSeekingAnimationActive = false;
+                interpolationCtx.internalDisplayTime =
+                    seekAnimationCtx.targetDisplayTime;
+                seekAnimationCtx.isActive = false;
                 // Sync up the host time references after animation completes
-                lastHostTimeValue = internalDisplayTime;
-                lastHostUpdateTime = performance.now();
+                interpolationCtx.lastHostTimeValue =
+                    interpolationCtx.internalDisplayTime;
+                interpolationCtx.lastHostUpdateTime = performance.now();
                 console.log(
-                    `[WebGLWaveform] Animation finished at: ${internalDisplayTime.toFixed(3)}s`,
+                    `[WebGLWaveform] Animation finished at: ${interpolationCtx.internalDisplayTime.toFixed(3)}s`,
                 );
             }
-        } else if (hostIsPlaying) {
+        } else if (interpolationCtx.hostIsPlaying) {
             const now = performance.now();
-            const elapsedTimeMs = now - lastHostUpdateTime;
-            let newCalculatedTime = lastHostTimeValue + elapsedTimeMs / 1000.0;
+            const elapsedTimeMs = now - interpolationCtx.lastHostUpdateTime;
+            let newCalculatedTime =
+                interpolationCtx.lastHostTimeValue + elapsedTimeMs / 1000.0;
             newCalculatedTime = Math.max(
                 0,
                 Math.min(newCalculatedTime, audioDuration),
             );
-            internalDisplayTime = newCalculatedTime;
+            interpolationCtx.internalDisplayTime = newCalculatedTime;
         } else {
             // Not playing and not animating seek, internalDisplayTime should be stable from the $effect
             // For safety, ensure it reflects the last known host time if no animation is active.
-            if (!isSeekingAnimationActive) {
+            if (!seekAnimationCtx.isActive) {
                 // Double check to avoid conflict if an animation just finished
-                internalDisplayTime = lastHostTimeValue;
+                interpolationCtx.internalDisplayTime =
+                    interpolationCtx.lastHostTimeValue;
             }
         }
 
@@ -700,18 +924,25 @@
     let resizeObserver: ResizeObserver | null = null;
     function handleResize() {
         resizeCanvas();
-        if (gl && initialDimensionsSet && animationFrameId === null) {
+        if (
+            glContext.ctx &&
+            initialDimensionsSet &&
+            animationFrameId === null
+        ) {
             render();
         }
     }
 
     onMount(() => {
-        if (canvasElement) {
+        // glContext.canvas = canvasElement; // This line is no longer needed as canvasElement is bound directly to glContext.canvas
+        if (glContext.canvas) {
             initWebGL();
             resizeObserver = new ResizeObserver(handleResize);
-            resizeObserver.observe(canvasElement);
+            resizeObserver.observe(glContext.canvas);
         } else {
-            console.error("onMount: canvasElement is null.");
+            console.error(
+                "onMount: glContext.canvas is null. This should not happen if bind:this is working.",
+            );
         }
     });
 
@@ -720,37 +951,56 @@
             cancelAnimationFrame(animationFrameId);
             animationFrameId = null;
         }
-        if (resizeObserver && canvasElement)
-            resizeObserver.unobserve(canvasElement);
-        if (gl) {
-            if (waveformProgram) gl.deleteProgram(waveformProgram);
-            if (waveformVao) gl.deleteVertexArray(waveformVao);
-            if (waveformVbo) gl.deleteBuffer(waveformVbo);
-            if (playheadProgram) gl.deleteProgram(playheadProgram);
-            if (playheadVao) gl.deleteVertexArray(playheadVao);
-            if (playheadVbo) gl.deleteBuffer(playheadVbo);
+        if (resizeObserver && glContext.canvas)
+            resizeObserver.unobserve(glContext.canvas);
 
-            if (cueLineProgram) gl.deleteProgram(cueLineProgram);
-            if (cueLineVao) gl.deleteVertexArray(cueLineVao);
-            if (cueLineVbo) gl.deleteBuffer(cueLineVbo);
+        const gl = glContext.ctx;
+        if (gl) {
+            gl.disable(gl.BLEND); // Disable blending on cleanup
+            if (waveformRendering.program)
+                gl.deleteProgram(waveformRendering.program);
+            if (waveformRendering.low.vao)
+                gl.deleteVertexArray(waveformRendering.low.vao);
+            if (waveformRendering.low.vbo)
+                gl.deleteBuffer(waveformRendering.low.vbo);
+            if (waveformRendering.mid.vao)
+                gl.deleteVertexArray(waveformRendering.mid.vao);
+            if (waveformRendering.mid.vbo)
+                gl.deleteBuffer(waveformRendering.mid.vbo);
+            if (waveformRendering.high.vao)
+                gl.deleteVertexArray(waveformRendering.high.vao);
+            if (waveformRendering.high.vbo)
+                gl.deleteBuffer(waveformRendering.high.vbo);
+
+            if (playheadRendering.program)
+                gl.deleteProgram(playheadRendering.program);
+            if (playheadRendering.vao)
+                gl.deleteVertexArray(playheadRendering.vao);
+            if (playheadRendering.vbo) gl.deleteBuffer(playheadRendering.vbo);
+
+            if (cueLineRendering.program)
+                gl.deleteProgram(cueLineRendering.program);
+            if (cueLineRendering.vao)
+                gl.deleteVertexArray(cueLineRendering.vao);
+            if (cueLineRendering.vbo) gl.deleteBuffer(cueLineRendering.vbo);
         }
     });
 </script>
 
 <div class="webgl-waveform-container" style="width: 100%; height: 100%;">
     <canvas
-        bind:this={canvasElement}
+        bind:this={glContext.canvas}
         style="display: block; width: 100%; height: 100%;"
         onclick={handleWaveformClick}
     ></canvas>
 
-    {#if !(isTrackLoaded && activeMipLevel() && gl && waveformVertexCount > 0) && !isAnalysisPending}
+    {#if !(isTrackLoaded && activeMipLevel() && glContext.ctx && (waveformRendering.low.vertexCount > 0 || waveformRendering.mid.vertexCount > 0 || waveformRendering.high.vertexCount > 0)) && !isAnalysisPending}
         <div class="status-message placeholder">
             {#if !isTrackLoaded}
                 Load audio to see waveform
             {:else if isAnalysisPending}
                 Analyzing audio...
-            {:else if !activeMipLevel() || waveformVertexCount === 0}
+            {:else if !activeMipLevel() || (waveformRendering.low.vertexCount === 0 && waveformRendering.mid.vertexCount === 0 && waveformRendering.high.vertexCount === 0)}
                 Waveform data not available or empty
             {:else}
                 Preparing waveform display...
@@ -767,7 +1017,7 @@
 <style>
     .webgl-waveform-container {
         position: relative;
-        background-color: #1a1a1a;
+        /* background-color: #1a1a1a; */ /* Let canvas clear handle background */
         min-height: 80px;
         overflow: hidden;
     }
@@ -794,9 +1044,6 @@
     }
 
     @media (prefers-color-scheme: light) {
-        .webgl-waveform-container {
-            background-color: #f0f0f0;
-        }
         .status-message {
             color: #555;
             background-color: rgba(233, 233, 233, 0.8);
