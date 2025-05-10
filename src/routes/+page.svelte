@@ -1,7 +1,7 @@
 <script lang="ts">
     import MusicLibrary from "$lib/components/MusicLibrary.svelte";
     import DeckControls from "$lib/components/DeckControls.svelte";
-    import WaveformDisplay from "$lib/components/WaveformDisplay.svelte";
+    import WaveFormDisplay from "$lib/components/WaveformDisplay.svelte";
     import Slider from "$lib/components/Slider.svelte";
     import { libraryStore } from "$lib/stores/libraryStore";
     import {
@@ -28,18 +28,19 @@
     let isDeckBWaveformLoading = $state(false);
 
     // --- Crossfader State ---
-    let crossfaderValue = $state(0.5); // 0 = Deck A, 0.5 = Center, 1 = Deck B
+    let crossfaderValue = $state(0.5);
 
     // --- Deck Volume Derivations for Crossfader ---
-    // Using a simple linear taper for now. Could be upgraded to constant power.
     const deckAVolume = $derived(() => {
-        // Deck A is louder when crossfaderValue is closer to 0
         return 1 - crossfaderValue;
     });
     const deckBVolume = $derived(() => {
-        // Deck B is louder when crossfaderValue is closer to 1
         return crossfaderValue;
     });
+
+    // --- Waveform Colors ---
+    const deckAWaveformColor: [number, number, number] = [0.43, 0.3, 0.7]; // Less saturated Purple HSL(255, 40%, 50%)
+    const deckBWaveformColor: [number, number, number] = [0.7125, 0.75, 0.7875]; // HSL(210, 15%, 75%)
 
     // --- Effects to apply derived volumes to player stores ---
     $effect(() => {
@@ -75,7 +76,7 @@
                 console.log(
                     `[Page] Track ${selectedTrack.path} is already loaded on Deck A. Skipping reload.`,
                 );
-                return; // Do nothing
+                return;
             }
 
             const trackToLoad = selectedTrack; // Capture selectedTrack
@@ -181,29 +182,29 @@
         <section class="mixer-section">
             <h2>Mixer</h2>
             <div class="waveform-container deck-a-style">
-                <WaveformDisplay
+                <WaveFormDisplay
                     volumeAnalysis={deckAVolumeAnalysis}
                     isAnalysisPending={isDeckAWaveformLoading}
                     isTrackLoaded={isTrackLoadedA}
                     audioDuration={$playerStoreA.duration}
                     currentTime={$playerStoreA.currentTime}
-                    cuePointTime={$playerStoreA.cuePointTime}
+                    isPlaying={$playerStoreA.isPlaying}
                     seekAudio={seekDeckA}
-                    className="mixer-waveform"
-                    waveformColor="var(--deck-a-waveform-fill-light)"
+                    cuePointTime={$playerStoreA.cuePointTime}
+                    waveformColor={deckAWaveformColor}
                 />
             </div>
             <div class="waveform-container deck-b-style">
-                <WaveformDisplay
+                <WaveFormDisplay
                     volumeAnalysis={deckBVolumeAnalysis}
                     isAnalysisPending={isDeckBWaveformLoading}
                     isTrackLoaded={isTrackLoadedB}
                     audioDuration={$playerStoreB.duration}
                     currentTime={$playerStoreB.currentTime}
-                    cuePointTime={$playerStoreB.cuePointTime}
+                    isPlaying={$playerStoreB.isPlaying}
                     seekAudio={seekDeckB}
-                    className="mixer-waveform"
-                    waveformColor="var(--deck-b-waveform-fill-light)"
+                    cuePointTime={$playerStoreB.cuePointTime}
+                    waveformColor={deckBWaveformColor}
                 />
             </div>
             <div class="crossfader-container">

@@ -16,10 +16,12 @@ export function createPlayerStore(deckId: string) {
 
     let unlistenUpdate: UnlistenFn | null = null;
     let unlistenError: UnlistenFn | null = null;
+    let unlistenTick: UnlistenFn | null = null;
 
     async function setupListeners() {
         if (unlistenUpdate) unlistenUpdate();
         if (unlistenError) unlistenError();
+        if (unlistenTick) unlistenTick();
 
         unlistenUpdate = await listen<{
             deckId: string;
@@ -27,22 +29,40 @@ export function createPlayerStore(deckId: string) {
                 isPlaying: boolean;
                 isLoading: boolean;
                 currentTime: number;
-                duration: number;
+                duration: number | null;
                 error: string | null;
                 cuePointSeconds: number | null;
             };
         }>("playback://update", (event) => {
             if (event.payload.deckId === deckId) {
                 const rustState = event.payload.state;
-                console.log(`[Store ${deckId}] Received Rust state:`, rustState);
-                set({
+                console.log(`[Store ${deckId}] Received full state update:`, rustState);
+                update(s => ({
+                    ...s,
                     isPlaying: rustState.isPlaying,
                     isLoading: rustState.isLoading,
                     currentTime: rustState.currentTime,
-                    duration: rustState.duration,
+                    duration: rustState.duration !== null ? rustState.duration : s.duration,
                     error: rustState.error,
-                    cuePointTime: rustState.cuePointSeconds,
-                });
+                    cuePointTime: rustState.cuePointSeconds !== null ? rustState.cuePointSeconds : s.cuePointTime,
+                }));
+            }
+        });
+
+        unlistenTick = await listen<{
+            deckId: string;
+            payload: {
+                currentTime: number;
+            };
+        }>("playback://tick", (event) => {
+            if (event.payload.deckId === deckId) {
+                const tickPayload = event.payload.payload;
+                update(s => ({
+                    ...s,
+                    currentTime: tickPayload.currentTime,
+                    isLoading: s.isLoading,
+                    error: s.error,
+                }));
             }
         });
 
@@ -145,8 +165,10 @@ export function createPlayerStore(deckId: string) {
         console.log(`[Store ${deckId}] Cleaning up listeners...`);
         if (unlistenUpdate) unlistenUpdate();
         if (unlistenError) unlistenError();
+        if (unlistenTick) unlistenTick();
         unlistenUpdate = null;
         unlistenError = null;
+        unlistenTick = null;
         set(initialState);
     }
 

@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::audio_effects::EqSource;
-use crate::playback_types::{AudioThreadCommand, EqParams, PlaybackState};
+use crate::playback_types::{AudioThreadCommand, EqParams, PlaybackState, TickPayload};
 use crate::errors::{AudioDecodingError, PlaybackError}; // Import custom errors
 
 use rodio::{OutputStream, OutputStreamHandle, Sink, buffer::SamplesBuffer};
@@ -196,6 +196,23 @@ fn emit_error_event<R: Runtime>(
         serde_json::json!({ "deckId": deck_id, "error": error_message }),
     ) {
         log::error!("Failed to emit playback error for deck {}: {}", deck_id, e);
+    }
+}
+
+fn emit_tick_event<R: Runtime>(
+    manager: &(impl Manager<R> + Emitter<R>),
+    deck_id: &str,
+    payload: &TickPayload,
+) {
+    if let Err(e) = manager.emit(
+        "playback://tick", // New event name
+        serde_json::json!({ "deckId": deck_id, "payload": payload }),
+    ) {
+        log::error!(
+            "Failed to emit playback tick event for deck {}: {}",
+            deck_id,
+            e
+        );
     }
 }
 
@@ -532,32 +549,31 @@ pub fn run_audio_thread(app_handle: AppHandle, mut receiver: mpsc::Receiver<Audi
 fn audio_thread_handle_init(
     deck_id: &str,
     local_states: &mut HashMap<String, AudioThreadDeckState>,
-    audio_handle: &OutputStreamHandle,
+    _audio_handle: &OutputStreamHandle, // Mark as unused if not directly used
     app_handle: &AppHandle,
 ) {
     if !local_states.contains_key(deck_id) {
-        match Sink::try_new(audio_handle) {
+        match Sink::try_new(&_audio_handle) { // Use _audio_handle
             Ok(sink) => {
                 let initial_eq_params = Arc::new(Mutex::new(EqParams::default()));
-                let initial_trim_gain = Arc::new(Mutex::new(1.0f32)); // Default trim = 1.0 (0dB)
+                let initial_trim_gain = Arc::new(Mutex::new(1.0f32));
                 local_states.insert(
                     deck_id.to_string(),
                     AudioThreadDeckState {
                         sink,
-                        // Initialize audio data fields as empty/default
                         decoded_samples: Arc::new(Vec::new()),
-                        sample_rate: 0.0, // Placeholder, will be set on load
+                        sample_rate: 0.0,
                         duration: Duration::ZERO,
                         is_playing: false,
                         playback_start_time: None,
                         paused_position: None,
                         eq_params: initial_eq_params,
-                        trim_gain: initial_trim_gain, // Initialize trim gain
-                        cue_point: None, // Initialize cue point
+                        trim_gain: initial_trim_gain,
+                        cue_point: None,
                     },
                 );
                 log::info!("Audio Thread: Initialized sink for deck '{}'", deck_id);
-                // Emit default state which now includes cue_point_seconds: null
+                // Emit default state which now includes duration: None implicitly
                 emit_state_update(app_handle, deck_id, &PlaybackState::default());
             }
             Err(e) => {
@@ -632,8 +648,9 @@ async fn audio_thread_handle_load(
 
                                 let state_to_emit = PlaybackState {
                                     is_playing: false, is_loading: false, current_time: 0.0,
-                                    duration: duration.as_secs_f64(), error: None,
-                                    cue_point_seconds: None, // Emit initial null cue point
+                                    duration: Some(duration.as_secs_f64()), // Send Some(duration)
+                                    error: None,
+                                    cue_point_seconds: None,
                                 };
                                 emit_state_update(app_handle, &deck_id, &state_to_emit);
                             }
@@ -703,7 +720,7 @@ fn audio_thread_handle_play(
             let state_to_emit = PlaybackState {
                 is_playing: true,
                 current_time: deck_state.paused_position.unwrap_or_default().as_secs_f64(),
-                duration: deck_state.duration.as_secs_f64(),
+                duration: Some(deck_state.duration.as_secs_f64()), // Send Some(duration)
                 is_loading: false,
                 error: None,
                 cue_point_seconds: deck_state.cue_point.map(|d| d.as_secs_f64()),
@@ -742,7 +759,7 @@ fn audio_thread_handle_pause(
                 current_time: new_paused_pos
                     .as_secs_f64()
                     .min(deck_state.duration.as_secs_f64()),
-                duration: deck_state.duration.as_secs_f64(),
+                duration: Some(deck_state.duration.as_secs_f64()), // Send Some(duration)
                 is_loading: false,
                 error: None,
                 cue_point_seconds: deck_state.cue_point.map(|d| d.as_secs_f64()),
@@ -842,7 +859,7 @@ fn audio_thread_handle_seek(
         let state_to_emit = PlaybackState {
             is_playing: deck_state.is_playing,
             current_time: clamped_time_secs,
-            duration: deck_state.duration.as_secs_f64(),
+            duration: Some(deck_state.duration.as_secs_f64()), // Send Some(duration)
             is_loading: false,
             error: None,
             cue_point_seconds: deck_state.cue_point.map(|d| d.as_secs_f64()),
@@ -951,7 +968,7 @@ fn audio_thread_handle_set_cue(
         let state_to_emit = PlaybackState {
             is_playing: deck_state.is_playing,
             current_time: current_time,
-            duration: deck_state.duration.as_secs_f64(),
+            duration: Some(deck_state.duration.as_secs_f64()), // Send Some(duration)
             is_loading: false,
             error: None,
             cue_point_seconds: Some(clamped_time_secs),
@@ -984,19 +1001,9 @@ fn audio_thread_handle_time_update(
         if deck_state.is_playing && !deck_state.sink.is_paused() && !deck_state.sink.empty() {
             let current_time_secs = get_current_playback_time_secs(deck_state);
 
-            let end_buffer = Duration::from_millis(50);
+            let end_buffer = Duration::from_millis(config::AUDIO_THREAD_TIME_UPDATE_INTERVAL_MS + 10); // Ensure buffer is slightly larger than tick interval
             let has_ended = deck_state.duration > Duration::ZERO
                 && (Duration::from_secs_f64(current_time_secs) + end_buffer >= deck_state.duration);
-
-            let state_update = PlaybackState {
-                current_time: current_time_secs,
-                is_playing: !has_ended,
-                duration: deck_state.duration.as_secs_f64(),
-                is_loading: false,
-                error: None,
-                cue_point_seconds: deck_state.cue_point.map(|d| d.as_secs_f64()),
-            };
-            emit_state_update(app_handle, deck_id, &state_update);
 
             if has_ended {
                 log::info!(
@@ -1006,7 +1013,26 @@ fn audio_thread_handle_time_update(
                 deck_state.sink.pause();
                 deck_state.is_playing = false;
                 deck_state.playback_start_time = None;
-                deck_state.paused_position = Some(deck_state.duration);
+                // Ensure paused_position reflects the actual end, capped by duration
+                let final_time = deck_state.duration.as_secs_f64();
+                deck_state.paused_position = Some(Duration::from_secs_f64(final_time));
+
+                // Emit a full state update to confirm track ended
+                let state_update = PlaybackState {
+                    current_time: final_time,
+                    is_playing: false,
+                    duration: Some(deck_state.duration.as_secs_f64()),
+                    is_loading: false,
+                    error: None,
+                    cue_point_seconds: deck_state.cue_point.map(|d| d.as_secs_f64()),
+                };
+                emit_state_update(app_handle, deck_id, &state_update);
+            } else {
+                // Emit the lean tick payload
+                let tick_payload = TickPayload {
+                    current_time: current_time_secs,
+                };
+                emit_tick_event(app_handle, deck_id, &tick_payload);
             }
         }
     }
