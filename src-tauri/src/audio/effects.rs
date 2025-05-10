@@ -4,11 +4,10 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-// Use biquad types directly
-use crate::playback_types::EqParams;
+use crate::audio::types::EqParams; // Adjusted path
 use biquad::{Biquad as _, Coefficients, DirectForm1, ToHertz, Type};
-use crate::config; // Import the config crate
-use crate::errors::AudioEffectsError; // Import custom error
+use crate::audio::config; // Adjusted path
+use crate::audio::errors::AudioEffectsError; // Adjusted path
 
 /// A custom Rodio source that applies Trim Gain and 3-band EQ (Low Shelf, Peaking, High Shelf)
 /// to an inner source.
@@ -194,4 +193,4 @@ where
     fn total_duration(&self) -> Option<Duration> {
         self.inner.total_duration()
     }
-}
+} 

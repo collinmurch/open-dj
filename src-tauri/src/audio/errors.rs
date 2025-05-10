@@ -86,8 +86,9 @@ pub enum PlaybackError {
     LogicalStateNotFound { deck_id: String },
     #[error("Failed to send shutdown completion signal: {0}")]
     ShutdownSignalError(String),
+    // Note: The path to AudioThreadCommand will need to be updated if playback_types.rs moves
     #[error("Tokio MPSC send error for audio command: {0}")]
-    MpscSendError(#[from] tokio::sync::mpsc::error::SendError<crate::playback_types::AudioThreadCommand>),
+    MpscSendError(#[from] tokio::sync::mpsc::error::SendError<crate::audio::types::AudioThreadCommand>),
     #[error("Tokio JoinError from spawned task: {0}")]
     JoinError(#[from] tokio::task::JoinError),
 }
@@ -126,8 +127,6 @@ pub enum AudioProcessorError {
     AnalysisVolumeError{ path: String, source: AudioAnalysisError },
     #[error("Invalid data (empty samples or zero sample rate) for duration calculation for '{path}'.")]
     InvalidDataForDurationCalculation { path: String },
-    #[error("Overall analysis for '{path}' failed due to one or more sub-tasks failing.")]
-    CombinedAnalysisFailed { path: String }, // Used when we just want to indicate a failure without specifying which part.
 }
 
 // For the HashMap<String, Result<AudioFeatures, String>> in analyze_features_batch

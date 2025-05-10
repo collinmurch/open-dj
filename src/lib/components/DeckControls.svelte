@@ -131,19 +131,17 @@
     // Effect to update EQ parameters in Rust
     $effect(() => {
         const paramsToSend = {
-            low_gain_db: lowGainDb,
-            mid_gain_db: midGainDb,
-            high_gain_db: highGainDb,
+            lowGainDb: lowGainDb,
+            midGainDb: midGainDb,
+            highGainDb: highGainDb,
         };
         if (eqDebounceTimeout !== undefined) clearTimeout(eqDebounceTimeout);
         eqDebounceTimeout = setTimeout(async () => {
             console.log(`Updating EQ for ${deckId}:`, paramsToSend);
             try {
                 await invoke("set_eq_params", {
-                    deckId,
-                    lowGainDb: paramsToSend.low_gain_db,
-                    midGainDb: paramsToSend.mid_gain_db,
-                    highGainDb: paramsToSend.high_gain_db,
+                    deckId: deckId,
+                    params: paramsToSend,
                 });
             } catch (err) {
                 console.error(`Failed to set EQ for ${deckId}:`, err);
@@ -228,9 +226,6 @@
     }
 
     function handleCuePointerDown() {
-        console.log(
-            `[TrackPlayer ${deckId}] Cue Pointer DOWN. Paused: ${!playerStoreState.isPlaying}, At Cue: ${isAtCuePoint()}`,
-        );
         isCueHeld = true;
         if (!playerStoreState.isPlaying && isAtCuePoint()) {
             // If paused AT the cue point, start temporary playback
@@ -242,9 +237,6 @@
     }
 
     function handleCuePointerUp() {
-        console.log(
-            `[TrackPlayer ${deckId}] Cue Pointer UP. Was temporary play: ${wasPausedAtCueWhenCuePressed}`,
-        );
         isCueHeld = false;
         if (wasPausedAtCueWhenCuePressed) {
             // If we started temporary playback, stop it and return to cue

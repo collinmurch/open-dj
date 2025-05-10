@@ -71,12 +71,6 @@ pub enum AudioThreadCommand {
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct TickPayload {
-    pub current_time: f64,
-}
-
-#[derive(Serialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
 pub struct PlaybackState {
     pub is_playing: bool,
     pub is_loading: bool,
@@ -98,3 +92,24 @@ impl Default for PlaybackState {
         }
     }
 }
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackUpdateEventPayload {
+    pub deck_id: String,
+    pub state: PlaybackState,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackTickEventPayload {
+    pub deck_id: String,
+    pub current_time: f64,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackErrorEventPayload {
+    pub deck_id: String,
+    pub error: String,
+} 

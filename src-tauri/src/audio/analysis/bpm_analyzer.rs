@@ -1,7 +1,7 @@
 use rayon::prelude::*;
 use rustfft::{FftPlanner, num_complex::Complex, num_traits::Zero};
-use crate::config;
-use crate::errors::BpmError; 
+use crate::audio::config; // Adjusted path for config
+use crate::audio::errors::BpmError; // Adjusted path for BpmError
 
 // --- Private Helper Functions ---
 
@@ -147,8 +147,8 @@ fn estimate_bpm(flux: &[f32], sample_rate: f32, hop_size: usize) -> Result<f32, 
     }
 
     // Calculate lag range in terms of flux frames based on BPM range
-    let max_lag_frames = (60.0 * sample_rate / (config::BPM_MIN * hop_size as f32)).ceil() as usize; // Use config value
-    let min_lag_frames = (60.0 * sample_rate / (config::BPM_MAX * hop_size as f32)).floor() as usize; // Use config value
+    let max_lag_frames = (60.0 * sample_rate / (config::BPM_MIN * hop_size as f32)).ceil() as usize; 
+    let min_lag_frames = (60.0 * sample_rate / (config::BPM_MAX * hop_size as f32)).floor() as usize; 
 
     if min_lag_frames == 0 || max_lag_frames <= min_lag_frames {
         return Err(BpmError::InvalidLagRange { min_lag: min_lag_frames, max_lag: max_lag_frames, sample_rate, hop_size });
@@ -178,14 +178,12 @@ fn estimate_bpm(flux: &[f32], sample_rate: f32, hop_size: usize) -> Result<f32, 
             let period_secs = peak_lag_index as f32 * hop_size as f32 / sample_rate;
             if period_secs > 1e-6 {
                 let bpm = 60.0 / period_secs;
-                // Clamp BPM to the expected range just in case
-                Ok(bpm.clamp(config::BPM_MIN, config::BPM_MAX)) // Use config values
+                Ok(bpm.clamp(config::BPM_MIN, config::BPM_MAX)) 
             } else {
                 Err(BpmError::PeriodTooSmall)
             }
         }
         _ => {
-            // No peak found or peak is at lag 0
             Err(BpmError::NoAutocorrelationPeak)
         }
     }
@@ -200,12 +198,12 @@ pub(crate) fn calculate_bpm(samples: &[f32], sample_rate: f32) -> Result<f32, Bp
     }
 
     // Sensible defaults - these could be parameters if needed
-    let frame_size = 1024; // Larger frame for better frequency resolution
-    let hop_size = frame_size / 4; // Standard overlap
-    let downsample_factor = 4; // Reduce computation significantly
+    let frame_size = 1024; 
+    let hop_size = frame_size / 4; 
+    let downsample_factor = 4; 
 
     // --- Preprocessing ---
-    let mut processed_samples = samples.to_vec(); // Clone samples for modification
+    let mut processed_samples = samples.to_vec(); 
     normalize_in_place(&mut processed_samples);
     downsample_in_place(&mut processed_samples, downsample_factor);
     let effective_sample_rate = sample_rate / downsample_factor as f32;
@@ -223,4 +221,4 @@ pub(crate) fn calculate_bpm(samples: &[f32], sample_rate: f32) -> Result<f32, Bp
     // --- Estimate BPM from Flux ---
     let bpm = estimate_bpm(&flux, effective_sample_rate, hop_size)?;
     Ok(bpm)
-}
+} 

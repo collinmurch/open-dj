@@ -1,5 +1,5 @@
-use crate::errors::AudioAnalysisError;
-use crate::config; 
+use crate::audio::errors::AudioAnalysisError; // Adjusted path
+use crate::audio::config; // Adjusted path
 use rustfft::{FftPlanner, num_complex::Complex, num_traits::Zero}; 
 use std::f32::consts::PI; 
 
@@ -20,7 +20,7 @@ impl Default for WaveBin {
 #[derive(serde::Serialize, Debug, Clone)]
 pub struct AudioAnalysis {
     pub levels: Vec<Vec<WaveBin>>,
-    pub max_band_energy: f32, // Renamed from max_rms_amplitude
+    pub max_band_energy: f32, 
 }
 
 /// Helper function to generate a Hann window.
@@ -55,11 +55,9 @@ pub(crate) fn calculate_rms_intervals(
             samples.len(),
             FRAME_SIZE
         );
-        // Create a single bin representing the whole (short) sample for robustness
         let (low, mid, high) = simple_energy_fallback(samples);
          return Ok((vec![vec![WaveBin { low, mid, high }]], low.max(mid.max(high)).max(f32::EPSILON) ));
     }
-
 
     let mut planner = FftPlanner::new();
     let fft = planner.plan_fft_forward(FRAME_SIZE);
@@ -76,22 +74,18 @@ pub(crate) fn calculate_rms_intervals(
         let end = start + FRAME_SIZE;
         let frame_slice = &samples[start..end];
 
-        // Apply Hann window
         for (j, sample) in frame_slice.iter().enumerate() {
             fft_buffer[j] = Complex { re: sample * hann_window[j], im: 0.0 };
         }
 
-        // Perform FFT
         fft.process(&mut fft_buffer);
 
-        // Calculate magnitudes and band energies
         let mut low_energy = 0.0f32;
         let mut mid_energy = 0.0f32;
         let mut high_energy = 0.0f32;
 
-        // Iterate up to Nyquist frequency (FRAME_SIZE / 2)
         for k in 0..(FRAME_SIZE / 2 + 1) {
-            let magnitude = fft_buffer[k].norm(); // sqrt(re*re + im*im)
+            let magnitude = fft_buffer[k].norm(); 
             let freq_k = k as f32 * sample_rate / FRAME_SIZE as f32;
 
             if freq_k < config::LOW_MID_CROSSOVER_HZ {
@@ -109,22 +103,18 @@ pub(crate) fn calculate_rms_intervals(
     }
     
     if max_overall_band_energy < f32::EPSILON && !level_0_bins.is_empty() {
-        max_overall_band_energy = f32::EPSILON; // Avoid zero if there's data
+        max_overall_band_energy = f32::EPSILON; 
     }
-
 
     let pyramid: Vec<Vec<WaveBin>> = vec![level_0_bins];
     Ok((pyramid, max_overall_band_energy))
 }
 
-// Fallback for very short samples (less than one frame)
 fn simple_energy_fallback(samples: &[f32]) -> (f32, f32, f32) {
     if samples.is_empty() {
         return (0.0, 0.0, 0.0);
     }
-    // This is a very crude approximation. Sum of absolute values as a proxy for energy.
     let total_energy_proxy: f32 = samples.iter().map(|s| s.abs()).sum();
-    // Distribute proportionally (same as old logic for want of a better short-sample method)
-    let energy = total_energy_proxy / samples.len() as f32; // Average "energy"
+    let energy = total_energy_proxy / samples.len() as f32; 
     (energy * 0.3, energy * 0.4, energy * 0.3)
-}
+} 

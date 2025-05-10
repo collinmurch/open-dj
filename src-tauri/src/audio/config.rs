@@ -13,9 +13,7 @@ pub const BPM_MIN: f32 = 60.0;
 pub const BPM_MAX: f32 = 200.0;
 
 // --- Audio Analysis Constants ---
-// Target number of RMS volume intervals to calculate per second of audio
 
 // --- Audio Playback Thread Constants ---
 // Interval for time updates from the audio thread to the frontend, in milliseconds.
 pub const AUDIO_THREAD_TIME_UPDATE_INTERVAL_MS: u64 = 50; 
-

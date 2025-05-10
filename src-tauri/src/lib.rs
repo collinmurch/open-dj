@@ -1,15 +1,9 @@
-mod audio_analysis;
-mod audio_effects;
-mod audio_playback;
-mod audio_processor;
-mod bpm_analyzer;
-mod config;
-mod errors;
-mod playback_types;
+mod audio;
 
-use audio_playback::AppState;
-use playback_types::AudioThreadCommand;
+use audio::playback::AppState;
+use audio::types::AudioThreadCommand;
 use tauri::WindowEvent;
+use tauri::Manager;
 use tokio::sync::oneshot;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -19,15 +13,20 @@ pub fn run() {
 
     // Create the channel for audio commands
     let (audio_cmd_tx, audio_cmd_rx) = tokio::sync::mpsc::channel::<AudioThreadCommand>(32); // 32 is buffer size
+    let audio_cmd_tx_for_event_handler = audio_cmd_tx.clone(); // Clone for on_window_event
 
     tauri::Builder::default()
-        // Manage the sender end of the channel and the logical states
-        .manage(AppState::new(audio_cmd_tx.clone())) // Clone sender for state
-        .setup(|app| {
-            // Spawn the dedicated audio thread
+        // AppState now requires AppHandle, so it will be managed inside .setup()
+        // .manage(AppState::new(audio_cmd_tx.clone())) // Old way
+        .setup(move |app| { // move audio_cmd_tx into setup
             let app_handle = app.handle().clone();
+            // Manage AppState here as it needs the app_handle
+            app.manage(AppState::new(audio_cmd_tx.clone(), app_handle.clone()));
+
+            // Spawn the dedicated audio thread
+            let app_handle_for_thread = app_handle.clone();
             std::thread::spawn(move || {
-                audio_playback::run_audio_thread(app_handle, audio_cmd_rx);
+                audio::playback::run_audio_thread(app_handle_for_thread, audio_cmd_rx); // Pass audio_cmd_rx here
             });
             Ok(())
         })
@@ -35,21 +34,21 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            audio_processor::analyze_features_batch,
-            audio_processor::get_track_volume_analysis,
-            audio_playback::init_player,
-            audio_playback::load_track,
-            audio_playback::play_track,
-            audio_playback::pause_track,
-            audio_playback::seek_track,
-            audio_playback::get_playback_state,
-            audio_playback::set_fader_level,
-            audio_playback::set_trim_gain,
-            audio_playback::set_eq_params,
-            audio_playback::set_cue_point,
-            audio_playback::cleanup_player
+            audio::processor::analyze_features_batch,
+            audio::processor::get_track_volume_analysis,
+            audio::playback::init_player,
+            audio::playback::load_track,
+            audio::playback::play_track,
+            audio::playback::pause_track,
+            audio::playback::seek_track,
+            audio::playback::get_playback_state,
+            audio::playback::set_fader_level,
+            audio::playback::set_trim_gain,
+            audio::playback::set_eq_params,
+            audio::playback::set_cue_point,
+            audio::playback::cleanup_player
         ])
-        .on_window_event(move |window, event| {
+        .on_window_event(move |window, event| { // audio_cmd_tx_for_event_handler is moved here
             // Send shutdown command only once when close is requested
             if let WindowEvent::CloseRequested { api, .. } = event {
                 log::info!("Window close requested. Sending Shutdown command to audio thread.");
@@ -59,8 +58,8 @@ pub fn run() {
                 // Create the shutdown signalling channel
                 let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
-                // Clone the command sender again for the event handler closure
-                let audio_cmd_tx_clone = audio_cmd_tx.clone();
+                // Use the cloned command sender for the event handler closure
+                let audio_cmd_tx_clone = audio_cmd_tx_for_event_handler.clone();
                 let window_clone = window.clone();
 
                 // Send shutdown command in a separate task to avoid blocking event loop

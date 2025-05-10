@@ -61,22 +61,20 @@ export function createPlayerStore(deckId: string) {
                             cuePointTime: newCuePointTime,
                         };
                     }
-                    return s; // No meaningful change, return current state to prevent redundant updates
+                    return s;
                 });
             }
         });
 
         unlistenTick = await listen<{
             deckId: string;
-            payload: {
-                currentTime: number;
-            };
+            currentTime: number;
         }>("playback://tick", (event) => {
             if (event.payload.deckId === deckId) {
-                const tickPayload = event.payload.payload;
+                const newCurrentTime = event.payload.currentTime;
                 update(s => ({
                     ...s,
-                    currentTime: tickPayload.currentTime,
+                    currentTime: newCurrentTime,
                     isLoading: s.isLoading,
                     error: s.error,
                 }));
