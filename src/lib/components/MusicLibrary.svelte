@@ -73,19 +73,21 @@
                             >
                                 <span class="track-name">{track.name}</span>
                                 <span class="track-duration"
-                                    >{formatTime(track.durationSeconds)}</span
+                                    >{formatTime(
+                                        track.metadata?.durationSeconds,
+                                    )}</span
                                 >
-                                {#if track.bpm === undefined}
+                                {#if track.metadata?.bpm === undefined}
                                     <span class="track-bpm track-bpm-loading"
                                         >Calculating...</span
                                     >
-                                {:else if track.bpm === null}
+                                {:else if track.metadata?.bpm === null}
                                     <span class="track-bpm track-bpm-error"
                                         >Error</span
                                     >
-                                {:else if typeof track.bpm === "number"}
+                                {:else if typeof track.metadata?.bpm === "number"}
                                     <span class="track-bpm"
-                                        >{track.bpm.toFixed(1)} BPM</span
+                                        >{track.metadata.bpm.toFixed(1)} BPM</span
                                     >
                                 {/if}
                             </button>

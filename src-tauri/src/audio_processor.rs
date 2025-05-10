@@ -23,19 +23,35 @@ fn get_track_basic_metadata_internal(path: &str) -> Result<TrackBasicMetadata, A
     let (samples, sample_rate) = crate::audio_playback::decode_audio_for_playback(path)
         .map_err(|e| AudioProcessorError::AnalysisDecodingError{ path: path.to_string(), source: e })?;
 
-    let duration_seconds = if sample_rate > 0.0 && !samples.is_empty() {
+    let duration_result = if sample_rate > 0.0 && !samples.is_empty() {
         Ok(samples.len() as f64 / sample_rate as f64)
     } else {
         log::warn!("Metadata Intern: Cannot calculate duration for '{}' due to zero sample rate or empty samples.", path);
         Err(AudioProcessorError::InvalidDataForDurationCalculation{ path: path.to_string() })
     };
 
-    let bpm = bpm_analyzer::calculate_bpm(&samples, sample_rate)
+    let bpm_result = bpm_analyzer::calculate_bpm(&samples, sample_rate)
         .map_err(|e| AudioProcessorError::AnalysisBpmError{ path: path.to_string(), source: e });
 
+    let final_duration = match duration_result {
+        Ok(d) => Some(d),
+        Err(e) => {
+            log::error!("Metadata Intern: Duration calculation failed for '{}': {}. Storing None.", path, e);
+            None
+        }
+    };
+
+    let final_bpm = match bpm_result {
+        Ok(b) => Some(b),
+        Err(e) => {
+            log::error!("Metadata Intern: BPM calculation failed for '{}': {}. Storing None.", path, e);
+            None
+        }
+    };
+
     Ok(TrackBasicMetadata {
-        duration_seconds: duration_seconds.ok(), // Store Option<f64>
-        bpm: bpm.ok(),                     // Store Option<f32>
+        duration_seconds: final_duration,
+        bpm: final_bpm,
     })
 }
 

@@ -349,13 +349,11 @@
     }
 
     .waveform-inner {
-        /* Hint to the browser that transform will change */
         will-change: transform;
         position: absolute;
         left: 0;
         top: 0;
         height: 100%;
-        /* Add back transition for smooth visual updates */
         transition: transform 0.05s linear;
     }
 
