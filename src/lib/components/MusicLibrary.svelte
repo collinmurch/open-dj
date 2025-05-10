@@ -79,7 +79,6 @@
                     {/each}
                 </ul>
             {:else if !$libraryStore.error}
-                <!-- Only show 'no tracks' if there wasn't a folder error -->
                 <p class="no-tracks">
                     No compatible audio files found in this folder.
                 </p>
@@ -117,7 +116,6 @@
     }
 
     button {
-        /* Style for the main folder select button */
         padding: 0.6em 1.2em;
         font-size: 1em;
         font-weight: 500;
@@ -212,8 +210,8 @@
         color: var(
             --text-muted-darker,
             #555
-        ); /* Slightly darker than BPM for differentiation */
-        margin-right: 0.75rem; /* Space before BPM */
+        );
+        margin-right: 0.75rem;
         flex-shrink: 0;
     }
 

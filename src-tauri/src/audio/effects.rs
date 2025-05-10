@@ -1,13 +1,13 @@
+use crate::audio::config;
+use crate::audio::errors::AudioEffectsError;
+use crate::audio::types::EqParams;
+use biquad::{Biquad as _, Coefficients, DirectForm1, ToHertz, Type};
 use rodio::{Sample, Source};
 use std::{
     fmt::Debug,
     sync::{Arc, Mutex},
     time::Duration,
 };
-use crate::audio::types::EqParams; // Adjusted path
-use biquad::{Biquad as _, Coefficients, DirectForm1, ToHertz, Type};
-use crate::audio::config; // Adjusted path
-use crate::audio::errors::AudioEffectsError; // Adjusted path
 
 /// A custom Rodio source that applies Trim Gain and 3-band EQ (Low Shelf, Peaking, High Shelf)
 /// to an inner source.
@@ -35,11 +35,17 @@ where
     S::Item: Sample + Send + Debug,
     f32: From<S::Item>,
 {
-    pub fn new(inner: S, params: Arc<Mutex<EqParams>>, trim_gain: Arc<Mutex<f32>>) -> Result<Self, AudioEffectsError> {
+    pub fn new(
+        inner: S,
+        params: Arc<Mutex<EqParams>>,
+        trim_gain: Arc<Mutex<f32>>,
+    ) -> Result<Self, AudioEffectsError> {
         let sample_rate = inner.sample_rate() as f32;
         let current_params = params
             .lock()
-            .map_err(|_| AudioEffectsError::EqParamsLockError{ reason: "Mutex poisoned on creation".to_string() })?
+            .map_err(|_| AudioEffectsError::EqParamsLockError {
+                reason: "Mutex poisoned on creation".to_string(),
+            })?
             .clone();
 
         let low_coeffs = calculate_low_shelf(sample_rate, current_params.low_gain_db)?;
@@ -62,17 +68,19 @@ where
         let params_changed;
         let new_params;
         {
-            let current_params_guard = self
-                .params
-                .lock()
-                .map_err(|_| AudioEffectsError::EqParamsLockError{ reason: "Mutex poisoned during update check".to_string() })?;
+            let current_params_guard =
+                self.params
+                    .lock()
+                    .map_err(|_| AudioEffectsError::EqParamsLockError {
+                        reason: "Mutex poisoned during update check".to_string(),
+                    })?;
             params_changed = !self.last_params.approx_eq(&current_params_guard);
             if params_changed {
                 new_params = current_params_guard.clone();
             } else {
                 return Ok(()); // No changes, exit early
             }
-        } 
+        }
 
         let low_coeffs = calculate_low_shelf(self.sample_rate, new_params.low_gain_db)?;
         let mid_coeffs = calculate_mid_peak(self.sample_rate, new_params.mid_gain_db)?;
@@ -89,34 +97,49 @@ where
 
 // --- Filter Calculation Helpers ---
 
-fn calculate_low_shelf(sample_rate: f32, gain_db: f32) -> Result<Coefficients<f32>, AudioEffectsError> {
+fn calculate_low_shelf(
+    sample_rate: f32,
+    gain_db: f32,
+) -> Result<Coefficients<f32>, AudioEffectsError> {
     Coefficients::<f32>::from_params(
         Type::LowShelf(gain_db),
         sample_rate.hz(),
         config::LOW_MID_CROSSOVER_HZ.hz(),
         config::SHELF_Q_FACTOR,
     )
-    .map_err(|e| AudioEffectsError::CoefficientCalculationError{ filter_type: format!("LowShelf: {:?}", e) })
+    .map_err(|e| AudioEffectsError::CoefficientCalculationError {
+        filter_type: format!("LowShelf: {:?}", e),
+    })
 }
 
-fn calculate_mid_peak(sample_rate: f32, gain_db: f32) -> Result<Coefficients<f32>, AudioEffectsError> {
+fn calculate_mid_peak(
+    sample_rate: f32,
+    gain_db: f32,
+) -> Result<Coefficients<f32>, AudioEffectsError> {
     Coefficients::<f32>::from_params(
         Type::PeakingEQ(gain_db),
         sample_rate.hz(),
         config::MID_CENTER_HZ.hz(),
         config::MID_PEAK_Q_FACTOR,
     )
-    .map_err(|e| AudioEffectsError::CoefficientCalculationError{ filter_type: format!("MidPeak: {:?}", e) })
+    .map_err(|e| AudioEffectsError::CoefficientCalculationError {
+        filter_type: format!("MidPeak: {:?}", e),
+    })
 }
 
-fn calculate_high_shelf(sample_rate: f32, gain_db: f32) -> Result<Coefficients<f32>, AudioEffectsError> {
+fn calculate_high_shelf(
+    sample_rate: f32,
+    gain_db: f32,
+) -> Result<Coefficients<f32>, AudioEffectsError> {
     Coefficients::<f32>::from_params(
         Type::HighShelf(gain_db),
         sample_rate.hz(),
         config::MID_HIGH_CROSSOVER_HZ.hz(),
         config::SHELF_Q_FACTOR,
     )
-    .map_err(|e| AudioEffectsError::CoefficientCalculationError{ filter_type: format!("HighShelf: {:?}", e) })
+    .map_err(|e| AudioEffectsError::CoefficientCalculationError {
+        filter_type: format!("HighShelf: {:?}", e),
+    })
 }
 
 // --- Source Trait Implementation ---
@@ -133,7 +156,10 @@ where
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         if let Err(e) = self.update_filters_if_needed() {
-            log::error!("Failed to update EQ filters during playback: {:?}. Audio may be incorrect or stop.", e);
+            log::error!(
+                "Failed to update EQ filters during playback: {:?}. Audio may be incorrect or stop.",
+                e
+            );
         }
 
         let sample_option = self.inner.next();
@@ -141,7 +167,10 @@ where
         if let Some(sample) = sample_option {
             let sample_f32: f32 = sample.into();
 
-            let current_trim_gain = *self.trim_gain.lock().expect("Trim gain Mutex poisoned in EQSource::next");
+            let current_trim_gain = *self
+                .trim_gain
+                .lock()
+                .expect("Trim gain Mutex poisoned in EQSource::next");
             let trimmed_sample = sample_f32 * current_trim_gain;
 
             let low_processed = self.low_shelf.run(trimmed_sample);
@@ -151,7 +180,11 @@ where
             if !high_processed.is_finite() {
                 log::error!(
                     "EQ produced non-finite value: {} (input {} -> trim {} -> low {} -> mid {})",
-                    high_processed, sample_f32, trimmed_sample, low_processed, mid_processed
+                    high_processed,
+                    sample_f32,
+                    trimmed_sample,
+                    low_processed,
+                    mid_processed
                 );
             }
 
@@ -193,4 +226,4 @@ where
     fn total_duration(&self) -> Option<Duration> {
         self.inner.total_duration()
     }
-} 
+}

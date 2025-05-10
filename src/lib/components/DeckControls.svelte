@@ -1,9 +1,9 @@
 <script lang="ts">
-    import Slider from "./Slider.svelte";
-    import { invoke } from "@tauri-apps/api/core";
     import type { PlayerStore } from "$lib/stores/playerStore";
     import type { PlayerState } from "$lib/types";
     import { formatTime } from "$lib/utils/timeUtils";
+    import { invoke } from "@tauri-apps/api/core";
+    import Slider from "./Slider.svelte";
 
     let {
         filePath = null,
@@ -63,10 +63,9 @@
         if (!currentFilePath) {
             return;
         }
-        // Use the loadTrack action passed via props
         playerActions.loadTrack(currentFilePath).catch((err) => {
             console.error(
-                `[TrackPlayer ${deckId}] Error invoking loadTrack prop:`, // Log adjusted
+                `[TrackPlayer ${deckId}] Error invoking loadTrack prop:`,
                 err,
             );
         });
@@ -75,7 +74,6 @@
     // Effect for component cleanup (if needed for timeouts)
     $effect(() => {
         return () => {
-            // playerActions.cleanup(); // Parent should manage store lifecycle now
             if (trimDebounceTimeout !== undefined)
                 clearTimeout(trimDebounceTimeout);
             if (faderDebounceTimeout !== undefined)
@@ -210,10 +208,8 @@
             `[TrackPlayer ${deckId}] Cue CLICKED. Playing: ${playerStoreState.isPlaying}, Cue Time: ${playerStoreState.cuePointTime}`,
         );
         if (playerStoreState.isPlaying) {
-            // If playing, set the cue point to the current time
             playerActions.setCuePoint(playerStoreState.currentTime);
         } else {
-            // If paused
             if (playerStoreState.cuePointTime !== null) {
                 // If cue point exists, seek to it
                 playerActions.seek(playerStoreState.cuePointTime);
@@ -259,7 +255,6 @@
         <p class="error-message">Error: {playerStoreState.error}</p>
     {/if}
 
-    <!-- Mixer Controls - Unchanged structurally, but parent div might change -->
     <div class="mixer-controls-horizontal">
         <Slider
             id="trim-slider-{deckId}"

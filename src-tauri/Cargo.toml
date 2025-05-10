@@ -1,13 +1,13 @@
 # ──────────────────────────────────────────────────────────────
 [workspace]
-resolver = "2" # prevents transitive default-feature creep
+resolver = "2"
 
 [package]
 name = "open-dj"
 version = "0.1.0"
 edition = "2024"
 description = "A Tauri App"
-authors = ["you"]
+authors = ["collinmurch"]
 
 [lib]
 name = "open_dj_lib"
@@ -20,7 +20,6 @@ version = "2.5.1"
 default-features = false
 features = ["wry"]
 
-# `tauri-build` is still at 2.2.x on crates.io
 [build-dependencies.tauri-build]
 version = "2.2"
 default-features = false

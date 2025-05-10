@@ -1,16 +1,16 @@
 <script lang="ts">
     import type { VolumeAnalysis, WaveBin } from "$lib/types";
-    import { onDestroy, onMount } from "svelte";
     import {
-        waveformVertexShaderSource,
-        waveformFragmentShaderSource,
-        playheadVertexShaderSource,
-        playheadFragmentShaderSource,
-        cueLineVertexShaderSource,
-        cueLineFragmentShaderSource,
-        createShader,
         createProgram,
+        createShader,
+        cueLineFragmentShaderSource,
+        cueLineVertexShaderSource,
+        playheadFragmentShaderSource,
+        playheadVertexShaderSource,
+        waveformFragmentShaderSource,
+        waveformVertexShaderSource,
     } from "$lib/utils/webglWaveformUtils";
+    import { onDestroy, onMount } from "svelte";
 
     // --- Component Props ---
     let {
@@ -327,7 +327,6 @@
         seekAudio(clampedTargetTimeSeconds);
     }
 
-    // --- Helper: Setup WebGL Context ---
     function setupWebGLContext(
         canvas: HTMLCanvasElement,
     ): WebGL2RenderingContext | null {
@@ -336,13 +335,12 @@
             console.error("WebGL2 not supported or context creation failed");
             return null;
         }
-        // Enable additive blending - consider if this is always wanted or should be per-draw
+
         context.enable(context.BLEND);
         context.blendFunc(context.SRC_ALPHA, context.ONE);
         return context;
     }
 
-    // --- Helper: Initialize Waveform Rendering Resources ---
     function initWaveformResources(gl: WebGL2RenderingContext): boolean {
         const wfVert = createShader(
             gl,
@@ -385,7 +383,6 @@
         return true;
     }
 
-    // --- Helper: Initialize Playhead Rendering Resources ---
     function initPlayheadResources(gl: WebGL2RenderingContext): boolean {
         const phVert = createShader(
             gl,
@@ -433,7 +430,6 @@
         return true;
     }
 
-    // --- Helper: Initialize Cue Line Rendering Resources ---
     function initCueLineResources(gl: WebGL2RenderingContext): boolean {
         const clVert = createShader(
             gl,
@@ -506,7 +502,7 @@
 
     function resizeCanvas() {
         if (!glContext.ctx || !glContext.canvas) return;
-        const gl = glContext.ctx; // local alias
+        const gl = glContext.ctx;
         const canvas = glContext.canvas;
 
         const newWidth = canvas.clientWidth;
@@ -564,8 +560,8 @@
         }
 
         const maxRms =
-            volumeAnalysis.max_band_energy > 0
-                ? volumeAnalysis.max_band_energy
+            volumeAnalysis.maxBandEnergy > 0
+                ? volumeAnalysis.maxBandEnergy
                 : 0.0001;
 
         const vertexDataLow: number[] = [];
@@ -852,9 +848,7 @@
             interpolationCtx.internalDisplayTime = newCalculatedTime;
         } else {
             // Not playing and not animating seek, internalDisplayTime should be stable from the $effect
-            // For safety, ensure it reflects the last known host time if no animation is active.
             if (!seekAnimationCtx.isActive) {
-                // Double check to avoid conflict if an animation just finished
                 interpolationCtx.internalDisplayTime =
                     interpolationCtx.lastHostTimeValue;
             }
@@ -877,7 +871,6 @@
     }
 
     onMount(() => {
-        // glContext.canvas = canvasElement; // This line is no longer needed as canvasElement is bound directly to glContext.canvas
         if (glContext.canvas) {
             initWebGL();
             resizeObserver = new ResizeObserver(handleResize);
@@ -960,7 +953,6 @@
 <style>
     .webgl-waveform-container {
         position: relative;
-        /* background-color: #1a1a1a; */ /* Let canvas clear handle background */
         min-height: 80px;
         overflow: hidden;
     }

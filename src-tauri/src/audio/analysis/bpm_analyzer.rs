@@ -1,20 +1,18 @@
+use crate::audio::config;
+use crate::audio::errors::BpmError;
 use rayon::prelude::*;
 use rustfft::{FftPlanner, num_complex::Complex, num_traits::Zero};
-use crate::audio::config; // Adjusted path for config
-use crate::audio::errors::BpmError; // Adjusted path for BpmError
 
 // --- Private Helper Functions ---
 
 fn normalize_in_place(samples: &mut [f32]) {
-    // Use parallel iterator for potentially faster max finding on large samples
     let max_amplitude = samples
         .par_iter()
         .map(|&x| x.abs())
         .reduce(|| 0.0f32, f32::max);
 
+    // Avoid division by zero or near-zero
     if max_amplitude > 1e-6 {
-        // Avoid division by zero or near-zero
-        // Use parallel iterator for normalization
         samples.par_iter_mut().for_each(|x| *x /= max_amplitude);
     }
 }
@@ -23,12 +21,13 @@ fn downsample_in_place(samples: &mut Vec<f32>, factor: usize) {
     if factor <= 1 || samples.is_empty() {
         return; // No downsampling needed or possible
     }
+
     let new_len = samples.len() / factor;
     if new_len == 0 {
         samples.clear(); // Handle case where factor > len
         return;
     }
-    // This is inherently sequential but fast
+
     for i in 0..new_len {
         samples[i] = samples[i * factor];
     }
@@ -42,7 +41,7 @@ fn compute_spectral_flux(samples: &[f32], frame_size: usize, hop_size: usize) ->
             samples.len(),
             frame_size
         );
-        return Vec::new(); // Return empty if not enough samples
+        return Vec::new(); // Not enough samples to fill the frame
     }
 
     let mut planner = FftPlanner::new();
@@ -69,7 +68,7 @@ fn compute_spectral_flux(samples: &[f32], frame_size: usize, hop_size: usize) ->
             // Take magnitude of the first half (positive frequencies)
             buffer[..frame_size / 2 + 1]
                 .iter()
-                .map(|c| c.norm_sqr().sqrt()) // Using norm_sqr().sqrt() is equivalent to norm()
+                .map(|c| c.norm())
                 .collect()
         })
         .collect();
@@ -78,7 +77,7 @@ fn compute_spectral_flux(samples: &[f32], frame_size: usize, hop_size: usize) ->
         return Vec::new();
     }
 
-    // Compute flux sequentially (dependency between frames)
+    // Must do sequentially as subsequent frames depend on predecessors
     let mut flux = vec![0.0; num_frames]; // First frame flux is 0
     if num_frames > 1 {
         // Use parallel calculation for the flux summation within each frame difference
@@ -93,7 +92,7 @@ fn compute_spectral_flux(samples: &[f32], frame_size: usize, hop_size: usize) ->
         });
     }
 
-    // Normalize the flux: divide by the mean flux
+    // Normalize the flux
     let flux_mean = flux.iter().sum::<f32>() / num_frames as f32;
     if flux_mean > 1e-6 {
         flux.par_iter_mut().for_each(|f| *f /= flux_mean);
@@ -147,27 +146,39 @@ fn estimate_bpm(flux: &[f32], sample_rate: f32, hop_size: usize) -> Result<f32, 
     }
 
     // Calculate lag range in terms of flux frames based on BPM range
-    let max_lag_frames = (60.0 * sample_rate / (config::BPM_MIN * hop_size as f32)).ceil() as usize; 
-    let min_lag_frames = (60.0 * sample_rate / (config::BPM_MAX * hop_size as f32)).floor() as usize; 
+    let max_lag_frames = (60.0 * sample_rate / (config::BPM_MIN * hop_size as f32)).ceil() as usize;
+    let min_lag_frames =
+        (60.0 * sample_rate / (config::BPM_MAX * hop_size as f32)).floor() as usize;
 
     if min_lag_frames == 0 || max_lag_frames <= min_lag_frames {
-        return Err(BpmError::InvalidLagRange { min_lag: min_lag_frames, max_lag: max_lag_frames, sample_rate, hop_size });
+        return Err(BpmError::InvalidLagRange {
+            min_lag: min_lag_frames,
+            max_lag: max_lag_frames,
+            sample_rate,
+            hop_size,
+        });
     }
 
     // Ensure max_lag doesn't exceed flux length for autocorrelation
     let effective_max_lag = max_lag_frames.min(flux.len());
     if effective_max_lag <= min_lag_frames {
-        return Err(BpmError::EffectiveLagTooSmall { eff_max_lag: effective_max_lag, min_lag: min_lag_frames });
+        return Err(BpmError::EffectiveLagTooSmall {
+            eff_max_lag: effective_max_lag,
+            min_lag: min_lag_frames,
+        });
     }
 
     let ac = fft_autocorrelation(flux, effective_max_lag)?;
     if ac.len() <= min_lag_frames {
-        return Err(BpmError::AutocorrelationTooShort { ac_len: ac.len(), min_lag: min_lag_frames });
+        return Err(BpmError::AutocorrelationTooShort {
+            ac_len: ac.len(),
+            min_lag: min_lag_frames,
+        });
     }
 
     // Find the peak in the autocorrelation within the valid lag range
     let peak_result = ac
-        .par_iter() // Parallel search for max
+        .par_iter()
         .enumerate()
         .skip(min_lag_frames) // Skip lags corresponding to > MAX_BPM
         .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -178,14 +189,12 @@ fn estimate_bpm(flux: &[f32], sample_rate: f32, hop_size: usize) -> Result<f32, 
             let period_secs = peak_lag_index as f32 * hop_size as f32 / sample_rate;
             if period_secs > 1e-6 {
                 let bpm = 60.0 / period_secs;
-                Ok(bpm.clamp(config::BPM_MIN, config::BPM_MAX)) 
+                Ok(bpm.clamp(config::BPM_MIN, config::BPM_MAX))
             } else {
                 Err(BpmError::PeriodTooSmall)
             }
         }
-        _ => {
-            Err(BpmError::NoAutocorrelationPeak)
-        }
+        _ => Err(BpmError::NoAutocorrelationPeak),
     }
 }
 
@@ -198,18 +207,21 @@ pub(crate) fn calculate_bpm(samples: &[f32], sample_rate: f32) -> Result<f32, Bp
     }
 
     // Sensible defaults - these could be parameters if needed
-    let frame_size = 1024; 
-    let hop_size = frame_size / 4; 
-    let downsample_factor = 4; 
+    let frame_size = 1024;
+    let hop_size = frame_size / 4;
+    let downsample_factor = 4;
 
     // --- Preprocessing ---
-    let mut processed_samples = samples.to_vec(); 
+    let mut processed_samples = samples.to_vec();
     normalize_in_place(&mut processed_samples);
     downsample_in_place(&mut processed_samples, downsample_factor);
     let effective_sample_rate = sample_rate / downsample_factor as f32;
 
     if processed_samples.is_empty() {
-        return Err(BpmError::EmptyAfterDownsample { factor: downsample_factor, original_count: samples.len() });
+        return Err(BpmError::EmptyAfterDownsample {
+            factor: downsample_factor,
+            original_count: samples.len(),
+        });
     }
 
     // --- Compute Spectral Flux ---
@@ -219,6 +231,5 @@ pub(crate) fn calculate_bpm(samples: &[f32], sample_rate: f32) -> Result<f32, Bp
     }
 
     // --- Estimate BPM from Flux ---
-    let bpm = estimate_bpm(&flux, effective_sample_rate, hop_size)?;
-    Ok(bpm)
-} 
+    Ok(estimate_bpm(&flux, effective_sample_rate, hop_size)?)
+}

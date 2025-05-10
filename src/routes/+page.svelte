@@ -1,8 +1,8 @@
 <script lang="ts">
-    import MusicLibrary from "$lib/components/MusicLibrary.svelte";
     import DeckControls from "$lib/components/DeckControls.svelte";
-    import WaveFormDisplay from "$lib/components/WaveformDisplay.svelte";
+    import MusicLibrary from "$lib/components/MusicLibrary.svelte";
     import Slider from "$lib/components/Slider.svelte";
+    import WaveFormDisplay from "$lib/components/WaveformDisplay.svelte";
     import { libraryStore } from "$lib/stores/libraryStore";
     import {
         createPlayerStore,
@@ -65,13 +65,11 @@
     // --- Effects to apply derived volumes to player stores ---
     $effect(() => {
         const volumeA = deckAVolume();
-        // console.log(`Effect: Setting Deck A Volume to ${volumeA}`);
         playerStoreA.setVolume(volumeA);
     });
 
     $effect(() => {
         const volumeB = deckBVolume();
-        // console.log(`Effect: Setting Deck B Volume to ${volumeB}`);
         playerStoreB.setVolume(volumeB);
     });
 
@@ -111,10 +109,10 @@
         if (trackToLoad.path) {
             if (deckId === "A") {
                 isDeckAWaveformLoading = true;
-                deckAVolumeAnalysis = null; // Clear previous waveform
+                deckAVolumeAnalysis = null;
             } else {
                 isDeckBWaveformLoading = true;
-                deckBVolumeAnalysis = null; // Clear previous waveform
+                deckBVolumeAnalysis = null;
             }
 
             try {
@@ -165,7 +163,6 @@
 
 <main class="container">
     {#if !isFolderSelected}
-        <!-- Initial State: Show only the Music Library selection button -->
         <section class="library-section library-section-initial">
             <h2>Music Library</h2>
             <MusicLibrary />

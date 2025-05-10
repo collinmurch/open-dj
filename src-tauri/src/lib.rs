@@ -1,26 +1,23 @@
 mod audio;
 
+use audio::config::AUDIO_BUFFER_CHAN_SIZE;
 use audio::playback::AppState;
 use audio::types::AudioThreadCommand;
-use tauri::WindowEvent;
 use tauri::Manager;
+use tauri::WindowEvent;
 use tokio::sync::oneshot;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Consider using a more robust logger like tracing or fern
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    // Create the channel for audio commands
-    let (audio_cmd_tx, audio_cmd_rx) = tokio::sync::mpsc::channel::<AudioThreadCommand>(32); // 32 is buffer size
-    let audio_cmd_tx_for_event_handler = audio_cmd_tx.clone(); // Clone for on_window_event
+    let (audio_cmd_tx, audio_cmd_rx) =
+        tokio::sync::mpsc::channel::<AudioThreadCommand>(AUDIO_BUFFER_CHAN_SIZE);
+    let audio_cmd_tx_for_event_handler = audio_cmd_tx.clone();
 
     tauri::Builder::default()
-        // AppState now requires AppHandle, so it will be managed inside .setup()
-        // .manage(AppState::new(audio_cmd_tx.clone())) // Old way
-        .setup(move |app| { // move audio_cmd_tx into setup
+        .setup(move |app| {
             let app_handle = app.handle().clone();
-            // Manage AppState here as it needs the app_handle
             app.manage(AppState::new(audio_cmd_tx.clone(), app_handle.clone()));
 
             // Spawn the dedicated audio thread
@@ -48,14 +45,12 @@ pub fn run() {
             audio::playback::set_cue_point,
             audio::playback::cleanup_player
         ])
-        .on_window_event(move |window, event| { // audio_cmd_tx_for_event_handler is moved here
-            // Send shutdown command only once when close is requested
+        .on_window_event(move |window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 log::info!("Window close requested. Sending Shutdown command to audio thread.");
                 // Prevent the window from closing immediately
                 api.prevent_close();
 
-                // Create the shutdown signalling channel
                 let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
                 // Use the cloned command sender for the event handler closure
@@ -69,7 +64,6 @@ pub fn run() {
                         .await
                     {
                         log::error!("Failed to send Shutdown command to audio thread: {}", e);
-                        // If sending fails, we can probably just close the window
                         if let Err(close_err) = window_clone.close() {
                             log::error!("Failed to close window after send error: {}", close_err);
                         }
@@ -86,9 +80,7 @@ pub fn run() {
                         ),
                     }
 
-                    // Optionally wait a short moment for thread to potentially process (Probably not needed now)
                     log::info!("Proceeding with window close after sending Shutdown command.");
-                    // Now allow the window to close
                     if let Err(e) = window_clone.close() {
                         log::error!("Failed to close window: {}", e);
                     }

@@ -30,10 +30,8 @@
     const SLIDER_MAX = 100;
     const SLIDER_CENTER = 50;
 
-    // Determine if we should use the special center-point mapping
     const useCenterMapping = $derived(
         centerValue !== undefined &&
-            // Check if centerValue is significantly different from the mathematical midpoint
             Math.abs(centerValue - (outputMin + outputMax) / 2) > 1e-6,
     );
 
@@ -102,7 +100,6 @@
                 // Add small epsilon to prevent floating point issues returning exactly centerValue sometimes
                 return centerValue + ratio * (outputMin - centerValue);
             } else {
-                // rawVal >= SLIDER_CENTER
                 const ratio =
                     (clampedRaw - SLIDER_CENTER) / (SLIDER_MAX - SLIDER_CENTER);
                 return centerValue + ratio * (outputMax - centerValue);

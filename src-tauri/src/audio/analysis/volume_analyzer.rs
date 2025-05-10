@@ -1,7 +1,7 @@
-use crate::audio::errors::AudioAnalysisError; // Adjusted path
 use crate::audio::config; // Adjusted path
-use rustfft::{FftPlanner, num_complex::Complex, num_traits::Zero}; 
-use std::f32::consts::PI; 
+use crate::audio::errors::AudioAnalysisError; // Adjusted path
+use rustfft::{FftPlanner, num_complex::Complex, num_traits::Zero};
+use std::f32::consts::PI;
 
 #[derive(serde::Serialize, Debug, Clone, Copy)]
 #[serde(rename_all = "camelCase")]
@@ -13,17 +13,21 @@ pub struct WaveBin {
 
 impl Default for WaveBin {
     fn default() -> Self {
-        WaveBin { low: 0.0, mid: 0.0, high: 0.0 }
+        WaveBin {
+            low: 0.0,
+            mid: 0.0,
+            high: 0.0,
+        }
     }
 }
 
 #[derive(serde::Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct AudioAnalysis {
     pub levels: Vec<Vec<WaveBin>>,
-    pub max_band_energy: f32, 
+    pub max_band_energy: f32,
 }
 
-/// Helper function to generate a Hann window.
 fn get_hann_window(size: usize) -> Vec<f32> {
     if size == 0 {
         return Vec::new();
@@ -33,7 +37,7 @@ fn get_hann_window(size: usize) -> Vec<f32> {
         .collect()
 }
 
-/// Calculates multi-band energy levels from pre-decoded mono f32 samples using FFT.
+// Calculate the multi-band energy levels from pre-decoded mono f32 samples using FFT.
 pub(crate) fn calculate_rms_intervals(
     samples: &[f32],
     sample_rate: f32,
@@ -56,7 +60,10 @@ pub(crate) fn calculate_rms_intervals(
             FRAME_SIZE
         );
         let (low, mid, high) = simple_energy_fallback(samples);
-         return Ok((vec![vec![WaveBin { low, mid, high }]], low.max(mid.max(high)).max(f32::EPSILON) ));
+        return Ok((
+            vec![vec![WaveBin { low, mid, high }]],
+            low.max(mid.max(high)).max(f32::EPSILON),
+        ));
     }
 
     let mut planner = FftPlanner::new();
@@ -75,7 +82,10 @@ pub(crate) fn calculate_rms_intervals(
         let frame_slice = &samples[start..end];
 
         for (j, sample) in frame_slice.iter().enumerate() {
-            fft_buffer[j] = Complex { re: sample * hann_window[j], im: 0.0 };
+            fft_buffer[j] = Complex {
+                re: sample * hann_window[j],
+                im: 0.0,
+            };
         }
 
         fft.process(&mut fft_buffer);
@@ -85,7 +95,7 @@ pub(crate) fn calculate_rms_intervals(
         let mut high_energy = 0.0f32;
 
         for k in 0..(FRAME_SIZE / 2 + 1) {
-            let magnitude = fft_buffer[k].norm(); 
+            let magnitude = fft_buffer[k].norm();
             let freq_k = k as f32 * sample_rate / FRAME_SIZE as f32;
 
             if freq_k < config::LOW_MID_CROSSOVER_HZ {
@@ -96,14 +106,21 @@ pub(crate) fn calculate_rms_intervals(
                 high_energy += magnitude;
             }
         }
-        
-        level_0_bins.push(WaveBin { low: low_energy, mid: mid_energy, high: high_energy });
 
-        max_overall_band_energy = max_overall_band_energy.max(low_energy).max(mid_energy).max(high_energy);
+        level_0_bins.push(WaveBin {
+            low: low_energy,
+            mid: mid_energy,
+            high: high_energy,
+        });
+
+        max_overall_band_energy = max_overall_band_energy
+            .max(low_energy)
+            .max(mid_energy)
+            .max(high_energy);
     }
-    
+
     if max_overall_band_energy < f32::EPSILON && !level_0_bins.is_empty() {
-        max_overall_band_energy = f32::EPSILON; 
+        max_overall_band_energy = f32::EPSILON;
     }
 
     let pyramid: Vec<Vec<WaveBin>> = vec![level_0_bins];
@@ -115,6 +132,7 @@ fn simple_energy_fallback(samples: &[f32]) -> (f32, f32, f32) {
         return (0.0, 0.0, 0.0);
     }
     let total_energy_proxy: f32 = samples.iter().map(|s| s.abs()).sum();
-    let energy = total_energy_proxy / samples.len() as f32; 
+    let energy = total_energy_proxy / samples.len() as f32;
+
     (energy * 0.3, energy * 0.4, energy * 0.3)
-} 
+}

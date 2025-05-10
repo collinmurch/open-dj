@@ -18,7 +18,7 @@ export interface WaveBin {
 // Represents the full volume analysis data. Matches Rust struct AudioAnalysis.
 export interface VolumeAnalysis {
     levels: WaveBin[][];
-    max_band_energy: number;
+    maxBandEnergy: number;
 }
 
 // Structure for individual track information in the library

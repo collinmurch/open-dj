@@ -112,4 +112,4 @@ pub struct PlaybackTickEventPayload {
 pub struct PlaybackErrorEventPayload {
     pub deck_id: String,
     pub error: String,
-} 
+}

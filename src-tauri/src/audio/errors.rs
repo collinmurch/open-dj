@@ -1,6 +1,6 @@
-use thiserror::Error;
-use symphonia::core::errors::Error as SymphoniaError;
 use rodio::PlayError;
+use symphonia::core::errors::Error as SymphoniaError;
+use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum AudioAnalysisError {
@@ -14,9 +14,18 @@ pub enum AudioAnalysisError {
 pub enum BpmError {
     #[error("Cannot estimate BPM from empty spectral flux")]
     EmptySpectralFlux,
-    #[error("Invalid lag range calculated (min: {min_lag}, max: {max_lag}). Sample rate: {sample_rate}, hop size: {hop_size}")]
-    InvalidLagRange { min_lag: usize, max_lag: usize, sample_rate: f32, hop_size: usize },
-    #[error("Effective max lag ({eff_max_lag}) not greater than min lag ({min_lag}) after flux length check")]
+    #[error(
+        "Invalid lag range calculated (min: {min_lag}, max: {max_lag}). Sample rate: {sample_rate}, hop size: {hop_size}"
+    )]
+    InvalidLagRange {
+        min_lag: usize,
+        max_lag: usize,
+        sample_rate: f32,
+        hop_size: usize,
+    },
+    #[error(
+        "Effective max lag ({eff_max_lag}) not greater than min lag ({min_lag}) after flux length check"
+    )]
     EffectiveLagTooSmall { eff_max_lag: usize, min_lag: usize },
     #[error("Autocorrelation result length ({ac_len}) not greater than min lag ({min_lag})")]
     AutocorrelationTooShort { ac_len: usize, min_lag: usize },
@@ -26,12 +35,17 @@ pub enum BpmError {
     NoAutocorrelationPeak,
     #[error("Cannot calculate BPM from empty samples")]
     EmptySamplesForBpm,
-    #[error("Samples became empty after downsampling (factor {factor}). Original count: {original_count}")]
-    EmptyAfterDownsample { factor: usize, original_count: usize },
+    #[error(
+        "Samples became empty after downsampling (factor {factor}). Original count: {original_count}"
+    )]
+    EmptyAfterDownsample {
+        factor: usize,
+        original_count: usize,
+    },
     #[error("Spectral flux calculation resulted in empty vector. Insufficient samples?")]
     EmptyFluxVector,
     #[error("FFT Autocorrelation failed: {0}")]
-    AutocorrelationFailure(String), // From internal fft_autocorrelation logic
+    AutocorrelationFailure(String),
 }
 
 #[derive(Error, Debug)]
@@ -39,15 +53,23 @@ pub enum AudioEffectsError {
     #[error("Failed to calculate {filter_type} coefficients")]
     CoefficientCalculationError { filter_type: String },
     #[error("Failed to lock EQ params: {reason}")]
-    EqParamsLockError{ reason: String },
+    EqParamsLockError { reason: String },
 }
 
 #[derive(Error, Debug)]
 pub enum AudioDecodingError {
     #[error("Failed to open file '{path}': {source}")]
-    FileOpenError { path: String, #[source] source: std::io::Error },
+    FileOpenError {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("Symphonia probe/format error for '{path}': {source}")]
-    FormatError { path: String, #[source] source: SymphoniaError },
+    FormatError {
+        path: String,
+        #[source]
+        source: SymphoniaError,
+    },
     #[error("No suitable audio track in '{path}'")]
     NoSuitableTrack { path: String },
     #[error("Sample rate missing in '{path}'")]
@@ -55,11 +77,23 @@ pub enum AudioDecodingError {
     #[error("Channel info missing in '{path}'")]
     MissingChannelInfo { path: String },
     #[error("Failed to create decoder for '{path}': {source}")]
-    DecoderCreationError { path: String, #[source] source: SymphoniaError },
+    DecoderCreationError {
+        path: String,
+        #[source]
+        source: SymphoniaError,
+    },
     #[error("Symphonia fatal decode error in '{path}': {source}")]
-    FatalDecodeError { path: String, #[source] source: SymphoniaError },
+    FatalDecodeError {
+        path: String,
+        #[source]
+        source: SymphoniaError,
+    },
     #[error("Symphonia I/O error reading packet for '{path}': {source}")]
-    PacketReadIoError { path: String, #[source] source: SymphoniaError },
+    PacketReadIoError {
+        path: String,
+        #[source]
+        source: SymphoniaError,
+    },
     #[error("No samples decoded from '{path}'")]
     NoSamplesDecoded { path: String },
 }
@@ -71,24 +105,32 @@ pub enum PlaybackError {
     #[error("Deck '{deck_id}' not found in local state")]
     DeckNotFound { deck_id: String },
     #[error("Failed to create audio sink for deck '{deck_id}': {source:?}")]
-    SinkCreationError{ deck_id: String, #[source] source: PlayError },
+    SinkCreationError {
+        deck_id: String,
+        #[source]
+        source: PlayError,
+    },
     #[error("Cannot perform operation on deck '{deck_id}': No track loaded or invalid state.")]
     TrackNotLoadedOrInvalidState { deck_id: String },
     #[error("Audio decoding for playback failed for deck '{deck_id}': {source}")]
-    PlaybackDecodeError { deck_id: String, source: AudioDecodingError },
+    PlaybackDecodeError {
+        deck_id: String,
+        source: AudioDecodingError,
+    },
     #[error("Audio decoding task panicked for deck '{deck_id}': {reason}")]
     DecodeTaskPanic { deck_id: String, reason: String },
     #[error("Audio command send error: {0}")]
-    CommandSendError(String), 
+    CommandSendError(String),
     #[error("Failed to lock logical playback states: {0}")]
     LogicalStateLockError(String),
     #[error("Logical state not found for deck '{deck_id}'")]
     LogicalStateNotFound { deck_id: String },
     #[error("Failed to send shutdown completion signal: {0}")]
     ShutdownSignalError(String),
-    // Note: The path to AudioThreadCommand will need to be updated if playback_types.rs moves
     #[error("Tokio MPSC send error for audio command: {0}")]
-    MpscSendError(#[from] tokio::sync::mpsc::error::SendError<crate::audio::types::AudioThreadCommand>),
+    MpscSendError(
+        #[from] tokio::sync::mpsc::error::SendError<crate::audio::types::AudioThreadCommand>,
+    ),
     #[error("Tokio JoinError from spawned task: {0}")]
     JoinError(#[from] tokio::task::JoinError),
 }
@@ -116,16 +158,23 @@ impl From<PlaybackError> for String {
     }
 }
 
-
 #[derive(Error, Debug)]
 pub enum AudioProcessorError {
     #[error("Decoding error during analysis for '{path}': {source}")]
-    AnalysisDecodingError{ path: String, source: AudioDecodingError },
+    AnalysisDecodingError {
+        path: String,
+        source: AudioDecodingError,
+    },
     #[error("BPM calculation failed for '{path}': {source}")]
-    AnalysisBpmError{ path: String, source: BpmError },
+    AnalysisBpmError { path: String, source: BpmError },
     #[error("Volume analysis failed for '{path}': {source}")]
-    AnalysisVolumeError{ path: String, source: AudioAnalysisError },
-    #[error("Invalid data (empty samples or zero sample rate) for duration calculation for '{path}'.")]
+    AnalysisVolumeError {
+        path: String,
+        source: AudioAnalysisError,
+    },
+    #[error(
+        "Invalid data (empty samples or zero sample rate) for duration calculation for '{path}'."
+    )]
     InvalidDataForDurationCalculation { path: String },
 }
 
@@ -135,4 +184,4 @@ impl From<AudioProcessorError> for String {
     fn from(err: AudioProcessorError) -> String {
         err.to_string()
     }
-} 
+}
