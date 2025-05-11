@@ -256,7 +256,7 @@
         ) {
             // Likely a seek or significant jump, trigger animation
             console.log(
-                `[WebGLWaveform] Animation triggered. From: ${interpolationCtx.internalDisplayTime.toFixed(3)}s to: ${hostTimeProp.toFixed(3)}s`,
+                `[WebGLWaveform] Animation triggered. From: ${$state.snapshot(interpolationCtx.internalDisplayTime).toFixed(3)}s to: ${hostTimeProp.toFixed(3)}s`,
             );
             seekAnimationCtx.isActive = true;
             seekAnimationCtx.startTime = performance.now();

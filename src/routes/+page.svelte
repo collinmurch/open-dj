@@ -55,8 +55,6 @@
     });
 
     // --- Waveform Colors ---
-    // const deckAWaveformColor: [number, number, number] = [0.43, 0.3, 0.7]; // Less saturated Purple HSL(255, 40%, 50%)
-    // const deckBWaveformColor: [number, number, number] = [0.7125, 0.75, 0.7875]; // HSL(210, 15%, 75%)
 
     // Deck A Band Colors (Purple-based)
     const deckALowBandColor: [number, number, number] = [0.3, 0.2, 0.6]; // Deeper Purple HSL(270, 50%, 40%)
@@ -232,7 +230,6 @@
                     centerValue={0.5}
                     step={0.01}
                     bind:value={crossfaderValue}
-                    debounceMs={20}
                 />
             </div>
         </section>

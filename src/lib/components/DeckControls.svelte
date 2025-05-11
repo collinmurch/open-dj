@@ -85,47 +85,32 @@
         };
     });
 
-    // Effects for Trim, Fader, EQ remain largely the same, invoking Rust via Tauri
     // Effect to update Fader Level in Rust
     $effect(() => {
         const currentFaderLevel = faderLevel;
-        if (faderDebounceTimeout !== undefined)
-            clearTimeout(faderDebounceTimeout);
-        faderDebounceTimeout = setTimeout(async () => {
-            console.log(`Updating Fader for ${deckId} to ${currentFaderLevel}`);
-            try {
-                await invoke("set_fader_level", {
-                    deckId,
-                    level: currentFaderLevel,
-                });
-            } catch (err: unknown) {
-                console.error(
-                    `[TrackPlayer ${deckId}] Error invoking set_fader_level:`,
-                    err,
-                );
-            }
-        }, FADER_DEBOUNCE_MS);
+        invoke("set_fader_level", {
+            deckId,
+            level: currentFaderLevel,
+        }).catch((err) => {
+            console.error(
+                `[TrackPlayer ${deckId}] Error invoking set_fader_level:`,
+                err,
+            );
+        });
     });
 
     // Effect to update Trim Gain in Rust
     $effect(() => {
         const currentTrimDb = trimDb;
-        if (trimDebounceTimeout !== undefined)
-            clearTimeout(trimDebounceTimeout);
-        trimDebounceTimeout = setTimeout(async () => {
-            console.log(`Updating Trim for ${deckId} to ${currentTrimDb} dB`);
-            try {
-                await invoke("set_trim_gain", {
-                    deckId,
-                    gainDb: currentTrimDb,
-                });
-            } catch (err: unknown) {
-                console.error(
-                    `[TrackPlayer ${deckId}] Error invoking set_trim_gain:`,
-                    err,
-                );
-            }
-        }, TRIM_DEBOUNCE_MS);
+        invoke("set_trim_gain", {
+            deckId,
+            gainDb: currentTrimDb,
+        }).catch((err) => {
+            console.error(
+                `[TrackPlayer ${deckId}] Error invoking set_trim_gain:`,
+                err,
+            );
+        });
     });
 
     // Effect to update EQ parameters in Rust
@@ -134,19 +119,14 @@
         const isDeckReady =
             playerStoreState.duration > 0 && !playerStoreState.isLoading;
         if (!isDeckReady) return;
+
         const paramsToSend = eqParams;
-        if (eqDebounceTimeout !== undefined) clearTimeout(eqDebounceTimeout);
-        eqDebounceTimeout = setTimeout(async () => {
-            console.log(`Updating EQ for ${deckId}:`, paramsToSend);
-            try {
-                await invoke("set_eq_params", {
-                    deckId: deckId,
-                    params: paramsToSend,
-                });
-            } catch (err) {
-                console.error(`Failed to set EQ for ${deckId}:`, err);
-            }
-        }, EQ_DEBOUNCE_MS);
+        invoke("set_eq_params", {
+            deckId: deckId,
+            params: paramsToSend,
+        }).catch((err) => {
+            console.error(`Failed to set EQ for ${deckId}:`, err);
+        });
     });
 
     const SEEK_AMOUNT = 5; // Seek 5 seconds
@@ -267,7 +247,6 @@
             centerValue={0}
             step={1}
             bind:value={trimDb}
-            debounceMs={0}
         />
         <Slider
             id="fader-slider-{deckId}"
@@ -277,7 +256,6 @@
             outputMax={1}
             step={0.01}
             bind:value={faderLevel}
-            debounceMs={0}
         />
         <Slider
             id="pitch-fader-{deckId}"
@@ -288,7 +266,6 @@
             centerValue={1.0}
             step={0.005}
             bind:value={pitchRate}
-            debounceMs={30}
         />
         <Slider
             id="low-eq-slider-{deckId}"
@@ -299,7 +276,6 @@
             centerValue={0}
             step={1}
             bind:value={eqParams.lowGainDb}
-            debounceMs={0}
         />
         <Slider
             id="mid-eq-slider-{deckId}"
@@ -310,7 +286,6 @@
             centerValue={0}
             step={1}
             bind:value={eqParams.midGainDb}
-            debounceMs={0}
         />
         <Slider
             id="high-eq-slider-{deckId}"
@@ -321,7 +296,6 @@
             centerValue={0}
             step={1}
             bind:value={eqParams.highGainDb}
-            debounceMs={0}
         />
     </div>
 

@@ -12,7 +12,6 @@
         centerValue = undefined as number | undefined,
         step = 1,
         value = $bindable(),
-        debounceMs = 50,
     }: {
         id: string;
         label: string;
@@ -22,7 +21,6 @@
         centerValue?: number;
         step?: number;
         value?: number;
-        debounceMs?: number;
     } = $props();
 
     // --- Internal State --- The raw slider works on 0-100 range
@@ -37,7 +35,6 @@
 
     // Initial internal value calculation needs to respect the mapping type
     let internalRawValue = $state(getInitialRawValue());
-    let debounceTimeoutId: number | undefined = undefined;
 
     function getInitialRawValue(): number {
         // If value is defined, map it. Otherwise, default based on mapping type.
@@ -120,20 +117,10 @@
     // Calculate the mapped output value based on internal raw slider value
     let actualOutputValue = $derived(rawToOutput(internalRawValue));
 
-    // Effect to handle debounced updates to the bound value (outwards)
+    // Effect to update the bound value immediately (no debounce)
     $effect(() => {
         const valueToEmit = actualOutputValue;
-        if (debounceTimeoutId !== undefined) clearTimeout(debounceTimeoutId);
-
-        if (debounceMs === 0) {
-            // If debounceMs is 0, update immediately
-            if (value !== valueToEmit) value = valueToEmit;
-        } else {
-            debounceTimeoutId = setTimeout(() => {
-                // Update the externally bound value after debounce
-                if (value !== valueToEmit) value = valueToEmit;
-            }, debounceMs);
-        }
+        if (value !== valueToEmit) value = valueToEmit;
     });
 
     // --- Input Handler ---
@@ -142,11 +129,6 @@
         const newValue = parseFloat(target.value);
         internalRawValue = newValue;
     }
-
-    // Cleanup timeout on component destroy
-    onDestroy(() => {
-        if (debounceTimeoutId !== undefined) clearTimeout(debounceTimeoutId);
-    });
 
     const isVertical = $derived(orientation === "vertical");
 </script>

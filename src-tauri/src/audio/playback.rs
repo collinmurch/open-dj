@@ -15,15 +15,13 @@ use crate::audio::types::{AudioThreadCommand, EqParams, PlaybackState};
 pub struct AppState {
     audio_command_sender: mpsc::Sender<AudioThreadCommand>,
     logical_playback_states: Arc<Mutex<HashMap<String, PlaybackState>>>,
-    app_handle: AppHandle,
 }
 
 impl AppState {
-    pub fn new(sender: mpsc::Sender<AudioThreadCommand>, app_handle: AppHandle) -> Self {
+    pub fn new(sender: mpsc::Sender<AudioThreadCommand>) -> Self {
         AppState {
             audio_command_sender: sender,
             logical_playback_states: Arc::new(Mutex::new(HashMap::new())),
-            app_handle,
         }
     }
 }
@@ -90,7 +88,6 @@ fn update_logical_state(
 // --- Audio Thread Implementation ---
 
 pub fn run_audio_thread(app_handle: AppHandle, mut receiver: mpsc::Receiver<AudioThreadCommand>) {
-    // ... (no changes in the beginning of this function)
     log::info!("Audio Thread: Starting...");
 
     log::info!("Audio Thread: Calling OutputStream::try_default()...");
@@ -816,38 +813,66 @@ fn audio_thread_handle_set_pitch_rate(
     app_handle: &AppHandle,
 ) {
     if let Some(state) = local_states.get_mut(deck_id) {
-        let clamped_rate = rate.clamp(0.5, 2.0);
+        let clamped_new_rate = rate.clamp(0.5, 2.0);
         let old_rate: f32;
+
+        let current_true_audio_time_secs: f64;
+        if state.is_playing {
+            if let Some(start_time) = state.playback_start_time {
+                let elapsed_since_last_start = start_time.elapsed();
+                let rate_during_segment = *state.current_pitch_rate.lock().unwrap();
+                
+                let audio_advanced_this_segment_secs = elapsed_since_last_start.as_secs_f64() * rate_during_segment as f64;
+                let base_audio_time_at_segment_start_secs = state.paused_position.unwrap_or(Duration::ZERO).as_secs_f64();
+                
+                current_true_audio_time_secs = (base_audio_time_at_segment_start_secs + audio_advanced_this_segment_secs)
+                                               .min(state.duration.as_secs_f64());
+            } else { 
+                current_true_audio_time_secs = state.paused_position.unwrap_or(Duration::ZERO).as_secs_f64();
+            }
+        } else {
+            current_true_audio_time_secs = state.paused_position.unwrap_or(Duration::ZERO).as_secs_f64();
+        }
+
         {
             let mut rate_lock = state.current_pitch_rate.lock().unwrap();
             old_rate = *rate_lock;
-            *rate_lock = clamped_rate;
+            *rate_lock = clamped_new_rate;
         }
-        // Calculate current playback position in audio seconds BEFORE changing speed
-        let current_audio_time = get_current_playback_time_secs(state);
-        // Update paused_position to the current audio time
-        state.paused_position = Some(Duration::from_secs_f64(current_audio_time));
-        // Set the new speed on the sink
-        state.sink.set_speed(clamped_rate);
-        // Reset playback_start_time for the new speed segment
+
+        state.paused_position = Some(Duration::from_secs_f64(current_true_audio_time_secs));
+
+        state.sink.set_speed(clamped_new_rate);
+
         if state.is_playing {
             state.playback_start_time = Some(Instant::now());
         } else {
             state.playback_start_time = None;
         }
-        log::info!("Audio Thread: Set pitch rate for deck '{}' to {}", deck_id, clamped_rate);
+
+        log::info!(
+            "Audio Thread: Set pitch rate for deck '{}' from {} to {} at audio time {:.2}s",
+            deck_id, old_rate, clamped_new_rate, current_true_audio_time_secs
+        );
 
         let logical_states_arc = app_handle.state::<AppState>().logical_playback_states.clone();
-        let mut locked_states_guard = logical_states_arc.lock().unwrap(); // LOCK ONCE here
+        let mut locked_states_guard = logical_states_arc.lock().unwrap();
 
         if let Some(logical_state_ref_mut) = locked_states_guard.get_mut(deck_id) {
-            logical_state_ref_mut.pitch_rate = Some(clamped_rate);
-            logical_state_ref_mut.current_time = current_audio_time;
+            logical_state_ref_mut.pitch_rate = Some(clamped_new_rate);
+            logical_state_ref_mut.current_time = current_true_audio_time_secs;
+            logical_state_ref_mut.is_playing = state.is_playing;
+            logical_state_ref_mut.duration = Some(state.duration.as_secs_f64());
+            logical_state_ref_mut.is_loading = false;
+            logical_state_ref_mut.error = None;
+            logical_state_ref_mut.cue_point_seconds = state.cue_point.map(|d| d.as_secs_f64());
+            
             emit_state_update(app_handle, deck_id, logical_state_ref_mut);
         }
 
     } else {
         log::warn!("Audio Thread: SetPitchRate: Deck '{}' not found.", deck_id);
+        emit_error_event(app_handle, deck_id, "Deck not found for pitch rate adjustment.");
     }
 }
 
@@ -881,19 +906,6 @@ pub async fn load_track(
     app_state: State<'_, AppState>,
 ) -> Result<(), String> {
     log::info!("CMD: Load track '{}' for deck: {}", path, deck_id);
-
-    let loading_state = PlaybackState {
-        is_loading: true,
-        pitch_rate: Some(1.0),
-        ..PlaybackState::default()
-    };
-    update_logical_state(
-        &app_state.logical_playback_states,
-        &deck_id,
-        loading_state.clone(),
-    );
-
-    emit_state_update(&app_state.app_handle, &deck_id, &loading_state);
 
     app_state
         .audio_command_sender

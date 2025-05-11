@@ -18,7 +18,7 @@ pub fn run() {
     tauri::Builder::default()
         .setup(move |app| {
             let app_handle = app.handle().clone();
-            app.manage(AppState::new(audio_cmd_tx.clone(), app_handle.clone()));
+            app.manage(AppState::new(audio_cmd_tx.clone()));
 
             // Spawn the dedicated audio thread
             let app_handle_for_thread = app_handle.clone();

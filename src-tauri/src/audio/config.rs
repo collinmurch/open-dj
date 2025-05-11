@@ -10,7 +10,7 @@ pub const BPM_MIN: f32 = 60.0;
 pub const BPM_MAX: f32 = 200.0;
 
 // --- Audio Playback Thread Constants ---
-pub const AUDIO_THREAD_TIME_UPDATE_INTERVAL_MS: u64 = 75;
+pub const AUDIO_THREAD_TIME_UPDATE_INTERVAL_MS: u64 = 25;
 pub const AUDIO_BUFFER_CHAN_SIZE: usize = 32;
 
 // --- Utility Constants --
