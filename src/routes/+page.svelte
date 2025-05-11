@@ -8,7 +8,7 @@
         createPlayerStore,
         type PlayerStore,
     } from "$lib/stores/playerStore";
-    import type { VolumeAnalysis } from "$lib/types";
+    import type { VolumeAnalysis, EqParams } from "$lib/types";
     import { invoke } from "@tauri-apps/api/core";
 
     // --- Library and Track Selection ---
@@ -23,19 +23,23 @@
     let deckAFilePath = $state<string | null>(null);
     let deckAVolumeAnalysis = $state<VolumeAnalysis | null>(null);
     let isDeckAWaveformLoading = $state(false);
-    let deckALowGain = $state(0.0);
-    let deckAMidGain = $state(0.0);
-    let deckAHighGain = $state(0.0);
     let deckAFaderLevel = $state(1.0);
+    let deckAEqParams = $state<EqParams>({
+        lowGainDb: 0.0,
+        midGainDb: 0.0,
+        highGainDb: 0.0,
+    });
 
     // --- Deck B: File Path, Analysis, EQ, Fader ---
     let deckBFilePath = $state<string | null>(null);
     let deckBVolumeAnalysis = $state<VolumeAnalysis | null>(null);
     let isDeckBWaveformLoading = $state(false);
-    let deckBLowGain = $state(0.0);
-    let deckBMidGain = $state(0.0);
-    let deckBHighGain = $state(0.0);
     let deckBFaderLevel = $state(1.0);
+    let deckBEqParams = $state<EqParams>({
+        lowGainDb: 0.0,
+        midGainDb: 0.0,
+        highGainDb: 0.0,
+    });
 
     // --- Global Mixer Controls ---
     let crossfaderValue = $state(0.5);
@@ -185,10 +189,8 @@
                     lowBandColor={deckALowBandColor}
                     midBandColor={deckAMidBandColor}
                     highBandColor={deckAHighBandColor}
-                    lowGainDb={deckALowGain}
-                    midGainDb={deckAMidGain}
-                    highGainDb={deckAHighGain}
-                    masterFaderLevel={deckAFaderLevel}
+                    eqParams={deckAEqParams}
+                    faderLevel={deckAFaderLevel}
                 />
             </div>
             <div class="waveform-container deck-b-style">
@@ -204,10 +206,8 @@
                     lowBandColor={deckBLowBandColor}
                     midBandColor={deckBMidBandColor}
                     highBandColor={deckBHighBandColor}
-                    lowGainDb={deckBLowGain}
-                    midGainDb={deckBMidGain}
-                    highGainDb={deckBHighGain}
-                    masterFaderLevel={deckBFaderLevel}
+                    eqParams={deckBEqParams}
+                    faderLevel={deckBFaderLevel}
                 />
             </div>
             <div class="crossfader-container">
@@ -232,9 +232,7 @@
                     filePath={deckAFilePath}
                     playerStoreState={$playerStoreA}
                     playerActions={playerStoreA}
-                    bind:lowGainDb={deckALowGain}
-                    bind:midGainDb={deckAMidGain}
-                    bind:highGainDb={deckAHighGain}
+                    bind:eqParams={deckAEqParams}
                     bind:faderLevel={deckAFaderLevel}
                 />
             </div>
@@ -244,9 +242,7 @@
                     filePath={deckBFilePath}
                     playerStoreState={$playerStoreB}
                     playerActions={playerStoreB}
-                    bind:lowGainDb={deckBLowGain}
-                    bind:midGainDb={deckBMidGain}
-                    bind:highGainDb={deckBHighGain}
+                    bind:eqParams={deckBEqParams}
                     bind:faderLevel={deckBFaderLevel}
                 />
             </div>

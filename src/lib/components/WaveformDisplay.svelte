@@ -1,5 +1,5 @@
 <script lang="ts">
-    import type { VolumeAnalysis, WaveBin } from "$lib/types";
+    import type { VolumeAnalysis, WaveBin, EqParams } from "$lib/types";
     import {
         createProgram,
         createShader,
@@ -32,10 +32,12 @@
         highBandColor = [0.3, 0.7, 0.9] as [number, number, number],
 
         // EQ & Fader Levels
-        lowGainDb = 0.0,
-        midGainDb = 0.0,
-        highGainDb = 0.0,
-        masterFaderLevel = 1.0,
+        eqParams = {
+            lowGainDb: 0.0,
+            midGainDb: 0.0,
+            highGainDb: 0.0,
+        } as EqParams,
+        faderLevel = 1.0,
     }: {
         // Core Data & State
         volumeAnalysis: VolumeAnalysis | null;
@@ -55,10 +57,8 @@
         highBandColor?: [number, number, number];
 
         // EQ & Fader Levels
-        lowGainDb?: number;
-        midGainDb?: number;
-        highGainDb?: number;
-        masterFaderLevel?: number;
+        eqParams?: EqParams;
+        faderLevel?: number;
     } = $props();
 
     // --- WebGL State & Refs ---
@@ -191,9 +191,9 @@
         const newVolumeAnalysis = volumeAnalysis;
         const newAudioDuration = audioDuration;
         // Capture EQ gains for dependency tracking by $effect
-        const currentLowGain = lowGainDb;
-        const currentMidGain = midGainDb;
-        const currentHighGain = highGainDb;
+        const currentLowGain = eqParams.lowGainDb;
+        const currentMidGain = eqParams.midGainDb;
+        const currentHighGain = eqParams.highGainDb;
 
         const analysisObjectChanged =
             newVolumeAnalysis !== lastProcessedVolumeAnalysis;
@@ -547,9 +547,9 @@
         }
 
         // Calculate gain multipliers from dB
-        const lowMultiplier = Math.pow(10, lowGainDb / 20);
-        const midMultiplier = Math.pow(10, midGainDb / 20);
-        const highMultiplier = Math.pow(10, highGainDb / 20);
+        const lowMultiplier = Math.pow(10, eqParams.lowGainDb / 20);
+        const midMultiplier = Math.pow(10, eqParams.midGainDb / 20);
+        const highMultiplier = Math.pow(10, eqParams.highGainDb / 20);
 
         const bins = currentActiveMip;
         if (!bins || bins.length === 0) {
@@ -704,7 +704,7 @@
                 INITIAL_ZOOM_FACTOR,
             );
 
-            const faderAlpha = Math.max(0, Math.min(1, masterFaderLevel)); // Clamp fader level to [0,1]
+            const faderAlpha = Math.max(0, Math.min(1, faderLevel)); // Clamp fader level to [0,1]
 
             // Draw Low Band
             gl.uniform4f(

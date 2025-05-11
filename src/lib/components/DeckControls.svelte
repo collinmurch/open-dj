@@ -1,6 +1,6 @@
 <script lang="ts">
     import type { PlayerStore } from "$lib/stores/playerStore";
-    import type { PlayerState } from "$lib/types";
+    import type { PlayerState, EqParams } from "$lib/types";
     import { formatTime } from "$lib/utils/timeUtils";
     import { invoke } from "@tauri-apps/api/core";
     import Slider from "./Slider.svelte";
@@ -12,9 +12,11 @@
         playerActions,
         trimDb = $bindable(0.0),
         faderLevel = $bindable(1.0),
-        lowGainDb = $bindable(0.0),
-        midGainDb = $bindable(0.0),
-        highGainDb = $bindable(0.0),
+        eqParams = $bindable({
+            lowGainDb: 0.0,
+            midGainDb: 0.0,
+            highGainDb: 0.0,
+        } as EqParams),
     }: {
         filePath: string | null;
         deckId: string;
@@ -31,9 +33,7 @@
         >;
         trimDb?: number;
         faderLevel?: number;
-        lowGainDb?: number;
-        midGainDb?: number;
-        highGainDb?: number;
+        eqParams?: EqParams;
     } = $props();
 
     // --- Volume, Trim & EQ State (remains the same) ---
@@ -128,11 +128,7 @@
 
     // Effect to update EQ parameters in Rust
     $effect(() => {
-        const paramsToSend = {
-            lowGainDb: lowGainDb,
-            midGainDb: midGainDb,
-            highGainDb: highGainDb,
-        };
+        const paramsToSend = eqParams;
         if (eqDebounceTimeout !== undefined) clearTimeout(eqDebounceTimeout);
         eqDebounceTimeout = setTimeout(async () => {
             console.log(`Updating EQ for ${deckId}:`, paramsToSend);
@@ -285,7 +281,7 @@
             outputMax={6}
             centerValue={0}
             step={1}
-            bind:value={lowGainDb}
+            bind:value={eqParams.lowGainDb}
             debounceMs={0}
         />
         <Slider
@@ -296,7 +292,7 @@
             outputMax={6}
             centerValue={0}
             step={1}
-            bind:value={midGainDb}
+            bind:value={eqParams.midGainDb}
             debounceMs={0}
         />
         <Slider
@@ -307,7 +303,7 @@
             outputMax={6}
             centerValue={0}
             step={1}
-            bind:value={highGainDb}
+            bind:value={eqParams.highGainDb}
             debounceMs={0}
         />
     </div>

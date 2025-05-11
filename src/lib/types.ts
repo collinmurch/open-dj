@@ -15,6 +15,15 @@ export interface WaveBin {
     high: number;  // f32
 }
 
+/**
+ * 3-band EQ parameters for state and communication. Matches Rust struct EqParams.
+ */
+export interface EqParams {
+    lowGainDb: number;
+    midGainDb: number;
+    highGainDb: number;
+}
+
 // Represents the full volume analysis data. Matches Rust struct AudioAnalysis.
 export interface VolumeAnalysis {
     levels: WaveBin[][];
