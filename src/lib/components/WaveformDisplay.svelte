@@ -792,7 +792,7 @@
 
             const cueNdcX =
                 (normalizedCueTime - normalizedPlayheadCenterTime) *
-                INITIAL_ZOOM_FACTOR;
+                effectiveZoomFactor();
 
             // Only draw if within visible NDC range (plus a small buffer)
             if (cueNdcX >= -1.1 && cueNdcX <= 1.1) {
