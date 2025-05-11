@@ -527,10 +527,6 @@
         .cue-button:hover:not(:disabled) {
             background-color: var(--cue-button-held-bg-dark, #c9302c);
         }
-        .time-display {
-            background-color: #555;
-            color: #eee;
-        }
         .current-bpm {
             background-color: #555;
             color: orange;

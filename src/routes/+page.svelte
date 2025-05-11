@@ -188,11 +188,8 @@
             <h2>Music Library</h2>
             <MusicLibrary />
         </section>
-    {/if}
-
-    {#if isFolderSelected}
+    {:else}
         <section class="mixer-section">
-            <h2>Mixer</h2>
             <div class="waveform-container deck-a-style">
                 <WaveFormDisplay
                     volumeAnalysis={deckAVolumeAnalysis}
@@ -346,18 +343,11 @@
         width: 100%;
         display: flex;
         flex-direction: column;
-        gap: 0.75rem;
+        gap: 0.25rem;
         padding: 1rem;
         border: 1px solid var(--section-border);
         border-radius: 8px;
         background-color: var(--section-bg);
-    }
-    .mixer-section h2 {
-        margin-top: 0;
-        margin-bottom: 1rem;
-        padding-bottom: 0.5rem;
-        text-align: center;
-        border-bottom: 1px solid var(--section-border-light);
     }
     .waveform-container {
         width: 100%;
@@ -366,6 +356,7 @@
         overflow: hidden;
         background-color: var(--waveform-area-bg); /* Default */
         transition: background-color 0.3s ease;
+        margin-bottom: 0.1rem;
     }
     .waveform-container.deck-a-style {
         background-color: var(--deck-a-waveform-bg-light);
@@ -585,7 +576,7 @@
         max-width: 50%;
         margin-left: auto;
         margin-right: auto;
-        padding: 0.5rem 1rem;
-        margin-top: 0.5rem;
+        padding: 0;
+        margin-top: 0;
     }
 </style>
