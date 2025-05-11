@@ -935,6 +935,7 @@
         bind:this={glContext.canvas}
         style="display: block; width: 100%; height: 100%;"
         onclick={handleWaveformClick}
+        class:is-clickable={isTrackLoaded}
     ></canvas>
 
     {#if !(isTrackLoaded && activeMipLevel() && glContext.ctx && (waveformRendering.low.vertexCount > 0 || waveformRendering.mid.vertexCount > 0 || waveformRendering.high.vertexCount > 0)) && !isAnalysisPending}
@@ -962,6 +963,9 @@
         position: relative;
         min-height: 80px;
         overflow: hidden;
+    }
+    .webgl-waveform-container canvas.is-clickable {
+        cursor: pointer;
     }
     .status-message {
         position: absolute;
