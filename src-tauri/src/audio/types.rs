@@ -63,6 +63,10 @@ pub enum AudioThreadCommand {
         deck_id: String,
         position_seconds: f64,
     },
+    SetPitchRate {
+        deck_id: String,
+        rate: f32,
+    },
     CleanupDeck(String), // deck_id
     Shutdown(oneshot::Sender<()>),
 }
@@ -78,6 +82,7 @@ pub struct PlaybackState {
     pub duration: Option<f64>,
     pub error: Option<String>,
     pub cue_point_seconds: Option<f64>,
+    pub pitch_rate: Option<f32>,
 }
 
 impl Default for PlaybackState {
@@ -89,6 +94,7 @@ impl Default for PlaybackState {
             duration: None,
             error: None,
             cue_point_seconds: None,
+            pitch_rate: Some(1.0),
         }
     }
 }

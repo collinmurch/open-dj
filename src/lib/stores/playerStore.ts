@@ -176,6 +176,15 @@ export function createPlayerStore(deckId: string) {
         }
     }
 
+    async function setPitchRate(rate: number) {
+        try {
+            await invoke("set_pitch_rate", { deckId, rate });
+        } catch (err) {
+            const errorMsg = `Failed to set pitch rate: ${err}`;
+            console.error(`[Store ${deckId}]`, errorMsg);
+        }
+    }
+
     function cleanup() {
         console.log(`[Store ${deckId}] Cleaning up listeners...`);
         if (unlistenUpdate) unlistenUpdate();
@@ -199,6 +208,7 @@ export function createPlayerStore(deckId: string) {
         setCuePoint,
         cleanup,
         deckId,
+        setPitchRate,
     };
 }
 

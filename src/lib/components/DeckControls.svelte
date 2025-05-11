@@ -17,6 +17,7 @@
             midGainDb: 0.0,
             highGainDb: 0.0,
         } as EqParams),
+        pitchRate = $bindable(1.0),
     }: {
         filePath: string | null;
         deckId: string;
@@ -34,6 +35,7 @@
         trimDb?: number;
         faderLevel?: number;
         eqParams?: EqParams;
+        pitchRate?: number;
     } = $props();
 
     // --- Volume, Trim & EQ State (remains the same) ---
@@ -128,6 +130,10 @@
 
     // Effect to update EQ parameters in Rust
     $effect(() => {
+        // Only send EQ if deck is loaded and ready
+        const isDeckReady =
+            playerStoreState.duration > 0 && !playerStoreState.isLoading;
+        if (!isDeckReady) return;
         const paramsToSend = eqParams;
         if (eqDebounceTimeout !== undefined) clearTimeout(eqDebounceTimeout);
         eqDebounceTimeout = setTimeout(async () => {
@@ -272,6 +278,17 @@
             step={0.01}
             bind:value={faderLevel}
             debounceMs={0}
+        />
+        <Slider
+            id="pitch-fader-{deckId}"
+            label="Pitch"
+            orientation="vertical"
+            outputMin={0.75}
+            outputMax={1.25}
+            centerValue={1.0}
+            step={0.005}
+            bind:value={pitchRate}
+            debounceMs={30}
         />
         <Slider
             id="low-eq-slider-{deckId}"

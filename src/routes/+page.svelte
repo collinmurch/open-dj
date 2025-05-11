@@ -29,6 +29,7 @@
         midGainDb: 0.0,
         highGainDb: 0.0,
     });
+    let deckAPitchRate = $state(1.0);
 
     // --- Deck B: File Path, Analysis, EQ, Fader ---
     let deckBFilePath = $state<string | null>(null);
@@ -40,6 +41,7 @@
         midGainDb: 0.0,
         highGainDb: 0.0,
     });
+    let deckBPitchRate = $state(1.0);
 
     // --- Global Mixer Controls ---
     let crossfaderValue = $state(0.5);
@@ -75,6 +77,14 @@
     $effect(() => {
         const volumeB = deckBVolume();
         playerStoreB.setVolume(volumeB);
+    });
+
+    $effect(() => {
+        playerStoreA.setPitchRate(deckAPitchRate);
+    });
+
+    $effect(() => {
+        playerStoreB.setPitchRate(deckBPitchRate);
     });
 
     // --- Deck A Data Derivations ---
@@ -191,6 +201,7 @@
                     highBandColor={deckAHighBandColor}
                     eqParams={deckAEqParams}
                     faderLevel={deckAFaderLevel}
+                    pitchRate={deckAPitchRate}
                 />
             </div>
             <div class="waveform-container deck-b-style">
@@ -208,6 +219,7 @@
                     highBandColor={deckBHighBandColor}
                     eqParams={deckBEqParams}
                     faderLevel={deckBFaderLevel}
+                    pitchRate={deckBPitchRate}
                 />
             </div>
             <div class="crossfader-container">
@@ -234,6 +246,7 @@
                     playerActions={playerStoreA}
                     bind:eqParams={deckAEqParams}
                     bind:faderLevel={deckAFaderLevel}
+                    bind:pitchRate={deckAPitchRate}
                 />
             </div>
             <div class="deck-stacked deck-b-style">
@@ -244,6 +257,7 @@
                     playerActions={playerStoreB}
                     bind:eqParams={deckBEqParams}
                     bind:faderLevel={deckBFaderLevel}
+                    bind:pitchRate={deckBPitchRate}
                 />
             </div>
         </section>

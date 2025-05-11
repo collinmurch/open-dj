@@ -38,6 +38,7 @@
             highGainDb: 0.0,
         } as EqParams,
         faderLevel = 1.0,
+        pitchRate = 1.0,
     }: {
         // Core Data & State
         volumeAnalysis: VolumeAnalysis | null;
@@ -59,6 +60,7 @@
         // EQ & Fader Levels
         eqParams?: EqParams;
         faderLevel?: number;
+        pitchRate?: number;
     } = $props();
 
     // --- WebGL State & Refs ---
@@ -184,6 +186,11 @@
             return volumeAnalysis.levels[0];
         }
         return null;
+    });
+
+    const effectiveZoomFactor = $derived(() => {
+        if (pitchRate === 0) return INITIAL_ZOOM_FACTOR;
+        return INITIAL_ZOOM_FACTOR / pitchRate;
     });
 
     // Effect to update geometry ONLY when the track/analysis actually changes
@@ -701,7 +708,7 @@
             );
             gl.uniform1f(
                 waveformRendering.uniforms.zoomFactorLoc,
-                INITIAL_ZOOM_FACTOR,
+                effectiveZoomFactor(),
             );
 
             const faderAlpha = Math.max(0, Math.min(1, faderLevel)); // Clamp fader level to [0,1]

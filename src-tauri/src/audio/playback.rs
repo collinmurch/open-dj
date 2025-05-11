@@ -39,6 +39,7 @@ struct AudioThreadDeckState {
     eq_params: Arc<Mutex<EqParams>>,
     trim_gain: Arc<Mutex<f32>>,
     cue_point: Option<Duration>,
+    current_pitch_rate: Arc<Mutex<f32>>,
 }
 
 // --- Event Emitter Helpers ---
@@ -172,6 +173,9 @@ pub fn run_audio_thread(app_handle: AppHandle, mut receiver: mpsc::Receiver<Audi
                                          log::error!("Audio Thread: Failed to send shutdown completion signal.");
                                     }
                                 }
+                                AudioThreadCommand::SetPitchRate { deck_id, rate } => {
+                                    audio_thread_handle_set_pitch_rate(&deck_id, rate, &mut local_deck_states, &app_handle);
+                                }
                             }
                         }
                         None => {
@@ -211,6 +215,7 @@ fn audio_thread_handle_init(
         Ok(sink) => {
             let initial_eq_params = Arc::new(Mutex::new(EqParams::default()));
             let initial_trim_gain = Arc::new(Mutex::new(INITIAL_TRIM_GAIN));
+            let initial_pitch_rate = Arc::new(Mutex::new(1.0f32));
 
             let deck_state = AudioThreadDeckState {
                 sink,
@@ -223,11 +228,15 @@ fn audio_thread_handle_init(
                 eq_params: initial_eq_params,
                 trim_gain: initial_trim_gain,
                 cue_point: None,
+                current_pitch_rate: initial_pitch_rate.clone(),
             };
             local_states.insert(deck_id.to_string(), deck_state);
             log::info!("Audio Thread: Initialized deck '{}'", deck_id);
 
-            let initial_playback_state = PlaybackState::default();
+            let initial_playback_state = PlaybackState {
+                pitch_rate: Some(1.0),
+                ..PlaybackState::default()
+            };
             let logical_states_arc = app_handle
                 .state::<AppState>()
                 .logical_playback_states
@@ -329,9 +338,18 @@ async fn audio_thread_handle_load(
 
                         match EqSource::new(buffer, eq_params_arc.clone(), trim_gain_arc.clone()) {
                             Ok(unwrapped_eq_source) => {
+                                // Reset pitch rate for the new track to 1.0
+                                {
+                                    let mut rate_lock = deck_state.current_pitch_rate.lock().unwrap();
+                                    *rate_lock = 1.0f32;
+                                }
+                                let speed = *deck_state.current_pitch_rate.lock().unwrap();
+                                let speed_source = unwrapped_eq_source.speed(speed);
+
                                 deck_state.sink.stop();
                                 deck_state.sink.clear();
-                                deck_state.sink.append(unwrapped_eq_source);
+                                deck_state.sink.append(speed_source.convert_samples::<f32>());
+                                deck_state.sink.set_speed(speed);
                                 deck_state.sink.pause();
                                 deck_state.sink.set_volume(1.0);
 
@@ -346,6 +364,7 @@ async fn audio_thread_handle_load(
                                     duration: Some(duration.as_secs_f64()),
                                     error: None,
                                     cue_point_seconds: None,
+                                    pitch_rate: Some(1.0),
                                 };
                                 update_logical_state(
                                     &logical_states_arc,
@@ -450,8 +469,7 @@ fn audio_thread_handle_play(
         state.is_playing = true;
         if state.paused_position.is_some() {
             // Resuming from pause
-            state.playback_start_time =
-                Some(Instant::now() - state.paused_position.take().unwrap_or(Duration::ZERO));
+            state.playback_start_time = Some(Instant::now());
         } else {
             // Starting from beginning or after seek
             state.playback_start_time = Some(Instant::now());
@@ -469,6 +487,7 @@ fn audio_thread_handle_play(
             is_loading: false,
             error: None,
             cue_point_seconds: state.cue_point.map(|d| d.as_secs_f64()),
+            pitch_rate: Some(*state.current_pitch_rate.lock().unwrap()),
         };
         update_logical_state(&logical_states_arc, deck_id, new_playback_state.clone());
         emit_state_update(app_handle, deck_id, &new_playback_state);
@@ -487,7 +506,11 @@ fn audio_thread_handle_pause(
         state.sink.pause();
         state.is_playing = false;
         if let Some(start_time) = state.playback_start_time.take() {
-            state.paused_position = Some(Instant::now() - start_time);
+            let elapsed_wall = Instant::now() - start_time;
+            let current_rate = *state.current_pitch_rate.lock().unwrap();
+            let audio_progress_secs = elapsed_wall.as_secs_f64() * current_rate as f64;
+            let base_audio_time_secs = state.paused_position.unwrap_or(Duration::ZERO).as_secs_f64();
+            state.paused_position = Some(Duration::from_secs_f64((base_audio_time_secs + audio_progress_secs).min(state.duration.as_secs_f64())));
         }
         log::info!("Audio Thread: Paused deck '{}'", deck_id);
         let logical_states_arc = app_handle
@@ -502,6 +525,7 @@ fn audio_thread_handle_pause(
             is_loading: false,
             error: None,
             cue_point_seconds: state.cue_point.map(|d| d.as_secs_f64()),
+            pitch_rate: Some(*state.current_pitch_rate.lock().unwrap()),
         };
         update_logical_state(&logical_states_arc, deck_id, new_playback_state.clone());
         emit_state_update(app_handle, deck_id, &new_playback_state);
@@ -549,68 +573,51 @@ fn audio_thread_handle_seek(
             seek_duration
         };
 
-        // Recreate the source with EqSource to apply seek correctly
-        let new_source =
-            SamplesBuffer::new(1, state.sample_rate as u32, state.decoded_samples.to_vec());
-        match EqSource::new(new_source, state.eq_params.clone(), state.trim_gain.clone()) {
-            Ok(eq_source) => {
-                state.sink.stop(); // Stop and clear to ensure the old source is dropped
-                state.sink.clear();
-                state.sink.append(
-                    eq_source
-                        .skip_duration(final_seek_duration)
-                        .convert_samples::<f32>(),
-                );
-
-                if state.is_playing {
-                    state.sink.play();
-                    state.playback_start_time = Some(Instant::now() - final_seek_duration);
-                } else {
-                    state.sink.pause(); // Keep it paused if it was paused
-                    state.playback_start_time = None; // Not strictly necessary if not playing, but good for consistency
-                }
-                state.paused_position = Some(final_seek_duration); // Update paused position to the seek target
-
-                log::info!(
-                    "Audio Thread: Seeked deck '{}' to {:.2}s",
-                    deck_id,
-                    final_seek_duration.as_secs_f64()
-                );
-
-                let logical_states_arc = app_handle
-                    .state::<AppState>()
-                    .logical_playback_states
-                    .clone();
-                let new_playback_state = PlaybackState {
-                    is_playing: state.is_playing,
-                    current_time: final_seek_duration.as_secs_f64(),
-                    duration: Some(state.duration.as_secs_f64()),
-                    is_loading: false,
-                    error: None,
-                    cue_point_seconds: state.cue_point.map(|d| d.as_secs_f64()),
-                };
-                update_logical_state(&logical_states_arc, deck_id, new_playback_state.clone());
-                emit_state_update(app_handle, deck_id, &new_playback_state);
-            }
+        // Recreate the source with EqSource and Speed to apply seek and pitch correctly
+        let new_source = SamplesBuffer::new(1, state.sample_rate as u32, state.decoded_samples.to_vec());
+        let eq_source = match EqSource::new(new_source, state.eq_params.clone(), state.trim_gain.clone()) {
+            Ok(eq) => eq,
             Err(e) => {
-                log::error!(
-                    "Audio Thread: Failed to recreate EqSource for seek on deck '{}': {:?}",
-                    deck_id,
-                    e
-                );
-                let error_message = format!("Failed to apply seek: {}", e);
-                let error_state = PlaybackState {
-                    error: Some(error_message),
-                    ..Default::default()
-                };
-                let logical_states_arc = app_handle
-                    .state::<AppState>()
-                    .logical_playback_states
-                    .clone();
-                update_logical_state(&logical_states_arc, deck_id, error_state.clone());
-                emit_state_update(app_handle, deck_id, &error_state);
+                log::error!("Failed to create EqSource for seek: {:?}", e);
+                return;
             }
+        };
+        let current_dynamic_rate = *state.current_pitch_rate.lock().unwrap();
+        let speed_source = eq_source.speed(current_dynamic_rate);
+        state.sink.stop();
+        state.sink.clear();
+        state.sink.append(
+            speed_source
+                .skip_duration(final_seek_duration)
+                .convert_samples::<f32>()
+        );
+        state.sink.set_speed(current_dynamic_rate);
+
+        state.paused_position = Some(final_seek_duration); // Update paused position to the seek target
+
+        if state.is_playing {
+            state.sink.play();
+            state.playback_start_time = Some(Instant::now()); // Wall time for new segment
+        } else {
+            state.sink.pause();
+            state.playback_start_time = None;
         }
+        // ... update logical state, current_time should be final_seek_duration.as_secs_f64()
+        let logical_states_arc = app_handle
+            .state::<AppState>()
+            .logical_playback_states
+            .clone();
+        let new_playback_state = PlaybackState {
+            is_playing: state.is_playing,
+            current_time: final_seek_duration.as_secs_f64(),
+            duration: Some(state.duration.as_secs_f64()),
+            is_loading: false,
+            error: None,
+            cue_point_seconds: state.cue_point.map(|d| d.as_secs_f64()),
+            pitch_rate: Some(current_dynamic_rate),
+        };
+        update_logical_state(&logical_states_arc, deck_id, new_playback_state.clone());
+        emit_state_update(app_handle, deck_id, &new_playback_state);
     } else {
         log::error!("Audio Thread: Seek: Deck '{}' not found.", deck_id);
         emit_error_event(app_handle, deck_id, "Deck not found for seek operation.");
@@ -718,6 +725,7 @@ fn audio_thread_handle_set_cue(
             is_loading: false,
             error: None,
             cue_point_seconds: Some(cue_duration.as_secs_f64()),
+            pitch_rate: Some(1.0),
         };
         update_logical_state(&logical_states_arc, deck_id, new_playback_state.clone());
         emit_state_update(app_handle, deck_id, &new_playback_state);
@@ -731,7 +739,10 @@ fn get_current_playback_time_secs(deck_state: &AudioThreadDeckState) -> f64 {
     if deck_state.is_playing {
         if let Some(start_time) = deck_state.playback_start_time {
             let elapsed = start_time.elapsed();
-            return elapsed.as_secs_f64().min(deck_state.duration.as_secs_f64());
+            let current_rate = *deck_state.current_pitch_rate.lock().unwrap();
+            let audio_advanced_secs = elapsed.as_secs_f64() * current_rate as f64;
+            let base_audio_time_secs = deck_state.paused_position.unwrap_or(Duration::ZERO).as_secs_f64();
+            return (base_audio_time_secs + audio_advanced_secs).min(deck_state.duration.as_secs_f64());
         }
     } else if let Some(paused_pos) = deck_state.paused_position {
         return paused_pos
@@ -774,6 +785,7 @@ fn audio_thread_handle_time_update(
                     is_loading: false,
                     error: None,
                     cue_point_seconds: deck_state.cue_point.map(|d| d.as_secs_f64()),
+                    pitch_rate: Some(1.0),
                 };
                 emit_state_update(app_handle, deck_id, &state_update);
             } else {
@@ -797,6 +809,48 @@ fn audio_thread_handle_cleanup(
     }
 }
 
+fn audio_thread_handle_set_pitch_rate(
+    deck_id: &str,
+    rate: f32,
+    local_states: &mut HashMap<String, AudioThreadDeckState>,
+    app_handle: &AppHandle,
+) {
+    if let Some(state) = local_states.get_mut(deck_id) {
+        let clamped_rate = rate.clamp(0.5, 2.0);
+        let old_rate: f32;
+        {
+            let mut rate_lock = state.current_pitch_rate.lock().unwrap();
+            old_rate = *rate_lock;
+            *rate_lock = clamped_rate;
+        }
+        // Calculate current playback position in audio seconds BEFORE changing speed
+        let current_audio_time = get_current_playback_time_secs(state);
+        // Update paused_position to the current audio time
+        state.paused_position = Some(Duration::from_secs_f64(current_audio_time));
+        // Set the new speed on the sink
+        state.sink.set_speed(clamped_rate);
+        // Reset playback_start_time for the new speed segment
+        if state.is_playing {
+            state.playback_start_time = Some(Instant::now());
+        } else {
+            state.playback_start_time = None;
+        }
+        log::info!("Audio Thread: Set pitch rate for deck '{}' to {}", deck_id, clamped_rate);
+
+        let logical_states_arc = app_handle.state::<AppState>().logical_playback_states.clone();
+        let mut locked_states_guard = logical_states_arc.lock().unwrap(); // LOCK ONCE here
+
+        if let Some(logical_state_ref_mut) = locked_states_guard.get_mut(deck_id) {
+            logical_state_ref_mut.pitch_rate = Some(clamped_rate);
+            logical_state_ref_mut.current_time = current_audio_time;
+            emit_state_update(app_handle, deck_id, logical_state_ref_mut);
+        }
+
+    } else {
+        log::warn!("Audio Thread: SetPitchRate: Deck '{}' not found.", deck_id);
+    }
+}
+
 // --- Tauri Commands ---
 
 #[tauri::command]
@@ -812,7 +866,10 @@ pub async fn init_player(deck_id: String, app_state: State<'_, AppState>) -> Res
         })?;
 
     // Initialize logical state
-    let initial_state = PlaybackState::default();
+    let initial_state = PlaybackState {
+        pitch_rate: Some(1.0),
+        ..PlaybackState::default()
+    };
     update_logical_state(&app_state.logical_playback_states, &deck_id, initial_state);
     Ok(())
 }
@@ -827,6 +884,7 @@ pub async fn load_track(
 
     let loading_state = PlaybackState {
         is_loading: true,
+        pitch_rate: Some(1.0),
         ..PlaybackState::default()
     };
     update_logical_state(
@@ -1010,6 +1068,20 @@ pub async fn cleanup_player(deck_id: String, app_state: State<'_, AppState>) -> 
     app_state
         .audio_command_sender
         .send(AudioThreadCommand::CleanupDeck(deck_id))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn set_pitch_rate(
+    deck_id: String,
+    rate: f32,
+    app_state: State<'_, AppState>,
+) -> Result<(), String> {
+    log::info!("CMD: Set pitch rate for deck {}: {}", deck_id, rate);
+    app_state
+        .audio_command_sender
+        .send(AudioThreadCommand::SetPitchRate { deck_id, rate })
         .await
         .map_err(|e| e.to_string())
 }
