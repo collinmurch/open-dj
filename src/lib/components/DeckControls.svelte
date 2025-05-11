@@ -18,6 +18,7 @@
             highGainDb: 0.0,
         } as EqParams),
         pitchRate = $bindable(1.0),
+        currentBpm = null as number | null,
     }: {
         filePath: string | null;
         deckId: string;
@@ -36,6 +37,7 @@
         faderLevel?: number;
         eqParams?: EqParams;
         pitchRate?: number;
+        currentBpm?: number | null;
     } = $props();
 
     // --- Volume, Trim & EQ State (remains the same) ---
@@ -345,11 +347,16 @@
         >
             ▶▶
         </button>
-        <span class="time-display">
-            {formatTime(playerStoreState.currentTime)} / {formatTime(
-                playerStoreState.duration,
-            )}
-        </span>
+        <div class="deck-info-row">
+            {#if currentBpm !== null}
+                <span class="current-bpm">{currentBpm.toFixed(1)} BPM</span>
+            {/if}
+            <span class="time-info"
+                >{formatTime(playerStoreState.currentTime)} / {formatTime(
+                    playerStoreState.duration,
+                )}</span
+            >
+        </div>
     </div>
 </div>
 
@@ -399,6 +406,7 @@
         width: 100%;
     }
     .transport-controls button {
+        box-sizing: border-box;
         padding: 0.5em 1em;
         font-size: 1em;
         cursor: pointer;
@@ -407,6 +415,13 @@
         background-color: #eee;
         min-width: 50px;
         text-align: center;
+        font-weight: 500; /* Match all buttons */
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 2.5em;
+        height: 2.5em;
+        padding: 0;
     }
     .cue-button {
         background-color: var(--cue-button-bg, #f0ad4e);
@@ -417,24 +432,18 @@
         background-color: var(--cue-button-held-bg, #ec971f);
         border-color: var(--cue-button-held-border, #d58512);
     }
-    .transport-controls button:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
-        background-color: #eee;
-        color: #aaa;
-        border-color: #ccc;
-    }
+
     .play-pause-button {
-        min-width: 80px;
-        font-weight: bold;
-    }
-    .time-display {
-        font-family: monospace;
-        font-size: 0.9em;
+        min-width: 100px !important;
+        width: 100px !important;
+        font-weight: 500;
         background-color: #eee;
-        padding: 0.2em 0.5em;
-        border-radius: 3px;
-        margin-left: auto;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 2.5em;
+        height: 2.5em;
+        padding: 0;
     }
 
     .mixer-controls-horizontal {
@@ -446,6 +455,35 @@
         padding: 0.75rem 0;
         width: 100%;
         margin-bottom: 0.25rem;
+    }
+
+    .deck-info-row {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 0.75rem;
+        padding-top: 0.5rem;
+        width: 100%;
+    }
+
+    .current-bpm {
+        font-family: monospace;
+        font-size: 0.9em;
+        background-color: #eee;
+        padding: 0.2em 0.5em;
+        border-radius: 3px;
+        color: orange;
+        margin-right: 0;
+        font-weight: 400;
+        letter-spacing: 0.02em;
+    }
+    .time-info {
+        font-family: monospace;
+        font-size: 0.9em;
+        background-color: #eee;
+        padding: 0.2em 0.5em;
+        border-radius: 3px;
+        margin-left: 0;
     }
 
     @media (prefers-color-scheme: dark) {
@@ -490,6 +528,14 @@
             background-color: var(--cue-button-held-bg-dark, #c9302c);
         }
         .time-display {
+            background-color: #555;
+            color: #eee;
+        }
+        .current-bpm {
+            background-color: #555;
+            color: orange;
+        }
+        .time-info {
             background-color: #555;
             color: #eee;
         }

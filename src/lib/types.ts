@@ -6,6 +6,7 @@ import type { PlayerStore } from "./stores/playerStore";
 export interface TrackBasicMetadata {
     durationSeconds: number | null;
     bpm: number | null;
+    firstBeatSec: number | null;
 }
 
 // New structure for per-band energy. Matches Rust struct WaveBin.
@@ -46,12 +47,6 @@ export type BasicMetadataBatchResult = {
         Err?: string;
     } | null;
 };
-
-// Structure expected from Rust Result<T, E> serialization
-export interface RustResult<T, E> {
-    Ok?: T;
-    Err?: E;
-}
 
 // State for the library store
 export interface LibraryState {

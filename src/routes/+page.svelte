@@ -99,6 +99,15 @@
 
     const isTrackLoadedB = $derived(!!deckBFilePath);
 
+    const currentBpmA = $derived(() => {
+        const bpm = trackInfoA?.metadata?.bpm;
+        return bpm && deckAPitchRate ? bpm * deckAPitchRate : null;
+    });
+    const currentBpmB = $derived(() => {
+        const bpm = trackInfoB?.metadata?.bpm;
+        return bpm && deckBPitchRate ? bpm * deckBPitchRate : null;
+    });
+
     async function loadTrackToDeck(deckId: "A" | "B") {
         if (!selectedTrack) return;
 
@@ -200,6 +209,8 @@
                     eqParams={deckAEqParams}
                     faderLevel={deckAFaderLevel}
                     pitchRate={deckAPitchRate}
+                    firstBeatSec={trackInfoA?.metadata?.firstBeatSec}
+                    bpm={trackInfoA?.metadata?.bpm}
                 />
             </div>
             <div class="waveform-container deck-b-style">
@@ -218,6 +229,8 @@
                     eqParams={deckBEqParams}
                     faderLevel={deckBFaderLevel}
                     pitchRate={deckBPitchRate}
+                    firstBeatSec={trackInfoB?.metadata?.firstBeatSec}
+                    bpm={trackInfoB?.metadata?.bpm}
                 />
             </div>
             <div class="crossfader-container">
@@ -244,6 +257,7 @@
                     bind:eqParams={deckAEqParams}
                     bind:faderLevel={deckAFaderLevel}
                     bind:pitchRate={deckAPitchRate}
+                    currentBpm={currentBpmA()}
                 />
             </div>
             <div class="deck-stacked deck-b-style">
@@ -255,6 +269,7 @@
                     bind:eqParams={deckBEqParams}
                     bind:faderLevel={deckBFaderLevel}
                     bind:pitchRate={deckBPitchRate}
+                    currentBpm={currentBpmB()}
                 />
             </div>
         </section>

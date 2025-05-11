@@ -200,8 +200,8 @@ fn estimate_bpm(flux: &[f32], sample_rate: f32, hop_size: usize) -> Result<f32, 
 
 // --- Public Calculation Function ---
 
-/// Calculates the BPM from pre-decoded mono f32 audio samples.
-pub(crate) fn calculate_bpm(samples: &[f32], sample_rate: f32) -> Result<f32, BpmError> {
+/// Analyze BPM and first beat offset in one pass.
+pub(crate) fn analyze_bpm(samples: &[f32], sample_rate: f32) -> Result<(f32, f32), BpmError> {
     if samples.is_empty() {
         return Err(BpmError::EmptySamplesForBpm);
     }
@@ -231,5 +231,45 @@ pub(crate) fn calculate_bpm(samples: &[f32], sample_rate: f32) -> Result<f32, Bp
     }
 
     // --- Estimate BPM from Flux ---
-    Ok(estimate_bpm(&flux, effective_sample_rate, hop_size)?)
+    let bpm = estimate_bpm(&flux, effective_sample_rate, hop_size)?;
+
+    // --- First Beat Detection ---
+    // Peak picking: find local maxima above a threshold
+    let mean_flux = flux.iter().copied().sum::<f32>() / (flux.len() as f32);
+    let threshold = mean_flux * 1.2; // Only strong onsets
+    let peaks = {
+        let mut peaks = Vec::new();
+        for i in 1..flux.len().saturating_sub(1) {
+            if flux[i] > threshold && flux[i] > flux[i - 1] && flux[i] > flux[i + 1] {
+                peaks.push(i);
+            }
+        }
+        peaks
+    };
+    if peaks.is_empty() {
+        return Err(BpmError::EmptySpectralFlux); // Reuse error for no onsets
+    }
+    // Beat grid alignment
+    let beat_interval_sec = 60.0 / bpm;
+    let beat_interval_frames = (beat_interval_sec * effective_sample_rate / hop_size as f32) as usize;
+    let mut best_score = 0;
+    let mut best_first_peak = peaks[0];
+    for &candidate in &peaks {
+        // Project a beat grid from this candidate
+        let mut score = 0;
+        for n in 0..8 { // Check up to 8 beats
+            let expected = candidate + n * beat_interval_frames;
+            // Find if a peak is within +/- 2 frames of expected
+            if peaks.iter().any(|&p| (p as isize - expected as isize).abs() <= 2) {
+                score += 1;
+            }
+        }
+        if score > best_score {
+            best_score = score;
+            best_first_peak = candidate;
+        }
+    }
+    // Convert best_first_peak to seconds
+    let first_beat_sec = (best_first_peak * hop_size) as f32 / effective_sample_rate;
+    Ok((bpm, first_beat_sec))
 }

@@ -22,6 +22,8 @@
         isAnalysisPending = false,
         isTrackLoaded = false,
         cuePointTime = null as number | null,
+        firstBeatSec = null as number | null,
+        bpm = null as number | null,
 
         // Callbacks
         seekAudio = (time: number) => {},
@@ -48,6 +50,8 @@
         isAnalysisPending?: boolean;
         isTrackLoaded?: boolean;
         cuePointTime?: number | null;
+        firstBeatSec?: number | null;
+        bpm?: number | null;
 
         // Callbacks
         seekAudio?: (time: number) => void;
@@ -805,6 +809,44 @@
                 gl.bindVertexArray(cueLineRendering.vao);
                 gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
                 gl.bindVertexArray(null);
+            }
+        }
+
+        // Draw First Beat Lines (if present)
+        if (
+            firstBeatSec !== null &&
+            bpm !== null &&
+            cueLineRendering.program &&
+            cueLineRendering.vao &&
+            cueLineRendering.uniforms.ndcXLoc &&
+            cueLineRendering.uniforms.colorLoc &&
+            audioDuration > 0
+        ) {
+            gl.useProgram(cueLineRendering.program);
+            const interval = 60.0 / bpm;
+            const normalizedPlayheadCenterTime =
+                interpolationCtx.internalDisplayTime / audioDuration;
+            // Draw lines at firstBeatSec + n * interval
+            for (
+                let beat = firstBeatSec;
+                beat < audioDuration + interval;
+                beat += interval
+            ) {
+                if (beat < 0) continue;
+                const normalizedBeat = beat / audioDuration;
+                const beatNdcX =
+                    (normalizedBeat - normalizedPlayheadCenterTime) *
+                    effectiveZoomFactor();
+                if (beatNdcX >= -1.1 && beatNdcX <= 1.1) {
+                    gl.uniform1f(cueLineRendering.uniforms.ndcXLoc, beatNdcX);
+                    gl.uniform3fv(
+                        cueLineRendering.uniforms.colorLoc,
+                        [1.0, 0.55, 0.0], // Orange
+                    );
+                    gl.bindVertexArray(cueLineRendering.vao);
+                    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+                    gl.bindVertexArray(null);
+                }
             }
         }
     }

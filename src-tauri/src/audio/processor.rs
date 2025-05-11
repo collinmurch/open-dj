@@ -1,4 +1,4 @@
-use crate::audio::analysis::{bpm_analyzer, volume_analyzer};
+use crate::audio::analysis::{volume_analyzer};
 use crate::audio::errors::AudioProcessorError;
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -9,6 +9,7 @@ use std::collections::HashMap;
 pub struct TrackBasicMetadata {
     pub duration_seconds: Option<f64>,
     pub bpm: Option<f32>,
+    pub first_beat_sec: Option<f32>,
 }
 
 // --- Internal Helper Functions ---
@@ -60,19 +61,21 @@ fn get_track_basic_metadata_internal(
         })
     };
 
-    let bpm_result = bpm_analyzer::calculate_bpm(&samples, sample_rate).map_err(|e| {
-        AudioProcessorError::AnalysisBpmError {
+    // Use new analyze_bpm function
+    let (bpm, first_beat_sec) = crate::audio::analysis::bpm_analyzer::analyze_bpm(&samples, sample_rate)
+        .map_err(|e| AudioProcessorError::AnalysisBpmError {
             path: path.to_string(),
             source: e,
-        }
-    });
+        })?;
 
     let final_duration = log_and_convert_to_option(duration_result, path, "Duration");
-    let final_bpm = log_and_convert_to_option(bpm_result, path, "BPM");
+    let final_bpm = Some(bpm);
+    let final_first_beat_sec = Some(first_beat_sec);
 
     Ok(TrackBasicMetadata {
         duration_seconds: final_duration,
         bpm: final_bpm,
+        first_beat_sec: final_first_beat_sec,
     })
 }
 
