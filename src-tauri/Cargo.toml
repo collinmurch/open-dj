@@ -2,6 +2,9 @@
 [workspace]
 resolver = "2"
 
+# ──────────────────────────────────────────────────────────────
+# Package Definition
+# ──────────────────────────────────────────────────────────────
 [package]
 name = "open-dj"
 version = "0.1.0"
@@ -9,55 +12,58 @@ edition = "2024"
 description = "A Tauri App"
 authors = ["collinmurch"]
 
+# ──────────────────────────────────────────────────────────────
+# Library Configuration
+# ──────────────────────────────────────────────────────────────
 [lib]
 name = "open_dj_lib"
 path = "src/lib.rs"
 crate-type = ["rlib", "cdylib", "staticlib"]
 
-# ── core ──────────────────────────────────────────────────────
-[dependencies.tauri]
-version = "2.5.1"
-default-features = false
-features = ["wry"]
-
+# ──────────────────────────────────────────────────────────────
+# Build Dependencies
+# ──────────────────────────────────────────────────────────────
 [build-dependencies.tauri-build]
 version = "2.2"
 default-features = false
 features = []
 
-# ── plugins ───────────────────────────────────────────────────
-[dependencies.tauri-plugin-opener]
-version = "2.2"
-default-features = false
-
-[dependencies.tauri-plugin-dialog]
-version = "2.2"
-default-features = false
-
-[dependencies.tauri-plugin-fs]
-version = "2.2"
-default-features = false
-
-# ── audio ─────────────────────────────────────────────────────
-[dependencies.symphonia]
-version = "0.5.4"
-default-features = false
-features = ["wav", "mp3"]
-
-# ── misc ──────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────
+# Dependencies
+# ──────────────────────────────────────────────────────────────
 [dependencies]
+# --- Tauri Core ---
+tauri = { version = "2.5.1", default-features = false, features = ["wry"] }
+
+# --- Tauri Plugins ---
+tauri-plugin-opener = { version = "2.2", default-features = false }
+tauri-plugin-dialog = { version = "2.2", default-features = false }
+tauri-plugin-fs = { version = "2.2", default-features = false }
+
+# --- Audio Libraries ---
+symphonia = { version = "0.5.4", default-features = false, features = [
+    "wav",
+    "mp3",
+] }
+rodio = { version = "0.20.1", features = ["symphonia-wav", "symphonia-mp3"] }
+rustfft = "6.2"
+biquad = "0.4"
+
+# --- Utility & Misc Libraries ---
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 log = "0.4"
-rustfft = "6.2"
 rayon = "1.10"
 num = "0.4"
-rodio = { version = "0.20.1", features = ["symphonia-wav", "symphonia-mp3"] }
 lazy_static = "1.5"
 env_logger = "0.11"
 tokio = { version = "1", features = ["full"] }
-biquad = "0.4"
 thiserror = "1.0"
 
+# ──────────────────────────────────────────────────────────────
+# Profiles
+# ──────────────────────────────────────────────────────────────
 [profile.dev]
 opt-level = 1
+codegen-units = 16
+debug = 1
