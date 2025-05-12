@@ -12,6 +12,7 @@
         centerValue = undefined as number | undefined,
         step = 1,
         value = $bindable(),
+        disabled = false,
     }: {
         id: string;
         label: string;
@@ -21,6 +22,7 @@
         centerValue?: number;
         step?: number;
         value?: number;
+        disabled?: boolean;
     } = $props();
 
     // --- Internal State --- The raw slider works on 0-100 range
@@ -32,16 +34,6 @@
         centerValue !== undefined &&
             Math.abs(centerValue - (outputMin + outputMax) / 2) > 1e-6,
     );
-
-    // Initial internal value calculation needs to respect the mapping type
-    let internalRawValue = $state(getInitialRawValue());
-
-    function getInitialRawValue(): number {
-        // If value is defined, map it. Otherwise, default based on mapping type.
-        const initialOutput =
-            value ?? (useCenterMapping ? centerValue : outputMin);
-        return outputToRaw(initialOutput);
-    }
 
     // --- Mapping Functions ---
 
@@ -112,22 +104,14 @@
         }
     }
 
-    // --- Effects ---
-
-    // Calculate the mapped output value based on internal raw slider value
-    let actualOutputValue = $derived(rawToOutput(internalRawValue));
-
-    // Effect to update the bound value immediately (no debounce)
-    $effect(() => {
-        const valueToEmit = actualOutputValue;
-        if (value !== valueToEmit) value = valueToEmit;
-    });
-
-    // --- Input Handler ---
-    function handleInput(event: Event) {
-        const target = event.currentTarget as HTMLInputElement;
-        const newValue = parseFloat(target.value);
-        internalRawValue = newValue;
+    // Event handler for the raw input change
+    function handleInputChange(
+        event: Event & { currentTarget: HTMLInputElement },
+    ) {
+        const rawValue = parseFloat(event.currentTarget.value);
+        // When the raw input changes, calculate the new output value and assign it
+        // to the 'value' prop. This will update the parent via bind:value.
+        value = rawToOutput(rawValue);
     }
 
     const isVertical = $derived(orientation === "vertical");
@@ -150,21 +134,20 @@
             min={SLIDER_MIN}
             max={SLIDER_MAX}
             step={1}
-            value={internalRawValue}
-            oninput={handleInput}
+            value={outputToRaw(value)}
+            oninput={handleInputChange}
             aria-label={label}
             class="slider"
             class:vertical-slider={isVertical}
             class:horizontal-slider={!isVertical}
             aria-valuemin={outputMin}
             aria-valuemax={outputMax}
-            aria-valuenow={actualOutputValue}
+            aria-valuenow={value}
             aria-orientation={orientation}
+            {disabled}
         />
         <!-- Display the actual output value -->
-        <span class="slider-value"
-            >{actualOutputValue.toFixed(step < 1 ? 2 : 0)}</span
-        >
+        <span class="slider-value">{value?.toFixed(step < 1 ? 2 : 0)}</span>
     </div>
 </div>
 
@@ -305,6 +288,29 @@
         margin-left: 1rem;
     }
 
+    .slider:disabled {
+        cursor: not-allowed;
+        opacity: 0.5;
+    }
+
+    /* Apply disabled styles to thumb and track */
+    .slider:disabled::-webkit-slider-thumb {
+        background: var(--disabled-thumb-bg, #ccc);
+        border-color: var(--disabled-thumb-border, #bbb);
+        cursor: not-allowed;
+    }
+    .slider:disabled::-moz-range-thumb {
+        background: var(--disabled-thumb-bg, #ccc);
+        border-color: var(--disabled-thumb-border, #bbb);
+        cursor: not-allowed;
+    }
+    .slider:disabled::-webkit-slider-runnable-track {
+        background: var(--disabled-track-bg, #e9e9e9);
+    }
+    .slider:disabled::-moz-range-track {
+        background: var(--disabled-track-bg, #e9e9e9);
+    }
+
     @media (prefers-color-scheme: dark) {
         .slider-wrapper {
             --muted-foreground: #aaa;
@@ -316,6 +322,11 @@
         }
         .slider-value {
             color: var(--foreground, #eee);
+        }
+        .slider:disabled {
+            --disabled-thumb-bg: #666;
+            --disabled-thumb-border: #555;
+            --disabled-track-bg: #404040;
         }
     }
 </style>

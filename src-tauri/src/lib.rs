@@ -44,7 +44,9 @@ pub fn run() {
             audio::playback::set_eq_params,
             audio::playback::set_cue_point,
             audio::playback::cleanup_player,
-            audio::playback::set_pitch_rate
+            audio::playback::set_pitch_rate,
+            audio::playback::enable_sync,
+            audio::playback::disable_sync
         ])
         .on_window_event(move |window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {

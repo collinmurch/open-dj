@@ -4,6 +4,7 @@
     import { formatTime } from "$lib/utils/timeUtils";
     import { invoke } from "@tauri-apps/api/core";
     import Slider from "./Slider.svelte";
+    import { syncStore, type SyncStatus } from "$lib/stores/syncStore";
 
     let {
         filePath = null,
@@ -19,6 +20,8 @@
         } as EqParams),
         pitchRate = $bindable(1.0),
         currentBpm = null as number | null,
+        originalBpm = null as number | null | undefined,
+        isSyncActive = false,
     }: {
         filePath: string | null;
         deckId: string;
@@ -38,6 +41,8 @@
         eqParams?: EqParams;
         pitchRate?: number;
         currentBpm?: number | null;
+        originalBpm?: number | null | undefined;
+        isSyncActive?: boolean;
     } = $props();
 
     // --- Volume, Trim & EQ State (remains the same) ---
@@ -59,21 +64,15 @@
         return cueTime !== null && Math.abs(currentTime - cueTime) < 0.1; // Tolerance of 100ms
     });
 
-    // --- Effects ---
-
-    // Effect to load audio data when filePath prop changes
-    $effect(() => {
-        const currentFilePath = filePath;
-        if (!currentFilePath) {
-            return;
-        }
-        playerActions.loadTrack(currentFilePath).catch((err) => {
-            console.error(
-                `[TrackPlayer ${deckId}] Error invoking loadTrack prop:`,
-                err,
-            );
-        });
+    // --- Sync State Access ---
+    let syncStatus: SyncStatus = $derived.by(() => {
+        let status: SyncStatus = "off";
+        if (deckId === "A") status = $syncStore.deckASyncStatus;
+        else if (deckId === "B") status = $syncStore.deckBSyncStatus;
+        return status;
     });
+
+    // --- Effects ---
 
     // Effect for component cleanup (if needed for timeouts)
     $effect(() => {
@@ -188,9 +187,9 @@
 
     // --- CUE Button Handlers ---
     function handleCueClick() {
-        console.log(
-            `[TrackPlayer ${deckId}] Cue CLICKED. Playing: ${playerStoreState.isPlaying}, Cue Time: ${playerStoreState.cuePointTime}`,
-        );
+        // console.log(
+        //     `[TrackPlayer ${deckId}] Cue CLICKED. Playing: ${playerStoreState.isPlaying}, Cue Time: ${playerStoreState.cuePointTime}`,
+        // );
         if (playerStoreState.isPlaying) {
             playerActions.setCuePoint(playerStoreState.currentTime);
         } else {
@@ -230,6 +229,19 @@
         }
         wasPausedAtCueWhenCuePressed = false; // Reset flag
     }
+
+    // --- Sync Button Handler ---
+    function handleSyncToggle() {
+        const currentStatus = syncStatus;
+        if (currentStatus === "off") {
+            // console.log(`[Deck ${deckId}] Enabling sync...`);
+            syncStore.enableSync(deckId === "A" ? "A" : "B");
+        } else {
+            // If status is "synced" or "master"
+            // console.log(`[Deck ${deckId}] Disabling sync...`);
+            syncStore.disableSync(deckId === "A" ? "A" : "B");
+        }
+    }
 </script>
 
 <div class="deck-controls-wrapper">
@@ -259,16 +271,19 @@
             step={0.01}
             bind:value={faderLevel}
         />
-        <Slider
-            id="pitch-fader-{deckId}"
-            label="Pitch"
-            orientation="vertical"
-            outputMin={0.75}
-            outputMax={1.25}
-            centerValue={1.0}
-            step={0.005}
-            bind:value={pitchRate}
-        />
+        <div class="control-group pitch-controls">
+            <Slider
+                id="{deckId}-pitch"
+                label="Pitch"
+                orientation="vertical"
+                outputMin={0.5}
+                outputMax={2.0}
+                centerValue={1.0}
+                step={0.0001}
+                bind:value={pitchRate}
+                disabled={isSyncActive}
+            />
+        </div>
         <Slider
             id="low-eq-slider-{deckId}"
             label="Low"
@@ -312,10 +327,24 @@
             onpointerleave={handleCuePointerUp}
             disabled={playerStoreState.isLoading ||
                 playerStoreState.duration <= 0 ||
-                !!playerStoreState.error}
+                !!playerStoreState.error ||
+                !originalBpm}
             aria-label="Set or return to Cue point"
         >
             CUE
+        </button>
+        <button
+            class="sync-button"
+            class:active={syncStatus === "synced" || syncStatus === "master"}
+            class:master={syncStatus === "master"}
+            onclick={handleSyncToggle}
+            disabled={playerStoreState.isLoading ||
+                playerStoreState.duration <= 0 ||
+                !!playerStoreState.error ||
+                !originalBpm}
+            aria-label={syncStatus === "off" ? "Enable Sync" : "Disable Sync"}
+        >
+            {syncStatus === "master" ? "MASTER" : "SYNC"}
         </button>
         <button
             class="seek-button"
@@ -486,6 +515,26 @@
         margin-left: 0;
     }
 
+    .sync-button {
+        background-color: var(--sync-button-off-bg, #777);
+        color: var(--sync-button-off-text, #eee);
+        border-color: var(--sync-button-off-border, #666);
+        min-width: 60px; /* Slightly wider for MASTER text */
+        transition:
+            background-color 0.2s ease,
+            border-color 0.2s ease;
+    }
+    .sync-button.active {
+        background-color: var(--sync-button-on-bg, #5cb85c);
+        color: var(--sync-button-on-text, #fff);
+        border-color: var(--sync-button-on-border, #4cae4c);
+    }
+    .sync-button.master {
+        background-color: var(--sync-button-master-bg, #337ab7);
+        color: var(--sync-button-master-text, #fff);
+        border-color: var(--sync-button-master-border, #2e6da4);
+    }
+
     @media (prefers-color-scheme: dark) {
         .deck-controls-wrapper {
             border-color: var(--section-border-light, #444);
@@ -534,6 +583,21 @@
         .time-info {
             background-color: #555;
             color: #eee;
+        }
+        .sync-button {
+            background-color: var(--sync-button-off-bg-dark, #5a5a5a);
+            color: var(--sync-button-off-text-dark, #ccc);
+            border-color: var(--sync-button-off-border-dark, #444);
+        }
+        .sync-button.active {
+            background-color: var(--sync-button-on-bg-dark, #449d44);
+            color: var(--sync-button-on-text-dark, #fff);
+            border-color: var(--sync-button-on-border-dark, #398439);
+        }
+        .sync-button.master {
+            background-color: var(--sync-button-master-bg-dark, #286090);
+            color: var(--sync-button-master-text-dark, #fff);
+            border-color: var(--sync-button-master-border-dark, #204d74);
         }
     }
 </style>

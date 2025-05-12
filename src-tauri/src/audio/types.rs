@@ -36,13 +36,15 @@ impl EqParams {
 
 #[derive(Debug)]
 pub enum AudioThreadCommand {
-    InitDeck(String), // deck_id
+    InitDeck(String),
     LoadTrack {
         deck_id: String,
         path: String,
+        original_bpm: Option<f32>,
+        first_beat_sec: Option<f32>,
     },
-    Play(String),  // deck_id
-    Pause(String), // deck_id
+    Play(String),
+    Pause(String),
     Seek {
         deck_id: String,
         position_seconds: f64,
@@ -66,8 +68,16 @@ pub enum AudioThreadCommand {
     SetPitchRate {
         deck_id: String,
         rate: f32,
+        is_manual_adjustment: bool,
     },
-    CleanupDeck(String), // deck_id
+    EnableSync {
+        slave_deck_id: String,
+        master_deck_id: String,
+    },
+    DisableSync {
+        deck_id: String,
+    },
+    CleanupDeck(String),
     Shutdown(oneshot::Sender<()>),
 }
 
@@ -83,6 +93,10 @@ pub struct PlaybackState {
     pub error: Option<String>,
     pub cue_point_seconds: Option<f64>,
     pub pitch_rate: Option<f32>,
+    #[serde(rename = "isSyncActive")]
+    pub is_sync_active: bool,
+    #[serde(rename = "isMaster")]
+    pub is_master: bool,
 }
 
 impl Default for PlaybackState {
@@ -95,6 +109,8 @@ impl Default for PlaybackState {
             error: None,
             cue_point_seconds: None,
             pitch_rate: Some(1.0),
+            is_sync_active: false,
+            is_master: false,
         }
     }
 }
