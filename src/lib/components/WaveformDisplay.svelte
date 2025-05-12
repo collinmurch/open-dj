@@ -165,7 +165,20 @@
     // --- Constants ---
     const PLAYHEAD_COLOR = [1.0, 0.2, 0.2]; // A visible red
     const CUE_LINE_COLOR = [0.14, 0.55, 0.96]; // Changed to selection blue (approx hsl(210, 90%, 55%))
-    const INITIAL_ZOOM_FACTOR = 75.0;
+
+    // _INITIAL_NORMALIZED_TIME_ZOOM_BASE retains the original 75.0 value,
+    // which was a base zoom factor for the normalized track timeline.
+    const _INITIAL_NORMALIZED_TIME_ZOOM_BASE = 75.0;
+    // _REFERENCE_AUDIO_DURATION_FOR_CALIBRATION is an assumed typical track duration (e.g., 3 minutes in seconds)
+    // for which the _INITIAL_NORMALIZED_TIME_ZOOM_BASE provided a good visual scale.
+    const _REFERENCE_AUDIO_DURATION_FOR_CALIBRATION = 180.0;
+    // PITCH_AGNOSTIC_ZOOM_SCALAR converts the normalized time zoom base into a scalar
+    // that represents zoom strength per second of audio (at its original speed).
+    // This is key to making beat spacing consistent across different track lengths for the same effective BPM.
+    const PITCH_AGNOSTIC_ZOOM_SCALAR =
+        _INITIAL_NORMALIZED_TIME_ZOOM_BASE /
+        _REFERENCE_AUDIO_DURATION_FOR_CALIBRATION;
+
     const HEIGHT_GAIN_FACTOR = 2.0;
     const PLAYHEAD_NDC_HALF_WIDTH = 0.002; // For a total width of 0.008 NDC
     const CUE_LINE_NDC_HALF_WIDTH = 0.002; // For a total width of 0.008 NDC
@@ -193,8 +206,21 @@
     });
 
     const effectiveZoomFactor = $derived(() => {
-        if (pitchRate === 0) return INITIAL_ZOOM_FACTOR;
-        return INITIAL_ZOOM_FACTOR / pitchRate;
+        // Fallback to the original base zoom if pitchRate or audioDuration is zero,
+        // to prevent division by zero or nonsensical zoom levels.
+        if (pitchRate === 0 || audioDuration === 0) {
+            return _INITIAL_NORMALIZED_TIME_ZOOM_BASE;
+        }
+
+        // New calculation for effectiveZoomFactor:
+        // (ScalarZoomPerOriginalSecond * actualAudioDuration) / currentPitchRate
+        // This formula ensures that if two tracks have the same effective BPM
+        // (original_bpm * pitchRate), their beat markers (derived from original_bpm)
+        // will have the same visual spacing on the display.
+        // The `PITCH_AGNOSTIC_ZOOM_SCALAR * audioDuration` part calculates a base zoom
+        // for the track as if it were playing at its original speed (pitchRate = 1.0).
+        // Dividing by `pitchRate` then scales this view according to the current playback speed.
+        return (PITCH_AGNOSTIC_ZOOM_SCALAR * audioDuration) / pitchRate;
     });
 
     // Effect to update geometry ONLY when the track/analysis actually changes
@@ -319,7 +345,7 @@
 
         // Calculate target normalized time based on click offset from center
         let normalizedTargetTime =
-            normalizedCenterTime + clickedNdcX / INITIAL_ZOOM_FACTOR;
+            normalizedCenterTime + clickedNdcX / effectiveZoomFactor();
 
         // Clamp normalized time to [0, 1]
         normalizedTargetTime = Math.max(0, Math.min(normalizedTargetTime, 1.0));
@@ -820,7 +846,10 @@
             cueLineRendering.vao &&
             cueLineRendering.uniforms.ndcXLoc &&
             cueLineRendering.uniforms.colorLoc &&
-            audioDuration > 0
+            audioDuration > 0 &&
+            (waveformRendering.low.vertexCount > 0 ||
+                waveformRendering.mid.vertexCount > 0 ||
+                waveformRendering.high.vertexCount > 0)
         ) {
             gl.useProgram(cueLineRendering.program);
             const interval = 60.0 / bpm;
