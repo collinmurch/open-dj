@@ -2,13 +2,13 @@ use rodio::{OutputStream, OutputStreamHandle, Sink, Source, buffer::SamplesBuffe
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, Manager, Runtime, State};
+use tauri::{AppHandle, Emitter, Runtime, State};
 use tokio::sync::mpsc;
 
 use crate::audio::config::INITIAL_TRIM_GAIN;
 use crate::audio::effects::EqSource;
 use crate::audio::errors::PlaybackError;
-use crate::audio::types::{AudioThreadCommand, EqParams, PlaybackState};
+use crate::audio::types::{AudioThreadCommand, EqParams};
 
 // --- PLL Constants ---
 const PLL_KP: f32 = 0.0075; // Proportional gain for phase correction (Increased from 0.005)
@@ -18,14 +18,12 @@ const MAX_PLL_PITCH_ADJUSTMENT: f32 = 0.01; // Max +/- adjustment from PLL (e.g.
 
 pub struct AppState {
     audio_command_sender: mpsc::Sender<AudioThreadCommand>,
-    logical_playback_states: Arc<Mutex<HashMap<String, PlaybackState>>>,
 }
 
 impl AppState {
     pub fn new(sender: mpsc::Sender<AudioThreadCommand>) -> Self {
         AppState {
             audio_command_sender: sender,
-            logical_playback_states: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -54,16 +52,6 @@ struct AudioThreadDeckState {
 
 // --- Event Emitter Helpers ---
 
-fn emit_state_update<R: Runtime>(app_handle: &AppHandle<R>, deck_id: &str, state: &PlaybackState) {
-    let payload = crate::audio::types::PlaybackUpdateEventPayload {
-        deck_id: deck_id.to_string(),
-        state: state.clone(),
-    };
-    if let Err(e) = app_handle.emit("playback://update", payload) {
-        log::error!("Failed to emit playback://update for {}: {}", deck_id, e);
-    }
-}
-
 fn emit_tick_event<R: Runtime>(app_handle: &AppHandle<R>, deck_id: &str, current_time: f64) {
     let event_payload = crate::audio::types::PlaybackTickEventPayload {
         deck_id: deck_id.to_string(),
@@ -84,17 +72,86 @@ fn emit_error_event<R: Runtime>(app_handle: &AppHandle<R>, deck_id: &str, error_
     }
 }
 
-// --- Logical State Update ---
-fn update_logical_state(
-    logical_states_arc: &Arc<Mutex<HashMap<String, PlaybackState>>>,
+// --- New Event Emitter Helpers for Granular Updates ---
+
+fn emit_pitch_tick_event<R: Runtime>(
+    app_handle: &AppHandle<R>,
     deck_id: &str,
-    new_state: PlaybackState,
+    pitch_rate: f32,
 ) {
-    let mut states = logical_states_arc.lock().unwrap_or_else(|poisoned| {
-        log::error!("Logical playback states mutex was poisoned! Recovering.");
-        poisoned.into_inner()
-    });
-    states.insert(deck_id.to_string(), new_state);
+    let payload = crate::audio::types::PlaybackPitchTickEventPayload {
+        deck_id: deck_id.to_string(),
+        pitch_rate,
+    };
+    if let Err(e) = app_handle.emit("playback://pitch-tick", payload) {
+        log::warn!(
+            "Failed to emit playback://pitch-tick for {}: {}",
+            deck_id,
+            e
+        );
+    }
+}
+
+fn emit_status_update_event<R: Runtime>(
+    app_handle: &AppHandle<R>,
+    deck_id: &str,
+    is_playing: bool,
+) {
+    let payload = crate::audio::types::PlaybackStatusEventPayload {
+        deck_id: deck_id.to_string(),
+        is_playing,
+    };
+    if let Err(e) = app_handle.emit("playback://status-update", payload) {
+        log::warn!(
+            "Failed to emit playback://status-update for {}: {}",
+            deck_id,
+            e
+        );
+    }
+}
+
+fn emit_sync_status_update_event<R: Runtime>(
+    app_handle: &AppHandle<R>,
+    deck_id: &str,
+    is_sync_active: bool,
+    is_master: bool,
+) {
+    let payload = crate::audio::types::PlaybackSyncStatusEventPayload {
+        deck_id: deck_id.to_string(),
+        is_sync_active,
+        is_master,
+    };
+    if let Err(e) = app_handle.emit("playback://sync-status-update", payload) {
+        log::warn!(
+            "Failed to emit playback://sync-status-update for {}: {}",
+            deck_id,
+            e
+        );
+    }
+}
+
+fn emit_load_update_event<R: Runtime>(
+    app_handle: &AppHandle<R>,
+    deck_id: &str,
+    duration: f64,
+    cue_point_seconds: Option<f64>,
+    original_bpm: Option<f32>,
+    first_beat_sec: Option<f32>,
+) {
+    let payload = crate::audio::types::PlaybackLoadEventPayload {
+        deck_id: deck_id.to_string(),
+        duration,
+        cue_point_seconds,
+        original_bpm,
+        first_beat_sec,
+    };
+    if let Err(e) = app_handle.emit("playback://load-update", payload) {
+        log::warn!(
+            "Failed to emit playback://load-update for {}: {}",
+            deck_id,
+            e
+        );
+    }
 }
 
 // --- Audio Thread Implementation ---
@@ -256,18 +313,11 @@ fn audio_thread_handle_init(
             local_states.insert(deck_id.to_string(), deck_state);
             log::info!("Audio Thread: Initialized deck '{}'", deck_id);
 
-            let initial_playback_state = PlaybackState {
-                pitch_rate: Some(1.0),
-                is_sync_active: false, // Added
-                is_master: false,      // Added
-                ..PlaybackState::default()
-            };
-            let logical_states_arc = app_handle
-                .state::<AppState>()
-                .logical_playback_states
-                .clone();
-            update_logical_state(&logical_states_arc, deck_id, initial_playback_state.clone());
-            emit_state_update(app_handle, deck_id, &initial_playback_state);
+            // Emit granular updates
+            emit_load_update_event(app_handle, deck_id, 0.0, None, None, None);
+            emit_status_update_event(app_handle, deck_id, false);
+            emit_sync_status_update_event(app_handle, deck_id, false, false);
+            emit_pitch_tick_event(app_handle, deck_id, 1.0);
         }
         Err(e) => {
             log::error!(
@@ -280,16 +330,6 @@ fn audio_thread_handle_init(
                 deck_id,
                 &format!("Failed to initialize audio sink: {}", e),
             );
-            let error_state = PlaybackState {
-                error: Some(format!("Sink creation failed: {}", e)),
-                ..Default::default()
-            };
-            let logical_states_arc = app_handle
-                .state::<AppState>()
-                .logical_playback_states
-                .clone();
-            update_logical_state(&logical_states_arc, deck_id, error_state.clone());
-            emit_state_update(app_handle, deck_id, &error_state);
         }
     }
 }
@@ -302,32 +342,6 @@ async fn audio_thread_handle_load(
     local_states: &mut HashMap<String, AudioThreadDeckState>,
     app_handle: &AppHandle,
 ) {
-    // --- Logging Step 2 REMOVED ---
-    // log::debug!(
-    //     "AudioThread handle_load: Processing for Deck '{}', Path '{}', BPM: {:?}, FBS: {:?}",
-    //     deck_id,
-    //     path, // Path already available
-    //     original_bpm,
-    //     first_beat_sec
-    // );
-
-    let logical_states_arc = app_handle
-        .state::<AppState>()
-        .logical_playback_states
-        .clone();
-
-    let initial_loading_state = PlaybackState {
-        is_loading: true,
-        ..logical_states_arc
-            .lock()
-            .unwrap()
-            .get(&deck_id)
-            .cloned()
-            .unwrap_or_default()
-    };
-    update_logical_state(&logical_states_arc, &deck_id, initial_loading_state.clone());
-    emit_state_update(app_handle, &deck_id, &initial_loading_state);
-
     let (eq_params_arc, trim_gain_arc) = match local_states.get(&deck_id) {
         Some(state) => (state.eq_params.clone(), state.trim_gain.clone()),
         None => {
@@ -408,23 +422,12 @@ async fn audio_thread_handle_load(
                                 deck_state.playback_start_time = None;
                                 deck_state.paused_position = Some(Duration::ZERO);
 
-                                let final_state = PlaybackState {
-                                    is_playing: false,
-                                    is_loading: false,
-                                    current_time: 0.0,
-                                    duration: Some(duration.as_secs_f64()),
-                                    error: None,
-                                    cue_point_seconds: None,
-                                    pitch_rate: Some(1.0),
-                                    is_sync_active: false, // Ensure this is emitted
-                                    is_master: false,      // Ensure this is emitted
-                                };
-                                update_logical_state(
-                                    &logical_states_arc,
-                                    &deck_id,
-                                    final_state.clone(),
-                                );
-                                emit_state_update(app_handle, &deck_id, &final_state);
+                                // Emit granular updates on successful load
+                                let current_duration_secs = duration.as_secs_f64();
+                                emit_load_update_event(app_handle, &deck_id, current_duration_secs, None, original_bpm, first_beat_sec);
+                                emit_status_update_event(app_handle, &deck_id, false);
+                                emit_sync_status_update_event(app_handle, &deck_id, false, false);
+                                emit_pitch_tick_event(app_handle, &deck_id, 1.0);
                             }
                             Err(eq_creation_error) => {
                                 let err_msg = format!(
@@ -433,17 +436,7 @@ async fn audio_thread_handle_load(
                                 );
                                 log::error!("Audio Thread: {}", err_msg);
 
-                                let error_state = PlaybackState {
-                                    is_loading: false,
-                                    error: Some(err_msg.clone()),
-                                    ..Default::default()
-                                };
-                                update_logical_state(
-                                    &logical_states_arc,
-                                    &deck_id,
-                                    error_state.clone(),
-                                );
-                                emit_state_update(app_handle, &deck_id, &error_state);
+                                emit_error_event(app_handle, &deck_id, &err_msg); // Emit specific error event
                             }
                         }
                     }
@@ -455,13 +448,7 @@ async fn audio_thread_handle_load(
                         log::error!("Audio Thread: Decode failed: {:?}", err);
                         let err_string = err.to_string();
 
-                        let error_state = PlaybackState {
-                            is_loading: false,
-                            error: Some(err_string.clone()),
-                            ..Default::default()
-                        };
-                        update_logical_state(&logical_states_arc, &deck_id, error_state.clone());
-                        emit_state_update(app_handle, &deck_id, &error_state);
+                        emit_error_event(app_handle, &deck_id, &err_string); // Emit specific error event
                     }
                 }
             } else {
@@ -479,13 +466,7 @@ async fn audio_thread_handle_load(
             );
             let error_msg = format!("Audio decoding task failed: {}", join_error);
 
-            let error_state = PlaybackState {
-                is_loading: false,
-                error: Some(error_msg.clone()),
-                ..Default::default()
-            };
-            update_logical_state(&logical_states_arc, &deck_id, error_state.clone());
-            emit_state_update(app_handle, &deck_id, &error_state);
+            emit_error_event(app_handle, &deck_id, &error_msg); // Emit specific error event
 
             if let Some(deck_state) = local_states.get_mut(&deck_id) {
                 // Not positive we need to reset the decoded samples on error
@@ -506,17 +487,7 @@ fn audio_thread_handle_play(
                 "Audio Thread: Play ignored for deck '{}', sink is empty.",
                 deck_id
             );
-            let error_state = PlaybackState {
-                error: Some("Cannot play: No track loaded or track is empty.".to_string()),
-                ..Default::default()
-            };
-            let logical_states_arc = app_handle
-                .state::<AppState>()
-                .logical_playback_states
-                .clone();
-            update_logical_state(&logical_states_arc, deck_id, error_state.clone());
-            emit_state_update(app_handle, deck_id, &error_state);
-            return;
+            emit_error_event(app_handle, deck_id, "Cannot play: No track loaded or track is empty.");
         }
         state.sink.play();
         state.is_playing = true;
@@ -528,24 +499,7 @@ fn audio_thread_handle_play(
             state.playback_start_time = Some(Instant::now());
         }
         log::info!("Audio Thread: Playing deck '{}'", deck_id);
-        let logical_states_arc = app_handle
-            .state::<AppState>()
-            .logical_playback_states
-            .clone();
-        let current_time = get_current_playback_time_secs(state);
-        let new_playback_state = PlaybackState {
-            is_playing: true,
-            current_time,
-            duration: Some(state.duration.as_secs_f64()),
-            is_loading: false,
-            error: None,
-            cue_point_seconds: state.cue_point.map(|d| d.as_secs_f64()),
-            pitch_rate: Some(*state.current_pitch_rate.lock().unwrap()),
-            is_sync_active: state.is_sync_active,
-            is_master: state.is_master,
-        };
-        update_logical_state(&logical_states_arc, deck_id, new_playback_state.clone());
-        emit_state_update(app_handle, deck_id, &new_playback_state);
+        emit_status_update_event(app_handle, deck_id, true);
     } else {
         log::error!("Audio Thread: Play: Deck '{}' not found.", deck_id);
         emit_error_event(app_handle, deck_id, "Deck not found for play operation.");
@@ -576,27 +530,7 @@ fn audio_thread_handle_pause(
         log::info!("Audio Thread: Paused deck '{}', Paused Position: {:?}", deck_id, state.paused_position);
 
         // --- Emit State Update ---
-        // Capture necessary info before potential recursive calls in disable_sync
-        let current_time = state.paused_position.unwrap_or(Duration::ZERO).as_secs_f64();
-        let duration = state.duration.as_secs_f64();
-        let cue_point = state.cue_point.map(|d| d.as_secs_f64());
-        let current_pitch = *state.current_pitch_rate.lock().unwrap();
-
-        let logical_states_arc = app_handle.state::<AppState>().logical_playback_states.clone();
-        let new_playback_state = PlaybackState {
-            is_playing: false,
-            current_time,
-            duration: Some(duration),
-            is_loading: false,
-            error: None,
-            cue_point_seconds: cue_point,
-            pitch_rate: Some(current_pitch),
-            // State emitted BEFORE disable sync runs, reflects *paused* state
-            is_sync_active: was_slave,
-            is_master: was_master,
-        };
-        update_logical_state(&logical_states_arc, deck_id, new_playback_state.clone());
-        emit_state_update(app_handle, deck_id, &new_playback_state);
+        emit_status_update_event(app_handle, deck_id, false);
 
         // --- Disable Sync Logic ---
         if was_master {
@@ -638,16 +572,6 @@ fn audio_thread_handle_seek(
                 "Audio Thread: Seek ignored for deck '{}', no track loaded or invalid state.",
                 deck_id
             );
-            let error_state = PlaybackState {
-                error: Some("Cannot seek: No track loaded or track is invalid.".to_string()),
-                ..Default::default()
-            };
-            let logical_states_arc = app_handle
-                .state::<AppState>()
-                .logical_playback_states
-                .clone();
-            update_logical_state(&logical_states_arc, deck_id, error_state.clone());
-            emit_state_update(app_handle, deck_id, &error_state);
             return;
         }
 
@@ -693,24 +617,10 @@ fn audio_thread_handle_seek(
             state.sink.pause();
             state.playback_start_time = None;
         }
-        // ... update logical state, current_time should be final_seek_duration.as_secs_f64()
-        let logical_states_arc = app_handle
-            .state::<AppState>()
-            .logical_playback_states
-            .clone();
-        let new_playback_state = PlaybackState {
-            is_playing: state.is_playing,
-            current_time: final_seek_duration.as_secs_f64(),
-            duration: Some(state.duration.as_secs_f64()),
-            is_loading: false,
-            error: None,
-            cue_point_seconds: state.cue_point.map(|d| d.as_secs_f64()),
-            pitch_rate: Some(current_dynamic_rate),
-            is_sync_active: state.is_sync_active,
-            is_master: state.is_master,
-        };
-        update_logical_state(&logical_states_arc, deck_id, new_playback_state.clone());
-        emit_state_update(app_handle, deck_id, &new_playback_state);
+
+        // Emit a tick event to update UI immediately after seek, regardless of play state
+        emit_tick_event(app_handle, deck_id, final_seek_duration.as_secs_f64());
+
     } else {
         log::error!("Audio Thread: Seek: Deck '{}' not found.", deck_id);
         emit_error_event(app_handle, deck_id, "Deck not found for seek operation.");
@@ -782,19 +692,6 @@ fn audio_thread_handle_set_cue(
                 "Audio Thread: SetCue ignored for deck '{}', track duration is zero (not loaded?).",
                 deck_id
             );
-            let error_state = PlaybackState {
-                error: Some(
-                    "Cannot set cue: Track not fully loaded or has no duration.".to_string(),
-                ),
-                ..Default::default()
-            };
-            let logical_states_arc = app_handle
-                .state::<AppState>()
-                .logical_playback_states
-                .clone();
-            update_logical_state(&logical_states_arc, deck_id, error_state.clone());
-            emit_state_update(app_handle, deck_id, &error_state);
-
             return;
         }
         let cue_duration =
@@ -805,25 +702,6 @@ fn audio_thread_handle_set_cue(
             deck_id,
             cue_duration.as_secs_f64()
         );
-
-        let logical_states_arc = app_handle
-            .state::<AppState>()
-            .logical_playback_states
-            .clone();
-        let current_time = get_current_playback_time_secs(state); // get current time for accurate state update
-        let new_playback_state = PlaybackState {
-            is_playing: state.is_playing,
-            current_time,
-            duration: Some(state.duration.as_secs_f64()),
-            is_loading: false,
-            error: None,
-            cue_point_seconds: Some(cue_duration.as_secs_f64()),
-            pitch_rate: Some(*state.current_pitch_rate.lock().unwrap()),
-            is_sync_active: state.is_sync_active,
-            is_master: state.is_master,
-        };
-        update_logical_state(&logical_states_arc, deck_id, new_playback_state.clone());
-        emit_state_update(app_handle, deck_id, &new_playback_state);
     } else {
         log::error!("Audio Thread: SetCue: Deck '{}' not found.", deck_id);
         emit_error_event(app_handle, deck_id, "Deck not found for set cue operation.");
@@ -1013,60 +891,49 @@ fn audio_thread_handle_time_update(
     }
 
     // --- Phase 3: Apply Updates (Pitch, State Emission) ---
-    let logical_states_arc = app_handle.state::<AppState>().logical_playback_states.clone();
 
     for (deck_id, (current_time, has_ended)) in decks_to_update {
         if let Some(deck_state) = local_states.get_mut(&deck_id) { // Borrow mutably here
-             let mut final_pitch_for_state = *deck_state.current_pitch_rate.lock().unwrap();
+            let mut pitch_changed_by_pll = false;
+            let mut final_emitted_pitch = *deck_state.current_pitch_rate.lock().unwrap(); // Get current rate
 
             // Apply PLL pitch update if calculated
-            if let Some(&new_pitch) = slave_pitch_updates.get(&deck_id) {
-                // Compare with current rate before applying to avoid redundant updates/logs
-                 let old_rate = *deck_state.current_pitch_rate.lock().unwrap();
-                 if (new_pitch - old_rate).abs() > 1e-5 { // Tolerance for float comparison
-                    { // Scope for lock
-                         let mut rate_lock = deck_state.current_pitch_rate.lock().unwrap();
-                         *rate_lock = new_pitch;
-                    }
-                    deck_state.sink.set_speed(new_pitch); // Apply to sink
-                     final_pitch_for_state = new_pitch; // Use the new pitch for the state update
-                     // log::trace!("PLL Applied: Deck '{}' pitch set to {:.4}", deck_id, new_pitch);
-                 }
+            if let Some(&new_pitch_from_pll) = slave_pitch_updates.get(&deck_id) {
+                let mut rate_lock = deck_state.current_pitch_rate.lock().unwrap();
+                if (*rate_lock - new_pitch_from_pll).abs() > 1e-5 { 
+                    log::info!(
+                        "PLL: Applying pitch update for {}. Old: {:.6}, New: {:.6}", 
+                        deck_id, 
+                        *rate_lock, 
+                        new_pitch_from_pll
+                    );
+                    *rate_lock = new_pitch_from_pll;
+                    deck_state.sink.set_speed(new_pitch_from_pll);
+                    final_emitted_pitch = new_pitch_from_pll;
+                    pitch_changed_by_pll = true;
+                }
             }
 
-            // Update logical state and emit events
-             let mut states = logical_states_arc.lock().unwrap();
-             if let Some(logical_state) = states.get_mut(&deck_id) {
-                 logical_state.current_time = current_time;
-                 logical_state.pitch_rate = Some(final_pitch_for_state); // Reflect current actual pitch
-                 logical_state.is_playing = deck_state.is_playing; // Update is_playing status
-                 logical_state.is_sync_active = deck_state.is_sync_active; // Ensure sync flags are current
-                 logical_state.is_master = deck_state.is_master;
+            // Emit events
+            if has_ended {
+                emit_status_update_event(app_handle, &deck_id, false);
+            }
 
-                 // Emit full state update if pitch changed, track ended, or potentially periodically for safety
-                 let pitch_changed = (logical_state.pitch_rate.unwrap_or(1.0) - final_pitch_for_state).abs() > 1e-5;
+            // Always emit tick if playing (based on deck_state.is_playing before this tick's potential end)
+            // or if it just ended (has_ended is true)
+            if deck_state.is_playing || has_ended { // deck_state.is_playing here reflects state *before* has_ended logic potentially flipped it for this iteration
+                emit_tick_event(app_handle, &deck_id, current_time);
+            }
 
-                 // Determine if a full update is warranted
-                 let should_emit_full_update = has_ended || pitch_changed ||
-                                              (deck_state.is_sync_active && deck_state.is_playing) || // Keep emitting for active slaves
-                                              deck_state.is_master;
-                                             // Add checks here if we track previous sync/master flags and they changed
-
-                 if should_emit_full_update {
-                     // Ensure is_playing reflects actual state IF track ended
-                     if has_ended {
-                        logical_state.is_playing = false;
-                     }
-                     let state_snapshot = logical_state.clone(); // Clone the corrected state
-                     emit_state_update(app_handle, &deck_id, &state_snapshot);
-                 } else if deck_state.is_playing { // Deck is playing but doesn't need full update (e.g., not synced)
-                     // Emit only the tick event for performance
-                     emit_tick_event(app_handle, &deck_id, current_time);
-                     // Update logical state's time without emitting full state again
-                     logical_state.current_time = current_time; // Already set above, but confirms intent
-                 }
-                 // If not playing and no other condition triggered full update, no event is emitted for this deck.
-             }
+            // Emit pitch update if it changed due to PLL for this slave deck
+            if pitch_changed_by_pll {
+                log::info!(
+                    "PLL: Emitting pitch-tick for {} after update. Rate: {:.6}", 
+                    deck_id, 
+                    final_emitted_pitch
+                );
+                emit_pitch_tick_event(app_handle, &deck_id, final_emitted_pitch);
+            }
         }
     }
 }
@@ -1094,9 +961,9 @@ fn audio_thread_handle_set_pitch_rate(
 ) {
     let mut is_slave_manual_override = false;
 
-    if let Some(state) = local_states.get_mut(deck_id) {
+    if let Some(state_before_sync_logic) = local_states.get_mut(deck_id) {
         // --- Check for manual override on synced slave ---
-        if state.is_sync_active && is_manual_adjustment {
+        if state_before_sync_logic.is_sync_active && is_manual_adjustment {
             log::warn!(
                 "Manual pitch adjustment received for synced slave '{}'. Disabling sync.",
                 deck_id
@@ -1109,97 +976,77 @@ fn audio_thread_handle_set_pitch_rate(
 
         // --- Store Manual Rate (only if manually adjusted) ---
         if is_manual_adjustment {
-             state.manual_pitch_rate = clamped_new_rate;
+             state_before_sync_logic.manual_pitch_rate = clamped_new_rate;
              log::debug!("Storing manual pitch rate for {}: {}", deck_id, clamped_new_rate);
         }
 
         let current_true_audio_time_secs: f64;
-        if state.is_playing {
-            if let Some(start_time) = state.playback_start_time {
+        if state_before_sync_logic.is_playing {
+            if let Some(start_time) = state_before_sync_logic.playback_start_time {
                 let elapsed_since_last_start = start_time.elapsed();
-                let rate_during_segment = *state.current_pitch_rate.lock().unwrap();
+                let rate_during_segment = *state_before_sync_logic.current_pitch_rate.lock().unwrap();
                 
                 let audio_advanced_this_segment_secs = elapsed_since_last_start.as_secs_f64() * rate_during_segment as f64;
-                let base_audio_time_at_segment_start_secs = state.paused_position.unwrap_or(Duration::ZERO).as_secs_f64();
+                let base_audio_time_at_segment_start_secs = state_before_sync_logic.paused_position.unwrap_or(Duration::ZERO).as_secs_f64();
                 
                 current_true_audio_time_secs = (base_audio_time_at_segment_start_secs + audio_advanced_this_segment_secs)
-                                               .min(state.duration.as_secs_f64());
+                                               .min(state_before_sync_logic.duration.as_secs_f64());
             } else { 
-                current_true_audio_time_secs = state.paused_position.unwrap_or(Duration::ZERO).as_secs_f64();
+                current_true_audio_time_secs = state_before_sync_logic.paused_position.unwrap_or(Duration::ZERO).as_secs_f64();
             }
         } else {
-            current_true_audio_time_secs = state.paused_position.unwrap_or(Duration::ZERO).as_secs_f64();
+            current_true_audio_time_secs = state_before_sync_logic.paused_position.unwrap_or(Duration::ZERO).as_secs_f64();
         }
 
         {
-            let mut rate_lock = state.current_pitch_rate.lock().unwrap();
+            let mut rate_lock = state_before_sync_logic.current_pitch_rate.lock().unwrap();
             old_rate = *rate_lock;
             *rate_lock = clamped_new_rate;
         }
 
-        state.paused_position = Some(Duration::from_secs_f64(current_true_audio_time_secs));
+        state_before_sync_logic.paused_position = Some(Duration::from_secs_f64(current_true_audio_time_secs));
+        state_before_sync_logic.sink.set_speed(clamped_new_rate);
 
-        state.sink.set_speed(clamped_new_rate);
-
-        if state.is_playing {
-            state.playback_start_time = Some(Instant::now());
+        if state_before_sync_logic.is_playing {
+            state_before_sync_logic.playback_start_time = Some(Instant::now());
         } else {
-            state.playback_start_time = None;
+            state_before_sync_logic.playback_start_time = None;
         }
 
         log::info!(
             "Audio Thread: Set pitch rate for deck '{}' from {} to {} at audio time {:.2}s",
             deck_id,
             old_rate,
-            clamped_new_rate, // Use the final clamped rate for logging
+            clamped_new_rate, 
             current_true_audio_time_secs
         );
+    } else { // Initial get_mut failed
+        log::warn!("Audio Thread: SetPitchRate: Deck '{}' not found at start.", deck_id);
+        emit_error_event(app_handle, deck_id, "Deck not found for pitch rate adjustment.");
+        return;
+    }
 
-        // --- Emit State Update (always happens) ---
-        let logical_states_arc = app_handle.state::<AppState>().logical_playback_states.clone();
-        let mut locked_states_guard = logical_states_arc.lock().unwrap();
+    // --- Handle Slave Manual Override (disable sync after initial state updates) ---
+    if is_slave_manual_override {
+         let deck_id_clone = deck_id.to_string(); 
+         audio_thread_handle_disable_sync(&deck_id_clone, local_states, app_handle);
+         // After disable_sync, the deck_id's state in local_states might have changed.
+         // Specifically, its is_master status would be false.
+    }
 
-        if let Some(logical_state_ref_mut) = locked_states_guard.get_mut(deck_id) {
-            logical_state_ref_mut.pitch_rate = Some(clamped_new_rate);
-            logical_state_ref_mut.current_time = current_true_audio_time_secs;
-            // Preserve sync/master status unless overridden
-            logical_state_ref_mut.is_sync_active = state.is_sync_active && !is_slave_manual_override;
-            logical_state_ref_mut.is_master = state.is_master;
-
-            // Preserve other fields
-            logical_state_ref_mut.is_playing = state.is_playing;
-            logical_state_ref_mut.duration = Some(state.duration.as_secs_f64());
-            logical_state_ref_mut.is_loading = false;
-            logical_state_ref_mut.error = None;
-            logical_state_ref_mut.cue_point_seconds = state.cue_point.map(|d| d.as_secs_f64());
-
-            emit_state_update(app_handle, deck_id, logical_state_ref_mut);
-        } else {
-            log::warn!("SetPitchRate: Logical state not found for deck '{}' during update emission.", deck_id);
-        }
-        // Release lock quickly
-        drop(locked_states_guard);
-
-        // --- Handle Slave Manual Override (disable sync after state updates) ---
-        if is_slave_manual_override {
-             // Call disable_sync now that other operations are complete
-             let deck_id_clone = deck_id.to_string(); // Clone needed if disable borrows mut again
-             audio_thread_handle_disable_sync(&deck_id_clone, local_states, app_handle);
-             // Note: disable_sync will emit its own final state update for the deck
-             return; // Avoid further processing in this function call
-        }
-
-        // --- Inform Slaves if Master Rate Changed ---
-        if state.is_master {
-            let master_bpm = state.original_bpm;
+    // --- Inform Slaves if Master Rate Changed ---
+    // Re-fetch state to check if it's *still* master, as disable_sync might have changed it.
+    if let Some(state_after_sync_logic) = local_states.get(deck_id) { // Immutable borrow is fine here
+        if state_after_sync_logic.is_master { // Check if it IS master
+            let master_bpm = state_after_sync_logic.original_bpm;
             if master_bpm.is_none() {
                 log::warn!("Master deck '{}' changed rate but is missing BPM. Cannot update slaves.", deck_id);
                 return;
             }
-            let master_new_rate = clamped_new_rate;
+            // The rate applied to the master was clamped_new_rate, which is state_after_sync_logic.current_pitch_rate
+            let master_new_rate = *state_after_sync_logic.current_pitch_rate.lock().unwrap();
             let master_id_str = deck_id.to_string();
 
-            // Collect slave IDs to avoid borrowing issues while iterating
             let slave_ids: Vec<String> = local_states.iter()
                 .filter(|(_id, s)| s.is_sync_active && s.master_deck_id.as_deref() == Some(deck_id))
                 .map(|(id, _)| id.clone())
@@ -1208,14 +1055,12 @@ fn audio_thread_handle_set_pitch_rate(
             log::debug!("Master '{}' changed rate. Updating targets for slaves: {:?}", master_id_str, slave_ids);
 
             for slave_id in slave_ids {
-                 // Get slave state mutably within the loop
                  if let Some(slave_state) = local_states.get_mut(&slave_id) {
                      if let Some(slave_bpm) = slave_state.original_bpm {
                          if slave_bpm.abs() > 1e-6 {
                             let new_target_rate = (master_bpm.unwrap() / slave_bpm) * master_new_rate;
                             slave_state.target_pitch_rate_for_bpm_match = new_target_rate;
                              log::debug!("Updated target BPM match rate for slave '{}' to: {:.4}", slave_id, new_target_rate);
-                             // The PLL will pick this up on the next tick and adjust the actual rate.
                          } else {
                               log::warn!("Cannot update target rate for slave '{}', its BPM is zero.", slave_id);
                          }
@@ -1227,10 +1072,8 @@ fn audio_thread_handle_set_pitch_rate(
                  }
             }
         }
-
     } else {
-        log::warn!("Audio Thread: SetPitchRate: Deck '{}' not found.", deck_id);
-        emit_error_event(app_handle, deck_id, "Deck not found for pitch rate adjustment.");
+        log::warn!("Audio Thread: SetPitchRate: Deck '{}' not found after sync logic check.", deck_id);
     }
 }
 
@@ -1316,20 +1159,17 @@ fn audio_thread_handle_enable_sync(
         None => return, // Error already emitted
     };
 
-    // --- Step 2: Get Slave Mutably, Validate, Calculate Rate, Set Initial Flags ---
-    let target_rate = {
+    // --- Step 2: Get Slave Mutably, Validate, Calculate Rate, Set Initial Flags & Emit --- 
+    let target_rate_for_slave = {
         if let Some(slave_state) = local_states.get_mut(slave_deck_id) {
-            // --- ADDED LOG ---
-             log::info!(
+            log::info!(
                 "AudioThread enable_sync [PRE-CHECK SLAVE]: Checking slave '{}'. Found BPM: {:?}",
                 slave_deck_id,
                 slave_state.original_bpm
             );
-            // --- END ADDED LOG ---
-            // --- Added: Validate Slave BPM ---
             if slave_state.original_bpm.is_none() {
                  log::warn!(
-                    "Audio Thread: EnableSync: Slave deck \'{}\' missing BPM metadata.",
+                    "Audio Thread: EnableSync: Slave deck '{}' missing BPM metadata.",
                     slave_deck_id
                 );
                 emit_error_event(
@@ -1337,12 +1177,10 @@ fn audio_thread_handle_enable_sync(
                     slave_deck_id,
                     "Slave deck missing BPM",
                 );
-                return; // Exit if slave BPM is missing
+                return;
             }
-            // --- End Added ---
 
-            let slave_bpm = slave_state.original_bpm.unwrap(); // Safe to unwrap after check
-
+            let slave_bpm = slave_state.original_bpm.unwrap();
             log::debug!(
                 "Sync Enable [Step 2]: Validated {} -> {}. Master BPM: {}, Slave BPM: {}",
                 slave_deck_id,
@@ -1351,7 +1189,6 @@ fn audio_thread_handle_enable_sync(
                 slave_bpm
             );
 
-            // Calculate Target Rate
             let calculated_target_rate = if slave_bpm.abs() > 1e-6 {
                 (master_bpm / slave_bpm) * master_current_pitch
             } else {
@@ -1367,7 +1204,6 @@ fn audio_thread_handle_enable_sync(
                 return;
             };
 
-            // Set Initial Slave Flags
             slave_state.is_sync_active = true;
             slave_state.is_master = false;
             slave_state.master_deck_id = Some(master_deck_id.to_string());
@@ -1376,7 +1212,9 @@ fn audio_thread_handle_enable_sync(
             log::debug!("Sync Enable [Step 2]: Stored manual pitch rate for {}: {}", slave_deck_id, slave_state.manual_pitch_rate);
             log::info!("Target BPM match rate for {}: {:.4}", slave_deck_id, calculated_target_rate);
 
-            calculated_target_rate // Return the rate for the next step
+            emit_sync_status_update_event(app_handle, slave_deck_id, true, false);
+            
+            calculated_target_rate
         } else {
             log::error!(
                 "Audio Thread: EnableSync: Slave deck '{}' not found for mutable access.",
@@ -1385,26 +1223,42 @@ fn audio_thread_handle_enable_sync(
             emit_error_event(app_handle, slave_deck_id, "Slave deck not found");
             return;
         }
-    }; // Slave mutable borrow ends here
+    }; 
 
-    // --- Step 3: Calculate Initial Seek Adjustment ---
+    // --- Step 3: Set Master Flag on Master Deck (if different from slave) & Emit ---
+    if slave_deck_id != master_deck_id {
+        if let Some(master_state_mut) = local_states.get_mut(master_deck_id) {
+            if !master_state_mut.is_master { // Only update if it wasn't already master
+                log::info!("Setting deck '{}' as master.", master_deck_id);
+                master_state_mut.is_master = true;
+                master_state_mut.is_sync_active = false; // Cannot be both master and slave
+                
+                emit_sync_status_update_event(app_handle, master_deck_id, false, true);
+            }
+        } else {
+            log::error!("EnableSync: Failed to get mutable master state '{}' after initial check?!", master_deck_id);
+            // Potentially revert slave sync status here if master cannot be set? Or rely on later checks.
+        }
+    } 
+
+    // --- Step 4: Calculate Initial Seek Adjustment for Slave ---
+    log::debug!("Sync Enable [Step 4 Start]: Calculating initial seek for slave '{}'", slave_deck_id);
     let slave_seek_target_time_secs = {
-        // Need current times and rates again - requires accessing the states
         let master_current_time = local_states.get(master_deck_id).map(get_current_playback_time_secs).unwrap_or(0.0);
         let slave_current_time = local_states.get(slave_deck_id).map(get_current_playback_time_secs).unwrap_or(0.0);
 
-        // Get necessary metadata again (could be passed from Step 1/2 if refactored)
-        let (master_fbs, master_pitch) = local_states.get(master_deck_id)
+        let (master_fbs, master_pitch_for_seek) = local_states.get(master_deck_id)
             .map(|s| (s.first_beat_sec, *s.current_pitch_rate.lock().unwrap()))
             .unwrap_or((None, 1.0));
-        let (slave_fbs, slave_pitch, slave_bpm_opt) = local_states.get(slave_deck_id)
-            .map(|s| (s.first_beat_sec, *s.current_pitch_rate.lock().unwrap(), s.original_bpm))
+        // For slave, use its target_pitch_rate_for_bpm_match for interval calculation, as its actual pitch is about to be set to this.
+        let (slave_fbs, slave_target_pitch_for_seek, slave_bpm_opt) = local_states.get(slave_deck_id)
+            .map(|s| (s.first_beat_sec, s.target_pitch_rate_for_bpm_match, s.original_bpm))
             .unwrap_or((None, 1.0, None));
 
         if let (Some(m_fbs), Some(s_fbs), Some(s_bpm)) = (master_fbs, slave_fbs, slave_bpm_opt) {
-            if master_bpm > 1e-6 && s_bpm > 1e-6 && master_pitch.abs() > 1e-6 && slave_pitch.abs() > 1e-6 {
-                let master_effective_interval = (60.0 / master_bpm) / master_pitch;
-                let slave_effective_interval = (60.0 / s_bpm) / slave_pitch;
+            if master_bpm > 1e-6 && s_bpm > 1e-6 && master_pitch_for_seek.abs() > 1e-6 && slave_target_pitch_for_seek.abs() > 1e-6 {
+                let master_effective_interval = (60.0 / master_bpm) / master_pitch_for_seek;
+                let slave_effective_interval = (60.0 / s_bpm) / slave_target_pitch_for_seek; // Use target pitch
 
                 let master_time_since_fbs = (master_current_time - m_fbs as f64).max(0.0);
                 let slave_time_since_fbs = (slave_current_time - s_fbs as f64).max(0.0);
@@ -1435,7 +1289,6 @@ fn audio_thread_handle_enable_sync(
                     time_adjustment_secs,
                     calculated_seek_target
                  );
-
                 Some(calculated_seek_target)
             } else {
                  log::warn!("Beat Align Skip: Invalid BPM or pitch rate for calc.");
@@ -1447,61 +1300,34 @@ fn audio_thread_handle_enable_sync(
         }
     };
 
-    // --- Step 4: Apply Initial Seek (if calculated) ---
+    // --- Step 5: Apply Initial Seek (if calculated) ---
     if let Some(seek_target) = slave_seek_target_time_secs {
-         // Re-add log
-        log::debug!("Sync Enable [Step 4]: Applying initial seek for {} to {:.3}s", slave_deck_id, seek_target);
-        // Need mutable borrow again for seek
+        log::debug!("Sync Enable [Step 5 Start]: Applying initial seek for slave '{}' to {:.3}s", slave_deck_id, seek_target);
         audio_thread_handle_seek(
             slave_deck_id,
             seek_target,
-            local_states, // Pass mutable ref
+            local_states, 
             app_handle
         );
-        // Note: audio_thread_handle_seek will update paused_position and playback_start_time
+        log::debug!("Sync Enable [Step 5 End]: Finished applying initial seek for slave '{}'", slave_deck_id);
     } else {
-         log::warn!("Could not calculate beat alignment seek for '{}'. Syncing BPM only.", slave_deck_id);
+         log::warn!("Sync Enable [Step 5 Skip]: Could not calculate beat alignment seek for '{}'. Syncing BPM only.", slave_deck_id);
     }
 
-    // --- Step 5: Get Master Mutably, Set Master Flag (if different) ---
-    if slave_deck_id != master_deck_id {
-        if let Some(master_state_mut) = local_states.get_mut(master_deck_id) {
-            if !master_state_mut.is_master {
-                log::info!("Setting deck '{}' as master.", master_deck_id);
-                master_state_mut.is_master = true;
-                master_state_mut.is_sync_active = false; // Cannot be both
-                // Emit update for master state change
-                let logical_states_arc_master = app_handle.state::<AppState>().logical_playback_states.clone();
-                let master_update_state = PlaybackState {
-                    is_master: true,
-                    is_sync_active: false,
-                    // Copy other fields from its current logical state
-                    ..(logical_states_arc_master.lock().unwrap().get(master_deck_id).cloned().unwrap_or_default())
-                };
-                update_logical_state(&logical_states_arc_master, master_deck_id, master_update_state.clone());
-                emit_state_update(app_handle, master_deck_id, &master_update_state);
-            }
-        } else {
-            log::error!("EnableSync: Failed to get mutable master state '{}' after initial check?!", master_deck_id);
-            // Attempt to roll back slave state? This is tricky.
-            // For now, log the error and proceed; the slave might be synced to a non-existent master temporarily.
-            // A more robust solution might involve queuing or better state management.
-        }
-    } // Master mutable borrow ends here
-
-    // --- Step 6: Apply Target Pitch Rate ---
-    // Cloning ID necessary because set_pitch_rate might borrow local_states mutably again
-    let slave_id_clone = slave_deck_id.to_string();
+    // --- Step 6: Apply Target Pitch Rate to Slave & Emit Pitch Event ---
+    log::debug!("Sync Enable [Step 6 Start]: Applying target pitch rate {:.4} to slave '{}'", target_rate_for_slave, slave_deck_id);
+    let slave_id_clone = slave_deck_id.to_string(); // Clone for set_pitch_rate call
     audio_thread_handle_set_pitch_rate(
         &slave_id_clone,
-        target_rate,
-        false,
-        local_states, // Pass the mutable reference
+        target_rate_for_slave, // This is the calculated_target_rate from earlier
+        false, // is_manual_adjustment is false because backend is setting it
+        local_states, 
         app_handle,
     );
-    // Re-add log
-    log::debug!("Sync Enable [Step 6]: Applied target rate {:.4} to {}", target_rate, slave_id_clone);
-    // The set_pitch_rate function should emit the final state update for the slave
+    log::debug!("Sync Enable [Step 6 Mid]: Finished applying target pitch rate to slave '{}' via set_pitch_rate", slave_id_clone);
+    emit_pitch_tick_event(app_handle, &slave_id_clone, target_rate_for_slave);
+
+    log::debug!("Sync Enable [Step 6 End]: Applied target rate {:.4} to {} and emitted pitch-tick", target_rate_for_slave, slave_id_clone);
 }
 
 fn audio_thread_handle_disable_sync(
@@ -1523,7 +1349,7 @@ fn audio_thread_handle_disable_sync(
         let was_master = deck_state.is_master;
         let pitch_to_restore = deck_state.manual_pitch_rate; // Get the stored manual rate
 
-        // --- Reset Flags ---
+        // --- Reset Flags in internal deck state ---
         deck_state.is_sync_active = false;
         deck_state.is_master = false;
         deck_state.master_deck_id = None;
@@ -1531,23 +1357,23 @@ fn audio_thread_handle_disable_sync(
 
         log::info!("Deck '{}' sync disabled. Restoring pitch to: {}", deck_id, pitch_to_restore);
 
-        // --- Revert Pitch ---
-        // Call set_pitch_rate to apply the stored manual rate and emit updates
-        // Cloning ID to satisfy borrow checker
-        let deck_id_clone = deck_id.to_string();
+        // --- Emit Sync Status Update & Update Logical State for this deck ---
+        emit_sync_status_update_event(app_handle, deck_id, false, false);
+
+        // --- Revert Pitch, Emit Pitch Event & Update Logical State for pitch ---
+        let deck_id_clone = deck_id.to_string(); // Clone for set_pitch_rate call
         audio_thread_handle_set_pitch_rate(
             &deck_id_clone,
             pitch_to_restore,
-            false,
-            local_states, // Pass mutable reference
+            false, // is_manual_adjustment is false because backend is setting it
+            local_states, 
             app_handle,
         );
-        // Note: set_pitch_rate emits the necessary state update
+        emit_pitch_tick_event(app_handle, &deck_id_clone, pitch_to_restore);
 
-        // --- Handle Master Change Side Effects (Moved inside the block) ---
-        if was_master { // Now this read is guaranteed if we are in this block
+        // --- Handle Master Change Side Effects ---
+        if was_master { 
             log::info!("Deck '{}' was master. Checking slaves...", deck_id);
-            // Find any slaves that were synced to this deck and disable them too
             let slaves_to_disable: Vec<String> = local_states
                 .iter()
                 .filter(|(_id, state)| state.master_deck_id.as_deref() == Some(deck_id))
@@ -1557,9 +1383,6 @@ fn audio_thread_handle_disable_sync(
             if !slaves_to_disable.is_empty() {
                 log::info!("Disabling sync for former slaves of '{}': {:?}", deck_id, slaves_to_disable);
                 for slave_id in slaves_to_disable {
-                     // Need to call recursively/iteratively. Be careful with mutable borrows.
-                     // It's safer to queue these actions or handle them differently if complex interactions arise.
-                     // Direct recursive call can work if set_pitch_rate doesn't cause issues.
                      audio_thread_handle_disable_sync(&slave_id, local_states, app_handle);
                 }
             }
@@ -1567,16 +1390,16 @@ fn audio_thread_handle_disable_sync(
     } else {
         log::error!("DisableSync: Deck '{}' not found.", deck_id);
         emit_error_event(app_handle, deck_id, "Deck not found for disable sync");
-        return;
+        return; // Return added for clarity, though original didn't have it here explicitly
     }
 }
 
 // --- Tauri Commands ---
 
 #[tauri::command]
-pub async fn init_player(deck_id: String, app_state: State<'_, AppState>) -> Result<(), String> {
+pub async fn init_player(deck_id: String, _app_state: State<'_, AppState>) -> Result<(), String> {
     log::info!("CMD: Init player for deck: {}", deck_id);
-    app_state
+    _app_state
         .audio_command_sender
         .send(AudioThreadCommand::InitDeck(deck_id.clone()))
         .await
@@ -1585,12 +1408,6 @@ pub async fn init_player(deck_id: String, app_state: State<'_, AppState>) -> Res
             e.to_string()
         })?;
 
-    // Initialize logical state
-    let initial_state = PlaybackState {
-        pitch_rate: Some(1.0),
-        ..PlaybackState::default()
-    };
-    update_logical_state(&app_state.logical_playback_states, &deck_id, initial_state);
     Ok(())
 }
 
@@ -1671,28 +1488,6 @@ pub async fn seek_track(
         })
         .await
         .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn get_playback_state(
-    deck_id: String,
-    app_state: State<'_, AppState>,
-) -> Result<PlaybackState, String> {
-    log::debug!("CMD: Get playback state for deck: {}", deck_id);
-    let states = app_state
-        .logical_playback_states
-        .lock()
-        .unwrap_or_else(|poisoned| {
-            log::error!("CMD: GetPlaybackState: Mutex poisoned!");
-            poisoned.into_inner()
-        });
-    states.get(&deck_id).cloned().ok_or_else(|| {
-        log::warn!(
-            "CMD: GetPlaybackState: No state found for deck '{}'",
-            deck_id
-        );
-        format!("No playback state found for deck '{}'", deck_id)
-    })
 }
 
 #[tauri::command]
@@ -1783,16 +1578,16 @@ pub async fn set_cue_point(
 pub async fn cleanup_player(deck_id: String, app_state: State<'_, AppState>) -> Result<(), String> {
     log::info!("CMD: Cleanup player for deck: {}", deck_id);
     // Remove from logical state first
-    {
-        let mut states = app_state
-            .logical_playback_states
-            .lock()
-            .unwrap_or_else(|poisoned| {
-                log::error!("CMD: CleanupPlayer: Mutex poisoned!");
-                poisoned.into_inner()
-            });
-        states.remove(&deck_id);
-    }
+    // {
+    //     let mut states = app_state
+    //         .logical_playback_states
+    //         .lock()
+    //         .unwrap_or_else(|poisoned| {
+    //             log::error!("CMD: CleanupPlayer: Mutex poisoned!");
+    //             poisoned.into_inner()
+    //         });
+    //     states.remove(&deck_id);
+    // }
 
     // Then send command to audio thread
     app_state

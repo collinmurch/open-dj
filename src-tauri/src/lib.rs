@@ -38,7 +38,6 @@ pub fn run() {
             audio::playback::play_track,
             audio::playback::pause_track,
             audio::playback::seek_track,
-            audio::playback::get_playback_state,
             audio::playback::set_fader_level,
             audio::playback::set_trim_gain,
             audio::playback::set_eq_params,

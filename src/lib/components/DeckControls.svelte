@@ -21,7 +21,6 @@
         pitchRate = $bindable(1.0),
         currentBpm = null as number | null,
         originalBpm = null as number | null | undefined,
-        isSyncActive = false,
     }: {
         filePath: string | null;
         deckId: string;
@@ -42,7 +41,6 @@
         pitchRate?: number;
         currentBpm?: number | null;
         originalBpm?: number | null | undefined;
-        isSyncActive?: boolean;
     } = $props();
 
     // --- Volume, Trim & EQ State (remains the same) ---
@@ -65,11 +63,10 @@
     });
 
     // --- Sync State Access ---
-    let syncStatus: SyncStatus = $derived.by(() => {
-        let status: SyncStatus = "off";
-        if (deckId === "A") status = $syncStore.deckASyncStatus;
-        else if (deckId === "B") status = $syncStore.deckBSyncStatus;
-        return status;
+    const syncButtonStatus = $derived.by((): SyncStatus => {
+        if (playerStoreState.isMaster) return "master";
+        if (playerStoreState.isSyncActive) return "synced";
+        return "off";
     });
 
     // --- Effects ---
@@ -187,19 +184,14 @@
 
     // --- CUE Button Handlers ---
     function handleCueClick() {
-        // console.log(
-        //     `[TrackPlayer ${deckId}] Cue CLICKED. Playing: ${playerStoreState.isPlaying}, Cue Time: ${playerStoreState.cuePointTime}`,
-        // );
         if (playerStoreState.isPlaying) {
             playerActions.setCuePoint(playerStoreState.currentTime);
         } else {
             if (playerStoreState.cuePointTime !== null) {
-                // If cue point exists, seek to it
                 playerActions.seek(playerStoreState.cuePointTime);
             } else {
-                // If no cue point exists, set it to the start (0.0)
                 playerActions.setCuePoint(0.0);
-                playerActions.seek(0.0); // And seek there
+                playerActions.seek(0.0);
             }
         }
     }
@@ -207,7 +199,6 @@
     function handleCuePointerDown() {
         isCueHeld = true;
         if (!playerStoreState.isPlaying && isAtCuePoint()) {
-            // If paused AT the cue point, start temporary playback
             wasPausedAtCueWhenCuePressed = true;
             playerActions.play();
         } else {
@@ -218,28 +209,22 @@
     function handleCuePointerUp() {
         isCueHeld = false;
         if (wasPausedAtCueWhenCuePressed) {
-            // If we started temporary playback, stop it and return to cue
             playerActions.pause().then(() => {
-                // Ensure seek happens *after* pause confirmation if possible,
-                // though state updates might race slightly. Seeking paused is okay.
                 if (playerStoreState.cuePointTime !== null) {
                     playerActions.seek(playerStoreState.cuePointTime);
                 }
             });
         }
-        wasPausedAtCueWhenCuePressed = false; // Reset flag
+        wasPausedAtCueWhenCuePressed = false;
     }
 
     // --- Sync Button Handler ---
     function handleSyncToggle() {
-        const currentStatus = syncStatus;
-        if (currentStatus === "off") {
-            // console.log(`[Deck ${deckId}] Enabling sync...`);
-            syncStore.enableSync(deckId === "A" ? "A" : "B");
+        const currentDeckId = deckId === "A" ? "A" : "B";
+        if (syncButtonStatus === "off") {
+            syncStore.enableSync(currentDeckId);
         } else {
-            // If status is "synced" or "master"
-            // console.log(`[Deck ${deckId}] Disabling sync...`);
-            syncStore.disableSync(deckId === "A" ? "A" : "B");
+            syncStore.disableSync(currentDeckId);
         }
     }
 </script>
@@ -281,7 +266,8 @@
                 centerValue={1.0}
                 step={0.0001}
                 bind:value={pitchRate}
-                disabled={isSyncActive}
+                disabled={playerStoreState.isSyncActive &&
+                    !playerStoreState.isMaster}
             />
         </div>
         <Slider
@@ -335,16 +321,23 @@
         </button>
         <button
             class="sync-button"
-            class:active={syncStatus === "synced" || syncStatus === "master"}
-            class:master={syncStatus === "master"}
+            class:active={syncButtonStatus === "synced" ||
+                syncButtonStatus === "master"}
+            class:master={syncButtonStatus === "master"}
             onclick={handleSyncToggle}
             disabled={playerStoreState.isLoading ||
                 playerStoreState.duration <= 0 ||
                 !!playerStoreState.error ||
                 !originalBpm}
-            aria-label={syncStatus === "off" ? "Enable Sync" : "Disable Sync"}
+            aria-label={syncButtonStatus === "off"
+                ? "Enable Sync"
+                : "Disable Sync"}
         >
-            {syncStatus === "master" ? "MASTER" : "SYNC"}
+            {syncButtonStatus === "master"
+                ? "MASTER"
+                : syncButtonStatus === "synced"
+                  ? "SYNCED"
+                  : "SYNC"}
         </button>
         <button
             class="seek-button"

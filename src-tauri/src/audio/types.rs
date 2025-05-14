@@ -1,9 +1,16 @@
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
-// --- EQ Parameters ---
+// --- Track Metadata ---
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackBasicMetadata {
+    pub duration_seconds: Option<f64>,
+    pub bpm: Option<f32>,
+    pub first_beat_sec: Option<f32>,
+}
 
-/// Holds the gain values (in dB) for the 3-band EQ.
+// --- EQ Parameters ---
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct EqParams {
@@ -22,18 +29,32 @@ impl Default for EqParams {
     }
 }
 
-// Add approximate comparison for f32
 impl EqParams {
     pub(crate) fn approx_eq(&self, other: &Self) -> bool {
-        const EPSILON: f32 = 1e-5; // Tolerance for float comparison
+        const EPSILON: f32 = 1e-5;
         (self.low_gain_db - other.low_gain_db).abs() < EPSILON
             && (self.mid_gain_db - other.mid_gain_db).abs() < EPSILON
             && (self.high_gain_db - other.high_gain_db).abs() < EPSILON
     }
 }
 
-// --- Audio Thread Communication ---
+// --- Audio Analysis Types ---
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioAnalysis {
+    pub levels: Vec<Vec<WaveBin>>,
+    pub max_band_energy: f32,
+}
 
+#[derive(Serialize, Debug, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub struct WaveBin {
+    pub low: f32,
+    pub mid: f32,
+    pub high: f32,
+}
+
+// --- Audio Thread Commands ---
 #[derive(Debug)]
 pub enum AudioThreadCommand {
     InitDeck(String),
@@ -51,11 +72,11 @@ pub enum AudioThreadCommand {
     },
     SetFaderLevel {
         deck_id: String,
-        level: f32, // Linear level 0.0 to 1.0
+        level: f32,
     },
     SetTrimGain {
         deck_id: String,
-        gain: f32, // Linear gain, e.g., 0.0 to 4.0 (+12dB)
+        gain: f32,
     },
     SetEq {
         deck_id: String,
@@ -81,47 +102,7 @@ pub enum AudioThreadCommand {
     Shutdown(oneshot::Sender<()>),
 }
 
-// --- State Definitions ---
-
-#[derive(Serialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct PlaybackState {
-    pub is_playing: bool,
-    pub is_loading: bool,
-    pub current_time: f64,
-    pub duration: Option<f64>,
-    pub error: Option<String>,
-    pub cue_point_seconds: Option<f64>,
-    pub pitch_rate: Option<f32>,
-    #[serde(rename = "isSyncActive")]
-    pub is_sync_active: bool,
-    #[serde(rename = "isMaster")]
-    pub is_master: bool,
-}
-
-impl Default for PlaybackState {
-    fn default() -> Self {
-        PlaybackState {
-            is_playing: false,
-            is_loading: false,
-            current_time: 0.0,
-            duration: None,
-            error: None,
-            cue_point_seconds: None,
-            pitch_rate: Some(1.0),
-            is_sync_active: false,
-            is_master: false,
-        }
-    }
-}
-
-#[derive(Serialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct PlaybackUpdateEventPayload {
-    pub deck_id: String,
-    pub state: PlaybackState,
-}
-
+// --- Event Payloads for Frontend ---
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct PlaybackTickEventPayload {
@@ -134,4 +115,38 @@ pub struct PlaybackTickEventPayload {
 pub struct PlaybackErrorEventPayload {
     pub deck_id: String,
     pub error: String,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackPitchTickEventPayload {
+    pub deck_id: String,
+    pub pitch_rate: f32,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackStatusEventPayload {
+    pub deck_id: String,
+    pub is_playing: bool,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackSyncStatusEventPayload {
+    pub deck_id: String,
+    #[serde(rename = "isSyncActive")]
+    pub is_sync_active: bool,
+    #[serde(rename = "isMaster")]
+    pub is_master: bool,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackLoadEventPayload {
+    pub deck_id: String,
+    pub duration: f64,
+    pub cue_point_seconds: Option<f64>,
+    pub original_bpm: Option<f32>,
+    pub first_beat_sec: Option<f32>,
 }

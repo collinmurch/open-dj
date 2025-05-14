@@ -44,10 +44,6 @@
     });
     let uiSliderPitchRateB = $state(1.0);
 
-    // --- State to track last sent pitch rate to prevent loops ---
-    let lastSentPitchRateA = $state<number | null>(null);
-    let lastSentPitchRateB = $state<number | null>(null);
-
     // --- Global Mixer Controls ---
     let crossfaderSliderValue = $state($syncStore.crossfaderValue);
 
@@ -92,65 +88,82 @@
 
     // --- REVISED Effects for Pitch Rate Handling ---
 
-    // Effect 1: Update UI slider from store ONLY IF SYNCED
-    $effect(() => {
-        const storeRateA = $playerStoreA.pitchRate;
-        const isSyncedA = $playerStoreA.isSyncActive;
+    // --- Deck A Pitch Effects ---
 
-        if (isSyncedA) {
-            if (uiSliderPitchRateA !== storeRateA && storeRateA !== null) {
-                uiSliderPitchRateA = storeRateA;
+    // Effect 1A: Initialize/Update uiSliderPitchRateA from playerStoreA
+    $effect(() => {
+        const storeRate = $playerStoreA.pitchRate;
+        // Dependencies to trigger re-evaluation
+        const _isSyncActive = $playerStoreA.isSyncActive;
+        const _isMaster = $playerStoreA.isMaster;
+        const _path = deckAFilePath;
+
+        if (storeRate !== null) {
+            if (uiSliderPitchRateA !== storeRate) {
+                uiSliderPitchRateA = storeRate;
+            }
+        } else {
+            // Fallback, though pitchRate in store should be initialized
+            uiSliderPitchRateA = 1.0;
+        }
+    });
+
+    // Effect 2A: Send uiSliderPitchRateA changes to playerStoreA if allowed
+    $effect(() => {
+        const localUiRate = uiSliderPitchRateA;
+        const storeRate = $playerStoreA.pitchRate;
+        const isSlave = $playerStoreA.isSyncActive && !$playerStoreA.isMaster;
+        // Dependency to ensure this runs after path changes too (after Effect 1A might have run)
+        const _path = deckAFilePath;
+
+        if (!isSlave) {
+            // Allow sending if not a slave (i.e., unsynced or master)
+            // Send if UI rate is different from store rate (with tolerance for float comparison)
+            if (
+                storeRate === null ||
+                Math.abs(localUiRate - storeRate) > 0.00001
+            ) {
+                void playerStoreA.setPitchRate(localUiRate);
             }
         }
     });
 
-    $effect(() => {
-        const storeRateB = $playerStoreB.pitchRate;
-        const isSyncedB = $playerStoreB.isSyncActive;
+    // --- Deck B Pitch Effects ---
 
-        if (isSyncedB) {
-            if (uiSliderPitchRateB !== storeRateB && storeRateB !== null) {
-                uiSliderPitchRateB = storeRateB;
+    // Effect 1B: Initialize/Update uiSliderPitchRateB from playerStoreB
+    $effect(() => {
+        const storeRate = $playerStoreB.pitchRate;
+        // Dependencies to trigger re-evaluation
+        const _isSyncActive = $playerStoreB.isSyncActive;
+        const _isMaster = $playerStoreB.isMaster;
+        const _path = deckBFilePath;
+
+        if (storeRate !== null) {
+            if (uiSliderPitchRateB !== storeRate) {
+                uiSliderPitchRateB = storeRate;
             }
+        } else {
+            // Fallback
+            uiSliderPitchRateB = 1.0;
         }
     });
 
-    // Effect 2: Update store/backend from UI slider ONLY IF NOT SYNCED
+    // Effect 2B: Send uiSliderPitchRateB changes to playerStoreB if allowed
     $effect(() => {
-        const localUiRateA = uiSliderPitchRateA;
-        const isSyncedA = $playerStoreA.isSyncActive;
+        const localUiRate = uiSliderPitchRateB;
+        const storeRate = $playerStoreB.pitchRate;
+        const isSlave = $playerStoreB.isSyncActive && !$playerStoreB.isMaster;
+        // Dependency
+        const _path = deckBFilePath;
 
-        // Prevent initial send on load/reset when lastSent is null
-        if (lastSentPitchRateA === null) {
-            return;
-        }
-
-        // Only send if not synced AND the UI value is different from the last one *successfully* sent
-        if (!isSyncedA && localUiRateA !== lastSentPitchRateA) {
-            void (async () => {
-                await playerStoreA.setPitchRate(localUiRateA); // Use localUiRateA directly
-                // Only update lastSent AFTER successful call (or at least after attempt)
-                lastSentPitchRateA = localUiRateA;
-            })();
-        }
-    });
-
-    $effect(() => {
-        const localUiRateB = uiSliderPitchRateB;
-        const isSyncedB = $playerStoreB.isSyncActive;
-
-        // Prevent initial send on load/reset when lastSent is null
-        if (lastSentPitchRateB === null) {
-            return;
-        }
-
-        // Only send if not synced AND the UI value is different from the last one *successfully* sent
-        if (!isSyncedB && localUiRateB !== lastSentPitchRateB) {
-            void (async () => {
-                await playerStoreB.setPitchRate(localUiRateB); // Use localUiRateB directly
-                // Only update lastSent AFTER successful call (or at least after attempt)
-                lastSentPitchRateB = localUiRateB;
-            })();
+        if (!isSlave) {
+            // Allow sending if not a slave
+            if (
+                storeRate === null ||
+                Math.abs(localUiRate - storeRate) > 0.00001
+            ) {
+                void playerStoreB.setPitchRate(localUiRate);
+            }
         }
     });
 
@@ -158,12 +171,10 @@
     $effect(() => {
         const _isSyncedA = $playerStoreA.isSyncActive;
         const _filePathA = deckAFilePath;
-        lastSentPitchRateA = null;
     });
     $effect(() => {
         const _isSyncedB = $playerStoreB.isSyncActive;
         const _filePathB = deckBFilePath;
-        lastSentPitchRateB = null;
     });
 
     // --- Effects to bridge PlayerStore sync flags to SyncStore ---
@@ -349,7 +360,6 @@
                     bind:eqParams={deckAEqParams}
                     bind:faderLevel={deckAFaderLevel}
                     bind:pitchRate={uiSliderPitchRateA}
-                    isSyncActive={$playerStoreA.isSyncActive}
                     currentBpm={currentBpmA()}
                     originalBpm={trackInfoA?.metadata?.bpm}
                 />
@@ -363,7 +373,6 @@
                     bind:eqParams={deckBEqParams}
                     bind:faderLevel={deckBFaderLevel}
                     bind:pitchRate={uiSliderPitchRateB}
-                    isSyncActive={$playerStoreB.isSyncActive}
                     currentBpm={currentBpmB()}
                     originalBpm={trackInfoB?.metadata?.bpm}
                 />
