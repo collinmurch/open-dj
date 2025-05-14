@@ -1,15 +1,8 @@
 use crate::audio::config; // Adjusted path
 use crate::audio::errors::AudioAnalysisError; // Adjusted path
+use crate::audio::types::{WaveBin};
 use rustfft::{FftPlanner, num_complex::Complex, num_traits::Zero};
 use std::f32::consts::PI;
-
-#[derive(serde::Serialize, Debug, Clone, Copy)]
-#[serde(rename_all = "camelCase")]
-pub struct WaveBin {
-    pub low: f32,
-    pub mid: f32,
-    pub high: f32,
-}
 
 impl Default for WaveBin {
     fn default() -> Self {
@@ -21,12 +14,6 @@ impl Default for WaveBin {
     }
 }
 
-#[derive(serde::Serialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct AudioAnalysis {
-    pub levels: Vec<Vec<WaveBin>>,
-    pub max_band_energy: f32,
-}
 
 fn get_hann_window(size: usize) -> Vec<f32> {
     if size == 0 {

@@ -106,13 +106,37 @@ function createSyncStore() {
     }
 
     async function disableSync(deckIdToDisable: 'A' | 'B') {
-        // Optimistic UI update could go here if needed
+        let previousState: SyncState | undefined;
+        update(s => {
+            previousState = { ...s }; // Capture state before optimistic update
+            const newState = { ...s };
+            if (deckIdToDisable === 'A') {
+                newState.deckASyncStatus = 'off';
+            } else {
+                newState.deckBSyncStatus = 'off';
+            }
+            if (newState.masterDeckId === deckIdToDisable) {
+                newState.masterDeckId = null;
+                // Also turn off the other deck if it was synced to this master
+                if (deckIdToDisable === 'A' && newState.deckBSyncStatus === 'synced') {
+                    newState.deckBSyncStatus = 'off';
+                }
+                if (deckIdToDisable === 'B' && newState.deckASyncStatus === 'synced') {
+                    newState.deckASyncStatus = 'off';
+                }
+            }
+            return newState;
+        });
+
         try {
             await invoke('disable_sync', { deckId: deckIdToDisable });
             // Backend event via playerStore will call updateDeckSyncFlags for final state
         } catch (err) {
             console.error(`[SyncStore] Failed to disable sync for deck ${deckIdToDisable}:`, err);
-            // Revert optimistic state if needed
+            // Revert to previous state on error
+            if (previousState) {
+                set(previousState);
+            }
         }
     }
 

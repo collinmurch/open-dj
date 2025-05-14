@@ -3,6 +3,41 @@ import type { PlayerState } from '$lib/types';
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
+// Define new payload types matching Rust structs for clarity, though listen() is generic
+interface PlaybackPitchTickPayload {
+    deckId: string;
+    pitchRate: number;
+}
+
+interface PlaybackStatusPayload {
+    deckId: string;
+    isPlaying: boolean;
+}
+
+interface PlaybackSyncStatusPayload {
+    deckId: string;
+    isSyncActive: boolean;
+    isMaster: boolean;
+}
+
+interface PlaybackLoadPayload {
+    deckId: string;
+    duration: number;
+    cuePointSeconds: number | null;
+    originalBpm: number | null;
+    firstBeatSec: number | null;
+}
+
+interface PlaybackTickPayload {
+    deckId: string;
+    currentTime: number;
+}
+
+interface PlaybackErrorPayload {
+    deckId: string;
+    error: string;
+}
+
 export function createPlayerStore(deckId: string) {
     const initialState: PlayerState = {
         currentTime: 0,
@@ -17,94 +52,87 @@ export function createPlayerStore(deckId: string) {
     };
     const { subscribe, set, update } = writable<PlayerState>(initialState);
 
-    let unlistenUpdate: UnlistenFn | null = null;
     let unlistenError: UnlistenFn | null = null;
     let unlistenTick: UnlistenFn | null = null;
+    let unlistenPitchTick: UnlistenFn | null = null;
+    let unlistenStatusUpdate: UnlistenFn | null = null;
+    let unlistenSyncStatusUpdate: UnlistenFn | null = null;
+    let unlistenLoadUpdate: UnlistenFn | null = null;
 
     async function setupListeners() {
-        if (unlistenUpdate) unlistenUpdate();
         if (unlistenError) unlistenError();
         if (unlistenTick) unlistenTick();
+        if (unlistenPitchTick) unlistenPitchTick();
+        if (unlistenStatusUpdate) unlistenStatusUpdate();
+        if (unlistenSyncStatusUpdate) unlistenSyncStatusUpdate();
+        if (unlistenLoadUpdate) unlistenLoadUpdate();
 
-        unlistenUpdate = await listen<{
-            deckId: string;
-            state: {
-                isPlaying: boolean;
-                isLoading: boolean;
-                currentTime: number;
-                duration: number | null;
-                error: string | null;
-                cuePointSeconds: number | null;
-                pitchRate: number | null;
-                isSyncActive: boolean;
-                isMaster: boolean;
-            };
-        }>("playback://update", (event) => {
-            if (event.payload.deckId === deckId) {
-                const rustState = event.payload.state;
-                // console.log(`[Store ${deckId}] RX Payload: isPlaying=${rustState.isPlaying}, isLoading=${rustState.isLoading}, time=${rustState.currentTime.toFixed(3)}, duration=${rustState.duration}, sync=${rustState.isSyncActive}, master=${rustState.isMaster}, pitch=${rustState.pitchRate?.toFixed(4)}`);
-
-                update(s => {
-                    const newDuration = rustState.duration !== null ? rustState.duration : s.duration;
-                    const newCuePointTime = rustState.cuePointSeconds !== null ? rustState.cuePointSeconds : s.cuePointTime;
-                    const newPitchRate = rustState.pitchRate !== null ? rustState.pitchRate : s.pitchRate;
-
-                    // --- Robust Comparison ---
-                    const TIME_TOLERANCE = 1e-5; // 0.01 ms
-                    const PITCH_TOLERANCE = 1e-6;
-
-                    const hasChanged =
-                        s.isPlaying !== rustState.isPlaying ||
-                        s.isLoading !== rustState.isLoading ||
-                        Math.abs(s.currentTime - rustState.currentTime) > TIME_TOLERANCE ||
-                        Math.abs(s.duration - newDuration) > TIME_TOLERANCE || // Compare calculated newDuration
-                        s.error !== rustState.error ||
-                        // Handle null comparison for cuePointTime
-                        (s.cuePointTime === null ? newCuePointTime !== null : (newCuePointTime === null || Math.abs(s.cuePointTime - newCuePointTime) > TIME_TOLERANCE)) ||
-                        s.isSyncActive !== rustState.isSyncActive ||
-                        s.isMaster !== rustState.isMaster ||
-                        // Handle null comparison for pitchRate
-                        (s.pitchRate === null ? newPitchRate !== null : (newPitchRate === null || Math.abs(s.pitchRate - newPitchRate) > PITCH_TOLERANCE));
-                    // --- End Robust Comparison ---
-
-                    if (hasChanged) {
-                        // console.log(`[Store ${deckId}] State Change Detected.`);
-                        return { // Return the new state object ONLY if changed
-                            ...s,
-                            isPlaying: rustState.isPlaying,
-                            isLoading: rustState.isLoading,
-                            currentTime: rustState.currentTime,
-                            duration: newDuration,
-                            error: rustState.error,
-                            cuePointTime: newCuePointTime,
-                            isSyncActive: rustState.isSyncActive,
-                            isMaster: rustState.isMaster,
-                            pitchRate: newPitchRate,
-                        };
-                    } else {
-                        // console.log(`[Store ${deckId}] State Unchanged. Skipping update.`);
-                        return s; // Return the existing state if no change detected
-                    }
-                });
+        unlistenLoadUpdate = await listen<PlaybackLoadPayload>(
+            "playback://load-update",
+            (event) => {
+                if (event.payload.deckId === deckId) {
+                    const { duration, cuePointSeconds, originalBpm, firstBeatSec } = event.payload;
+                    update(s => ({
+                        ...initialState,
+                        duration: duration,
+                        cuePointTime: cuePointSeconds,
+                        isLoading: false,
+                        error: null,
+                    }));
+                }
             }
-        });
+        );
 
-        unlistenTick = await listen<{
-            deckId: string;
-            currentTime: number;
-        }>("playback://tick", (event) => {
+        unlistenStatusUpdate = await listen<PlaybackStatusPayload>(
+            "playback://status-update",
+            (event) => {
+                if (event.payload.deckId === deckId) {
+                    update(s => ({
+                        ...s,
+                        isPlaying: event.payload.isPlaying,
+                        currentTime: (!event.payload.isPlaying && s.duration > 0 && Math.abs(s.currentTime - s.duration) < 0.1)
+                            ? s.duration
+                            : s.currentTime,
+                    }));
+                }
+            }
+        );
+
+        unlistenTick = await listen<PlaybackTickPayload>("playback://tick", (event) => {
             if (event.payload.deckId === deckId) {
-                const newCurrentTime = event.payload.currentTime;
                 update(s => ({
                     ...s,
-                    currentTime: newCurrentTime,
-                    isLoading: s.isLoading,
-                    error: s.error,
+                    currentTime: event.payload.currentTime,
                 }));
             }
         });
 
-        unlistenError = await listen<{ deckId: string; error: string }>(
+        unlistenPitchTick = await listen<PlaybackPitchTickPayload>(
+            "playback://pitch-tick",
+            (event) => {
+                if (event.payload.deckId === deckId) {
+                    update(s => ({
+                        ...s,
+                        pitchRate: event.payload.pitchRate,
+                    }));
+                }
+            }
+        );
+
+        unlistenSyncStatusUpdate = await listen<PlaybackSyncStatusPayload>(
+            "playback://sync-status-update",
+            (event) => {
+                if (event.payload.deckId === deckId) {
+                    update(s => ({
+                        ...s,
+                        isSyncActive: event.payload.isSyncActive,
+                        isMaster: event.payload.isMaster,
+                    }));
+                }
+            }
+        );
+
+        unlistenError = await listen<PlaybackErrorPayload>(
             "playback://error",
             (event) => {
                 if (event.payload.deckId === deckId) {
@@ -112,20 +140,21 @@ export function createPlayerStore(deckId: string) {
                         `[Store ${deckId}] Received error event:`,
                         event.payload.error,
                     );
-                    update((s) => ({ ...s, error: event.payload.error, isLoading: false }));
+                    update((s) => ({
+                        ...s,
+                        error: event.payload.error,
+                        isLoading: false,
+                        isPlaying: false,
+                    }));
                 }
             },
         );
-
-        // console.log(`[Store ${deckId}] Event listeners attached.`);
     }
 
     async function initialize() {
-        // console.log(`[Store ${deckId}] Initializing player via Rust...`);
         try {
             await invoke("init_player", { deckId });
             await setupListeners();
-            // console.log(`[Store ${deckId}] Initialized successfully.`);
         } catch (err) {
             const errorMsg = `Initialization failed: ${err}`;
             console.error(`[Store ${deckId}]`, errorMsg);
@@ -134,7 +163,6 @@ export function createPlayerStore(deckId: string) {
     }
 
     async function loadTrack(path: string, originalBpm?: number | null, firstBeatSec?: number | null) {
-        // console.log(`[Store ${deckId}] Loading track: ${path}, BPM: ${originalBpm}, FirstBeat: ${firstBeatSec}`);
         set({
             ...initialState,
             isLoading: true,
@@ -154,7 +182,7 @@ export function createPlayerStore(deckId: string) {
     }
 
     async function play() {
-        // console.log(`[Store ${deckId}] Playing track...`);
+        update(s => ({ ...s, isPlaying: true }));
         try {
             await invoke("play_track", { deckId });
         } catch (err) {
@@ -165,18 +193,17 @@ export function createPlayerStore(deckId: string) {
     }
 
     async function pause() {
-        // console.log(`[Store ${deckId}] Pausing track...`);
+        update(s => ({ ...s, isPlaying: false }));
         try {
             await invoke("pause_track", { deckId });
         } catch (err) {
             const errorMsg = `Failed to pause track: ${err}`;
             console.error(`[Store ${deckId}]`, errorMsg);
-            update((s) => ({ ...s, error: errorMsg }));
+            update((s) => ({ ...s, isPlaying: true, error: errorMsg }));
         }
     }
 
     async function seek(positionSeconds: number) {
-        // console.log(`[Store ${deckId}] Seeking to ${positionSeconds}s...`);
         try {
             await invoke("seek_track", { deckId, positionSeconds });
         } catch (err) {
@@ -187,7 +214,6 @@ export function createPlayerStore(deckId: string) {
     }
 
     async function setVolume(level: number) {
-        // console.log(`[Store ${deckId}] Setting volume to ${level} via set_fader_level...`);
         try {
             await invoke("set_fader_level", { deckId, level: level });
         } catch (err) {
@@ -197,7 +223,7 @@ export function createPlayerStore(deckId: string) {
     }
 
     async function setCuePoint(positionSeconds: number) {
-        // console.log(`[Store ${deckId}] Setting cue point to ${positionSeconds}s...`);
+        update(s => ({ ...s, cuePointTime: positionSeconds }));
         try {
             await invoke("set_cue_point", { deckId, positionSeconds });
         } catch (err) {
@@ -208,22 +234,30 @@ export function createPlayerStore(deckId: string) {
     }
 
     async function setPitchRate(rate: number) {
+        update(s => ({ ...s, pitchRate: rate }));
         try {
             await invoke("set_pitch_rate", { deckId, rate });
         } catch (err) {
             const errorMsg = `Failed to set pitch rate: ${err}`;
             console.error(`[Store ${deckId}]`, errorMsg);
+            update((s) => ({ ...s, error: errorMsg }));
         }
     }
 
     function cleanup() {
-        // console.log(`[Store ${deckId}] Cleaning up listeners...`);
-        if (unlistenUpdate) unlistenUpdate();
         if (unlistenError) unlistenError();
         if (unlistenTick) unlistenTick();
-        unlistenUpdate = null;
+        if (unlistenPitchTick) unlistenPitchTick();
+        if (unlistenStatusUpdate) unlistenStatusUpdate();
+        if (unlistenSyncStatusUpdate) unlistenSyncStatusUpdate();
+        if (unlistenLoadUpdate) unlistenLoadUpdate();
+
         unlistenError = null;
         unlistenTick = null;
+        unlistenPitchTick = null;
+        unlistenStatusUpdate = null;
+        unlistenSyncStatusUpdate = null;
+        unlistenLoadUpdate = null;
         set(initialState);
     }
 
