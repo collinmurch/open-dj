@@ -1,8 +1,8 @@
 mod audio;
 
 use audio::config::AUDIO_BUFFER_CHAN_SIZE;
-use audio::playback::AppState;
-use audio::types::AudioThreadCommand;
+use audio::playback::state::AppState;
+use audio::playback::commands::AudioThreadCommand;
 use tauri::Manager;
 use tauri::WindowEvent;
 use tokio::sync::oneshot;
@@ -23,7 +23,9 @@ pub fn run() {
             // Spawn the dedicated audio thread
             let app_handle_for_thread = app_handle.clone();
             std::thread::spawn(move || {
-                audio::playback::run_audio_thread(app_handle_for_thread, audio_cmd_rx); // Pass audio_cmd_rx here
+                if let Err(e) = audio::playback::run_audio_thread(app_handle_for_thread, audio_cmd_rx) {
+                    log::error!("Audio thread exited with error: {}", e);
+                }
             });
             Ok(())
         })
@@ -33,19 +35,19 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             audio::processor::analyze_features_batch,
             audio::processor::get_track_volume_analysis,
-            audio::playback::init_player,
-            audio::playback::load_track,
-            audio::playback::play_track,
-            audio::playback::pause_track,
-            audio::playback::seek_track,
-            audio::playback::set_fader_level,
-            audio::playback::set_trim_gain,
-            audio::playback::set_eq_params,
-            audio::playback::set_cue_point,
-            audio::playback::cleanup_player,
-            audio::playback::set_pitch_rate,
-            audio::playback::enable_sync,
-            audio::playback::disable_sync
+            audio::playback::commands::init_player,
+            audio::playback::commands::load_track,
+            audio::playback::commands::play_track,
+            audio::playback::commands::pause_track,
+            audio::playback::commands::seek_track,
+            audio::playback::commands::set_fader_level,
+            audio::playback::commands::set_trim_gain,
+            audio::playback::commands::set_eq_params,
+            audio::playback::commands::set_cue_point,
+            audio::playback::commands::cleanup_player,
+            audio::playback::commands::set_pitch_rate,
+            audio::playback::commands::enable_sync,
+            audio::playback::commands::disable_sync
         ])
         .on_window_event(move |window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {

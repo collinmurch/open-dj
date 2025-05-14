@@ -1,6 +1,6 @@
-use rodio::PlayError;
 use symphonia::core::errors::Error as SymphoniaError;
 use thiserror::Error;
+use cpal::{BuildStreamError, DefaultStreamConfigError, PlayStreamError, PauseStreamError, DevicesError, SupportedStreamConfigsError};
 
 #[derive(Error, Debug)]
 pub enum AudioAnalysisError {
@@ -104,12 +104,22 @@ pub enum PlaybackError {
     OutputStreamInitError(String),
     #[error("Deck '{deck_id}' not found in local state")]
     DeckNotFound { deck_id: String },
-    #[error("Failed to create audio sink for deck '{deck_id}': {source:?}")]
-    SinkCreationError {
-        deck_id: String,
-        #[source]
-        source: PlayError,
-    },
+    #[error("CPAL: Failed to get supported output stream configs: {0}")]
+    CpalSupportedStreamConfigsError(#[from] SupportedStreamConfigsError),
+    #[error("CPAL: Failed to get default output device: {0}")]
+    CpalNoDefaultOutputDevice(String),
+    #[error("CPAL: Failed to get supported output stream config: {0}")]
+    CpalDefaultStreamConfigError(#[from] DefaultStreamConfigError),
+    #[error("CPAL: No supported output config found matching sample rate {sample_rate}")]
+    CpalNoMatchingConfig { sample_rate: u32 },
+    #[error("CPAL: Failed to build output stream: {0}")]
+    CpalBuildStreamError(#[from] BuildStreamError),
+    #[error("CPAL: Failed to play stream: {0}")]
+    CpalPlayStreamError(#[from] PlayStreamError),
+    #[error("CPAL: Failed to pause stream: {0}")]
+    CpalPauseStreamError(#[from] PauseStreamError),
+    #[error("CPAL: Devices enumeration error: {0}")]
+    CpalDevicesError(#[from] DevicesError),
     #[error("Cannot perform operation on deck '{deck_id}': No track loaded or invalid state.")]
     TrackNotLoadedOrInvalidState { deck_id: String },
     #[error("Audio decoding for playback failed for deck '{deck_id}': {source}")]
@@ -129,7 +139,7 @@ pub enum PlaybackError {
     ShutdownSignalError(String),
     #[error("Tokio MPSC send error for audio command: {0}")]
     MpscSendError(
-        #[from] tokio::sync::mpsc::error::SendError<crate::audio::types::AudioThreadCommand>,
+        #[from] tokio::sync::mpsc::error::SendError<crate::audio::playback::commands::AudioThreadCommand>,
     ),
     #[error("Tokio JoinError from spawned task: {0}")]
     JoinError(#[from] tokio::task::JoinError),

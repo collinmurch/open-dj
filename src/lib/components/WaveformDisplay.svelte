@@ -807,13 +807,6 @@
                 waveformRendering.mid.vertexCount > 0 ||
                 waveformRendering.high.vertexCount > 0)
         ) {
-            // --- Experimental Drift Correction ---+
-            // If beats drift backwards (appear too early), the calculated BPM was slightly too high.
-            // This means the calculated interval (60/bpm) is too small.
-            // We add a tiny, time-dependent offset to the beat's calculated time to compensate visually.
-            const DRIFT_CORRECTION_FACTOR = 5e-6; // Start very small (0.000005 sec added per playback sec)
-            // --- End Experimental Drift Correction ---+
-
             gl.useProgram(cueLineRendering.program);
             const interval = 60.0 / bpm;
             const normalizedPlayheadCenterTime = currentTime / audioDuration; // USE PROP DIRECTLY
@@ -823,9 +816,7 @@
                 baseBeatTimeSec < audioDuration + interval;
                 baseBeatTimeSec += interval
             ) {
-                // Apply drift correction
-                const beat =
-                    baseBeatTimeSec + DRIFT_CORRECTION_FACTOR * currentTime;
+                const beat = baseBeatTimeSec; // Keep original beat time without drift correction
 
                 if (beat < 0) continue;
                 const normalizedBeat = beat / audioDuration;
