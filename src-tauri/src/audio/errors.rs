@@ -129,7 +129,7 @@ pub enum PlaybackError {
     ShutdownSignalError(String),
     #[error("Tokio MPSC send error for audio command: {0}")]
     MpscSendError(
-        #[from] tokio::sync::mpsc::error::SendError<crate::audio::types::AudioThreadCommand>,
+        #[from] tokio::sync::mpsc::error::SendError<crate::audio::playback::commands::AudioThreadCommand>,
     ),
     #[error("Tokio JoinError from spawned task: {0}")]
     JoinError(#[from] tokio::task::JoinError),
