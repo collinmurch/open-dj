@@ -1,7 +1,4 @@
-// src-tauri/src/audio/playback/sync.rs
-
-// --- PLL Constants ---
-pub(crate) const PLL_KP: f32 = 0.0075; // Proportional gain for phase correction (Increased from 0.005)
+pub(crate) const PLL_KP: f32 = 0.02; // Increased PLL_KP for tighter sync
 pub(crate) const MAX_PLL_PITCH_ADJUSTMENT: f32 = 0.01; // Max +/- adjustment from PLL (e.g., 1%)
 
 use std::collections::HashMap;
@@ -252,7 +249,7 @@ pub(crate) fn calculate_pll_pitch_updates(
                                 phase_error
                             };
 
-                            let pitch_correction = (signed_error as f32 * PLL_KP)
+                            let pitch_correction = (-signed_error as f32 * PLL_KP)
                                 .max(-MAX_PLL_PITCH_ADJUSTMENT)
                                 .min(MAX_PLL_PITCH_ADJUSTMENT);
                             
