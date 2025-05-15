@@ -283,7 +283,8 @@ pub(crate) fn calculate_pll_pitch_updates(
                             let master_phase = (master_time_since_fbs / master_effective_interval as f64) % 1.0;
                             let slave_phase = (slave_time_since_fbs / slave_effective_interval_at_target_bpm_match as f64) % 1.0;
                             
-                            let phase_error = slave_phase - master_phase;
+                            // Corrected phase error definition
+                            let phase_error = master_phase - slave_phase; // Master minus Slave
                             let signed_error = if phase_error > 0.5 {
                                 phase_error - 1.0
                             } else if phase_error < -0.5 {
@@ -292,8 +293,8 @@ pub(crate) fn calculate_pll_pitch_updates(
                                 phase_error
                             };
 
-                            let proportional_correction = -signed_error as f32 * PLL_KP;
-                            // MAX_PLL_PITCH_ADJUSTMENT clamp is removed here, will be applied to total P+I in time.rs
+                            // Corrected proportional correction (removed negation)
+                            let proportional_correction = signed_error as f32 * PLL_KP;
                             
                             slave_pitch_info.insert(deck_id.clone(), (proportional_correction, signed_error as f32));
 
