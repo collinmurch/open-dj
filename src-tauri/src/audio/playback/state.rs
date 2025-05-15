@@ -38,6 +38,7 @@ pub(crate) struct AudioThreadDeckState {
     pub(crate) trim_gain: Arc<Mutex<f32>>,
     pub(crate) cue_point: Option<Duration>,
     pub(crate) current_pitch_rate: Arc<Mutex<f32>>,
+    pub(crate) last_ui_pitch_rate: Option<f32>,
     // --- Sync Feature Fields ---
     pub(crate) original_bpm: Option<f32>,
     pub(crate) first_beat_sec: Option<f32>,
@@ -46,4 +47,5 @@ pub(crate) struct AudioThreadDeckState {
     pub(crate) master_deck_id: Option<String>,
     pub(crate) target_pitch_rate_for_bpm_match: f32,
     pub(crate) manual_pitch_rate: f32,
+    pub pll_integral_error: f32,
 } 

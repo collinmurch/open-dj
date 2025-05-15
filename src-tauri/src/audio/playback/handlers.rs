@@ -51,6 +51,7 @@ pub(crate) fn audio_thread_handle_init<R: Runtime>(
                 trim_gain: initial_trim_gain,
                 cue_point: None,
                 current_pitch_rate: initial_pitch_rate.clone(),
+                last_ui_pitch_rate: Some(1.0),
                 original_bpm: None,
                 first_beat_sec: None,
                 is_sync_active: false,
@@ -58,6 +59,7 @@ pub(crate) fn audio_thread_handle_init<R: Runtime>(
                 master_deck_id: None,
                 target_pitch_rate_for_bpm_match: 1.0,
                 manual_pitch_rate: 1.0,
+                pll_integral_error: 0.0,
             };
             local_states.insert(deck_id.to_string(), deck_state);
             log::info!("Audio Thread: Initialized deck '{}'", deck_id);
@@ -138,6 +140,7 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
                         deck_state.master_deck_id = None;
                         deck_state.target_pitch_rate_for_bpm_match = 1.0;
                         deck_state.manual_pitch_rate = 1.0;
+                        deck_state.last_ui_pitch_rate = Some(1.0);
 
                         let buffer = SamplesBuffer::new(
                             1,
@@ -164,6 +167,7 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
                                 deck_state.is_playing = false;
                                 deck_state.playback_start_time = None;
                                 deck_state.paused_position = Some(Duration::ZERO);
+                                deck_state.last_ui_pitch_rate = Some(1.0);
 
                                 let current_duration_secs = duration.as_secs_f64();
                                 emit_load_update_event(app_handle, &deck_id, current_duration_secs, None, original_bpm, first_beat_sec);
@@ -450,93 +454,110 @@ pub(crate) fn audio_thread_handle_cleanup(
 pub(crate) fn audio_thread_handle_set_pitch_rate<R: Runtime>(
     deck_id: &str,
     rate: f32,
-    is_manual_adjustment: bool,
+    is_major_adjustment: bool,
     local_states: &mut HashMap<String, AudioThreadDeckState>,
     app_handle: &AppHandle<R>,
 ) {
-    let mut is_slave_manual_override = false;
+    let mut is_slave_manual_override_detected = false;
 
-    if let Some(state_before_sync_logic) = local_states.get_mut(deck_id) {
-        if state_before_sync_logic.is_sync_active && is_manual_adjustment {
-            log::warn!("Manual pitch adjustment received for synced slave '{}'. Disabling sync.", deck_id);
-            is_slave_manual_override = true;
+    if let Some(state) = local_states.get_mut(deck_id) {
+        if state.is_sync_active && is_major_adjustment {
+            if (rate - state.target_pitch_rate_for_bpm_match).abs() > 1e-4 { 
+                log::warn!("Major pitch adjustment (manual override) received for synced slave '{}' (rate: {} vs target_bpm_match: {}). Disabling sync.", deck_id, rate, state.target_pitch_rate_for_bpm_match);
+                is_slave_manual_override_detected = true;
+            } else {
+                log::debug!("Major pitch adjustment for synced slave '{}' matches target_bpm_match_rate. Likely initial sync.", deck_id);
+            }
         }
 
         let clamped_new_rate = rate.clamp(0.5, 2.0);
-        let old_rate: f32;
-
-        if is_manual_adjustment {
-             state_before_sync_logic.manual_pitch_rate = clamped_new_rate;
-             log::debug!("Storing manual pitch rate for {}: {}", deck_id, clamped_new_rate);
+        
+        if is_major_adjustment {
+             state.manual_pitch_rate = clamped_new_rate;
+             state.last_ui_pitch_rate = Some(clamped_new_rate);
+             log::debug!("Storing manual pitch rate for {}: {} AND UI pitch rate: {}", deck_id, clamped_new_rate, clamped_new_rate);
         }
 
-        let current_true_audio_time_secs: f64 = get_current_playback_time_secs(state_before_sync_logic);
+        if is_major_adjustment {
+            let current_true_audio_time_secs: f64 = get_current_playback_time_secs(state);
+            let old_rate_for_log: f32;
+            {
+                let mut rate_lock = state.current_pitch_rate.lock().unwrap();
+                old_rate_for_log = *rate_lock;
+                *rate_lock = clamped_new_rate;
+            }
+            state.paused_position = Some(Duration::from_secs_f64(current_true_audio_time_secs));
+            state.sink.set_speed(clamped_new_rate);
 
-        {
-            let mut rate_lock = state_before_sync_logic.current_pitch_rate.lock().unwrap();
-            old_rate = *rate_lock;
-            *rate_lock = clamped_new_rate;
-        }
-
-        state_before_sync_logic.paused_position = Some(Duration::from_secs_f64(current_true_audio_time_secs));
-        state_before_sync_logic.sink.set_speed(clamped_new_rate);
-
-        if state_before_sync_logic.is_playing {
-            state_before_sync_logic.playback_start_time = Some(Instant::now());
+            if state.is_playing {
+                state.playback_start_time = Some(Instant::now());
+            } else {
+                state.playback_start_time = None;
+            }
+            log::info!(
+                "Audio Thread: Set pitch rate (MAJOR RE-BASE) for deck '{}' to {} at audio time {:.3}s. Old rate: {}",
+                deck_id, clamped_new_rate, current_true_audio_time_secs, old_rate_for_log
+            );
+            emit_pitch_tick_event(app_handle, deck_id, clamped_new_rate);
         } else {
-            state_before_sync_logic.playback_start_time = None;
-        }
-
-        log::info!(
-            "Audio Thread: Set pitch rate for deck '{}' from {} to {} at audio time {:.2}s",
-            deck_id, old_rate, clamped_new_rate, current_true_audio_time_secs
-        );
-        // Emit pitch tick after applying, regardless of sync status, if it's a direct call.
-        // PLL will also emit its own pitch ticks during time_update.
-        // This ensures manual adjustments are immediately reflected.
-        if is_manual_adjustment { // Only emit if this was a direct manual call.
-             emit_pitch_tick_event(app_handle, deck_id, clamped_new_rate);
+            let old_rate_for_log: f32;
+            {
+                let mut rate_lock = state.current_pitch_rate.lock().unwrap();
+                old_rate_for_log = *rate_lock; 
+                *rate_lock = clamped_new_rate;
+            }
+            state.sink.set_speed(clamped_new_rate);
+            log::trace!(
+                "Audio Thread: Set pitch rate (MINOR/PLL) for deck '{}' to {}. Old rate: {}",
+                deck_id, clamped_new_rate, old_rate_for_log
+            );
         }
 
     } else {
-        log::warn!("Audio Thread: SetPitchRate: Deck '{}' not found at start.", deck_id);
+        log::warn!("Audio Thread: SetPitchRate: Deck '{}' not found.", deck_id);
         emit_error_event(app_handle, deck_id, "Deck not found for pitch rate adjustment.");
         return;
     }
 
-    if is_slave_manual_override {
+    if is_slave_manual_override_detected {
          let deck_id_clone = deck_id.to_string();
          sync::audio_thread_handle_disable_sync(&deck_id_clone, local_states, app_handle);
     }
-
-    if let Some(state_after_sync_logic) = local_states.get(deck_id) {
-        if state_after_sync_logic.is_master {
-            let master_bpm = state_after_sync_logic.original_bpm;
-            if master_bpm.is_none() {
+    
+    if let Some(state_after_pitch_set) = local_states.get(deck_id) {
+        if state_after_pitch_set.is_master {
+            let master_bpm_opt = state_after_pitch_set.original_bpm;
+            if master_bpm_opt.is_none() {
                 log::warn!("Master deck '{}' changed rate but is missing BPM. Cannot update slaves.", deck_id);
                 return;
             }
-            let master_new_rate = *state_after_sync_logic.current_pitch_rate.lock().unwrap();
+            let master_current_actual_pitch = *state_after_pitch_set.current_pitch_rate.lock().unwrap();
             let master_id_str = deck_id.to_string();
-            let slave_ids: Vec<String> = local_states.iter()
-                .filter(|(_id, s)| s.is_sync_active && s.master_deck_id.as_deref() == Some(deck_id))
-                .map(|(id, _)| id.clone())
+            
+            let slave_ids_to_update: Vec<String> = local_states.iter()
+                .filter_map(|(id, s)| {
+                    if s.is_sync_active && s.master_deck_id.as_deref() == Some(&master_id_str) {
+                        Some(id.clone())
+                    } else {
+                        None
+                    }
+                })
                 .collect();
 
-            log::debug!("Master '{}' changed rate. Updating targets for slaves: {:?}", master_id_str, slave_ids);
-            for slave_id in slave_ids {
-                 if let Some(slave_state) = local_states.get_mut(&slave_id) {
-                     if let Some(slave_bpm) = slave_state.original_bpm {
-                         if slave_bpm.abs() > 1e-6 {
-                            let new_target_rate = (master_bpm.unwrap() / slave_bpm) * master_new_rate;
-                            slave_state.target_pitch_rate_for_bpm_match = new_target_rate;
-                             log::debug!("Updated target BPM match rate for slave '{}' to: {:.4}", slave_id, new_target_rate);
-                         } else { log::warn!("Cannot update target rate for slave '{}', its BPM is zero.", slave_id); }
-                     } else { log::warn!("Cannot update target rate for slave '{}', missing BPM.", slave_id); }
-                 } else { log::warn!("Failed to get mutable state for slave '{}' while updating targets.", slave_id); }
+            if !slave_ids_to_update.is_empty() {
+                log::debug!("Master '{}' actual pitch is now {}. Updating targets for slaves: {:?}", master_id_str, master_current_actual_pitch, slave_ids_to_update);
+                for slave_id_for_update in slave_ids_to_update {
+                    if let Some(slave_state_for_target_update) = local_states.get_mut(&slave_id_for_update) {
+                        if let Some(slave_bpm) = slave_state_for_target_update.original_bpm {
+                            if slave_bpm.abs() > 1e-6 && master_bpm_opt.unwrap().abs() > 1e-6 {
+                                let new_target_rate_for_slave = (master_bpm_opt.unwrap() / slave_bpm) * master_current_actual_pitch;
+                                slave_state_for_target_update.target_pitch_rate_for_bpm_match = new_target_rate_for_slave;
+                                log::debug!("Updated target BPM match rate for slave '{}' to: {:.4}", slave_id_for_update, new_target_rate_for_slave);
+                            } else { log::warn!("Cannot update target rate for slave '{}', its or master's BPM is zero.", slave_id_for_update); }
+                        } else { log::warn!("Cannot update target rate for slave '{}', missing BPM.", slave_id_for_update); }
+                    } else { log::warn!("Failed to get mutable state for slave '{}' while updating target.", slave_id_for_update); }
+                }
             }
         }
-    } else {
-        log::warn!("Audio Thread: SetPitchRate: Deck '{}' not found after sync logic check.", deck_id);
     }
 } 
