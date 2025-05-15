@@ -108,6 +108,9 @@ pub(crate) fn audio_thread_handle_enable_sync<R: Runtime>(
             .map(|s| (s.first_beat_sec, s.target_pitch_rate_for_bpm_match, s.original_bpm))
             .unwrap_or((None, 1.0, None));
 
+        log::info!("Sync Enable [Debug FBS]: Master '{}' first_beat_sec: {:?}", master_deck_id, master_fbs);
+        log::info!("Sync Enable [Debug FBS]: Slave '{}' first_beat_sec: {:?}", slave_deck_id, slave_fbs);
+
         if let (Some(m_fbs), Some(s_fbs), Some(s_bpm)) = (master_fbs, slave_fbs, slave_bpm_opt) {
             if master_bpm > 1e-6 && s_bpm > 1e-6 && master_pitch_for_seek.abs() > 1e-6 && slave_target_pitch_for_seek.abs() > 1e-6 {
                 let master_effective_interval = (60.0 / master_bpm) / master_pitch_for_seek;
@@ -249,7 +252,7 @@ pub(crate) fn calculate_pll_pitch_updates(
                                 phase_error
                             };
 
-                            let pitch_correction = (-signed_error as f32 * PLL_KP) 
+                            let pitch_correction = (signed_error as f32 * PLL_KP)
                                 .max(-MAX_PLL_PITCH_ADJUSTMENT)
                                 .min(MAX_PLL_PITCH_ADJUSTMENT);
                             
