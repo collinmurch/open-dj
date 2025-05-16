@@ -13,6 +13,7 @@
         step = 1,
         value = $bindable(),
         disabled = false,
+        onchangeValue = undefined as ((newValue: number) => void) | undefined,
     }: {
         id: string;
         label: string;
@@ -23,6 +24,7 @@
         step?: number;
         value?: number;
         disabled?: boolean;
+        onchangeValue?: (newValue: number) => void;
     } = $props();
 
     // --- Internal State --- The raw slider works on 0-100 range
@@ -109,9 +111,12 @@
         event: Event & { currentTarget: HTMLInputElement },
     ) {
         const rawValue = parseFloat(event.currentTarget.value);
-        // When the raw input changes, calculate the new output value and assign it
-        // to the 'value' prop. This will update the parent via bind:value.
-        value = rawToOutput(rawValue);
+        const newOutputValue = rawToOutput(rawValue);
+        value = newOutputValue;
+
+        if (onchangeValue) {
+            onchangeValue(newOutputValue);
+        }
     }
 
     const isVertical = $derived(orientation === "vertical");

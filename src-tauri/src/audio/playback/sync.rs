@@ -1,6 +1,6 @@
-pub(crate) const PLL_KP: f32 = 0.001; // Further reduced from 0.002
+pub(crate) const PLL_KP: f32 = 0.001; // Reduced from 0.002
 pub(crate) const MAX_PLL_PITCH_ADJUSTMENT: f32 = 0.04; // Max +/- adjustment from PLL (e.g., 4%), increased from 0.01
-pub(crate) const PLL_KI: f32 = 0.0015; // Increased from 0.0005, now larger than KP
+pub(crate) const PLL_KI: f32 = 0.0015; // Reduced from 0.003
 pub(crate) const MAX_PLL_INTEGRAL_ERROR: f32 = 5.0; // Max accumulated error for I-term clamping
 
 use std::collections::HashMap;
@@ -8,350 +8,278 @@ use std::time::Duration;
 use tauri::{AppHandle, Runtime};
 
 use super::state::AudioThreadDeckState;
-use super::events::{emit_error_event, emit_sync_status_update_event, emit_pitch_tick_event};
-use super::handlers::{audio_thread_handle_seek, audio_thread_handle_set_pitch_rate, audio_thread_handle_play};
+use super::events::{emit_error_event, emit_sync_status_update_event};
+use crate::audio::playback::events::emit_tick_event;
+use super::handlers::{audio_thread_handle_set_pitch_rate};
 use super::time::get_current_playback_time_secs;
 
 // --- Sync Handler Functions ---
 
 // Make the main handler async
 pub(crate) async fn audio_thread_handle_enable_sync_async<R: Runtime>(
-    slave_deck_id: &str,
-    master_deck_id: &str,
+    slave_deck_id_str: &str,
+    master_deck_id_str: &str,
     local_states: &mut HashMap<String, AudioThreadDeckState>, 
     app_handle: &AppHandle<R>,
 ) {
-    log::info!("Audio Thread: Handling EnableSync (async ONE-SHOT). Slave: {}, Master: {}", slave_deck_id, master_deck_id);
+    log::info!("Audio Thread: Handling EnableSync (Phase 4 - Tempo Sync). Slave: {}, Master: {}", slave_deck_id_str, master_deck_id_str);
 
-    let master_info_initial = if let Some(master_state) = local_states.get(master_deck_id) {
-        log::info!("AudioThread enable_sync [PRE-CHECK MASTER]: Checking master '{}'. Found BPM: {:?}", master_deck_id, master_state.original_bpm);
-        if master_state.duration <= Duration::ZERO {
-            log::warn!("Audio Thread: EnableSync: Master deck '{}' is not loaded (duration is zero).", master_deck_id);
-            emit_error_event(app_handle, slave_deck_id, &format!("Master deck '{}' must be loaded to sync", master_deck_id));
+    // --- Pre-checks for master deck ---
+    let master_info = match local_states.get(master_deck_id_str) {
+        Some(master_state) => {
+            if master_state.duration <= Duration::ZERO {
+                log::warn!("Audio Thread: EnableSync: Master deck '{}' is not loaded.", master_deck_id_str);
+                emit_error_event(app_handle, slave_deck_id_str, &format!("Master deck '{}' must be loaded to sync", master_deck_id_str));
+                return;
+            }
+            if master_state.original_bpm.is_none() {
+                log::warn!("Audio Thread: EnableSync: Master deck '{}' missing BPM.", master_deck_id_str);
+                emit_error_event(app_handle, slave_deck_id_str, &format!("Master deck '{}' missing BPM", master_deck_id_str));
+                return;
+            }
+            Some((master_state.original_bpm.unwrap(), *master_state.target_pitch_rate.lock().unwrap()))
+        }
+        None => {
+            log::error!("Audio Thread: EnableSync: Master deck '{}' not found.", master_deck_id_str);
+            emit_error_event(app_handle, slave_deck_id_str, &format!("Master deck '{}' not found", master_deck_id_str));
             return;
         }
-        if master_state.original_bpm.is_none() {
-            log::warn!("Audio Thread: EnableSync: Master deck '{}' missing BPM metadata.", master_deck_id);
-            emit_error_event(app_handle, slave_deck_id, &format!("Master deck '{}' missing BPM", master_deck_id));
-            return;
-        }
-        Some((
-            master_state.original_bpm.unwrap(),
-            *master_state.current_pitch_rate.lock().unwrap(),
-            *master_state.is_playing.lock().unwrap()
-        ))
-    } else {
-        log::error!("Audio Thread: EnableSync: Master deck '{}' not found.", master_deck_id);
-        emit_error_event(app_handle, slave_deck_id, &format!("Master deck '{}' not found", master_deck_id));
-        return;
     };
+    let (master_bpm, master_current_pitch) = master_info.unwrap(); // Known to be Some if we reached here
 
-    let (master_bpm, master_current_pitch, _master_is_playing) = match master_info_initial {
-        Some(info) => info,
-        None => return,
-    };
-
-    // Step 1: Determine and store target rate for slave, update slave state flags
-    let target_rate_for_slave = {
-        if let Some(slave_state) = local_states.get_mut(slave_deck_id) {
-            log::info!("AudioThread enable_sync [PRE-CHECK SLAVE]: Checking slave '{}'. Found BPM: {:?}", slave_deck_id, slave_state.original_bpm);
+    // --- Pre-checks and setup for slave deck ---
+    let calculated_target_rate_for_slave = {
+        if let Some(slave_state) = local_states.get_mut(slave_deck_id_str) {
             if slave_state.original_bpm.is_none() {
-                log::warn!("Audio Thread: EnableSync: Slave deck '{}' missing BPM metadata.", slave_deck_id);
-                emit_error_event(app_handle, slave_deck_id, "Slave deck missing BPM");
+                log::warn!("Audio Thread: EnableSync: Slave deck '{}' missing BPM.", slave_deck_id_str);
+                emit_error_event(app_handle, slave_deck_id_str, "Slave deck missing BPM");
                 return;
             }
             let slave_bpm = slave_state.original_bpm.unwrap();
-            let calculated_target_rate = if slave_bpm.abs() > 1e-6 {
+            let target_rate = if slave_bpm.abs() > 1e-6 {
                 (master_bpm / slave_bpm) * master_current_pitch
             } else {
-                log::warn!("Audio Thread: EnableSync: Slave BPM is zero for '{}'. Cannot calculate rate.", slave_deck_id);
-                emit_error_event(app_handle, slave_deck_id, "Slave deck BPM is zero");
+                log::warn!("Audio Thread: EnableSync: Slave BPM is zero for '{}'. Cannot calculate rate.", slave_deck_id_str);
+                emit_error_event(app_handle, slave_deck_id_str, "Slave deck BPM is zero");
                 return;
             };
+
             slave_state.is_sync_active = true;
-            slave_state.is_master = false;
-            slave_state.master_deck_id = Some(master_deck_id.to_string());
-            slave_state.manual_pitch_rate = *slave_state.current_pitch_rate.lock().unwrap(); // Store pre-sync pitch
-            slave_state.target_pitch_rate_for_bpm_match = calculated_target_rate;
-            log::info!("Target BPM match rate for {}: {:.4}. Stored manual pitch: {:.4}", slave_deck_id, calculated_target_rate, slave_state.manual_pitch_rate);
-            emit_sync_status_update_event(app_handle, slave_deck_id, true, false);
-            calculated_target_rate
+            slave_state.is_master = false; // A deck cannot be slave and master
+            slave_state.master_deck_id = Some(master_deck_id_str.to_string());
+            // Store the pitch rate that was active *before* sync engaged, for restoration on disable_sync
+            slave_state.manual_pitch_rate = *slave_state.current_pitch_rate.lock().unwrap(); 
+            slave_state.target_pitch_rate_for_bpm_match = target_rate;
+            
+            log::info!("Tempo Sync for '{}': Target rate {:.4}. Stored manual pitch: {:.4}", slave_deck_id_str, target_rate, slave_state.manual_pitch_rate);
+            emit_sync_status_update_event(app_handle, slave_deck_id_str, true, false); // is_synced=true, is_master=false
+            target_rate
         } else {
-            log::error!("Audio Thread: EnableSync: Slave deck '{}' not found for mutable access.", slave_deck_id);
-            emit_error_event(app_handle, slave_deck_id, "Slave deck not found");
+            log::error!("Audio Thread: EnableSync: Slave deck '{}' not found for mutable access.", slave_deck_id_str);
+            emit_error_event(app_handle, slave_deck_id_str, "Slave deck not found");
             return;
         }
     };
 
-    // Step 2: Set master deck flags (if not already master)
-    if slave_deck_id != master_deck_id {
-        if let Some(master_state_mut) = local_states.get_mut(master_deck_id) {
-            if !master_state_mut.is_master {
-                log::info!("Setting deck '{}' as master.", master_deck_id);
+    // --- Set master deck flags ---
+    if slave_deck_id_str != master_deck_id_str { // Ensure a deck doesn't try to make itself master if it was the slave
+        if let Some(master_state_mut) = local_states.get_mut(master_deck_id_str) {
+            if !master_state_mut.is_master { // Only update if not already master
+                log::info!("Setting deck '{}' as master.", master_deck_id_str);
                 master_state_mut.is_master = true;
-                master_state_mut.is_sync_active = false;
-                master_state_mut.manual_pitch_rate = *master_state_mut.current_pitch_rate.lock().unwrap(); // Store its own pitch if it becomes master
-                emit_sync_status_update_event(app_handle, master_deck_id, false, true);
+                master_state_mut.is_sync_active = false; // A master is not synced to another master_deck_id
+                master_state_mut.master_deck_id = None;
+                // Store its own pitch if it becomes master and wasn't before (might have been synced itself)
+                master_state_mut.manual_pitch_rate = *master_state_mut.current_pitch_rate.lock().unwrap(); 
+                emit_sync_status_update_event(app_handle, master_deck_id_str, false, true); // is_synced=false, is_master=true
             }
         } else {
-            log::error!("EnableSync: Failed to get mutable master state '{}' after initial check?!", master_deck_id);
+            log::error!("EnableSync: Failed to get mutable master state '{}' after initial check.", master_deck_id_str);
+            // This case should ideally not happen due to checks above.
         }
     }
 
-    // Step 3: Apply the target pitch rate to the slave deck (Major Adjustment for BPM Matching)
-    log::debug!(
-        "Sync Enable (One-Shot) [Step 3]: Applying target pitch rate {:.4} to slave '{}' (BPM Match)",
-        target_rate_for_slave, slave_deck_id
-    );
-    let slave_id_clone_for_pitch = slave_deck_id.to_string();
+    // --- Apply the target pitch rate to the slave deck (Tempo Matching) ---
+    // This call is NOT user-initiated for the slave deck.
     audio_thread_handle_set_pitch_rate(
-        &slave_id_clone_for_pitch, 
-        target_rate_for_slave, 
-        true, // is_major_adjustment = true for this initial BPM match
+        slave_deck_id_str, 
+        calculated_target_rate_for_slave, 
+        false, // is_user_initiated_change = false
         local_states, 
         app_handle
     );
-    log::debug!(
-        "Sync Enable (One-Shot) [Step 3 End]: Finished applying target pitch rate to slave '{}'", 
-        slave_id_clone_for_pitch
+
+    log::info!(
+        "EnableSync (Phase 4 - Tempo Sync) for slave '{}' to master '{}' complete. Slave is now tempo-matched.", 
+        slave_deck_id_str, master_deck_id_str
     );
 
-    // Step 3.5: Ensure slave is playing (if master is) and introduce a short settling delay
-    // This delay is for our *own* subsequent time measurements to be more stable after the pitch change.
-    let mut slave_should_be_playing = false;
-    if let Some(master_state_check) = local_states.get(master_deck_id) {
-        if *master_state_check.is_playing.lock().unwrap() {
-            slave_should_be_playing = true;
-        }
-    }
+    // --- Phase 5: One-Shot Phase Alignment ---
+    log::debug!(
+        "EnableSync (Phase 5): Attempting one-shot phase alignment for slave '{}' to master '{}'",
+        slave_deck_id_str, master_deck_id_str
+    );
 
-    if slave_should_be_playing {
-        if let Some(slave_state_check) = local_states.get_mut(slave_deck_id) { // get_mut to potentially change is_playing
-            if !*slave_state_check.is_playing.lock().unwrap() {
-                log::info!(
-                    "Sync Enable (One-Shot) [Step 3.5]: Slave deck '{}' was not playing (master is), starting it now.", 
-                    slave_deck_id
-                );
-                audio_thread_handle_play(slave_deck_id, local_states, app_handle); // This updates local_states directly
-            }
+    // Borrow immutably first to get data for phase alignment
+    let phase_alignment_params = {
+        let master_s_opt = local_states.get(master_deck_id_str);
+        let slave_s_opt = local_states.get(slave_deck_id_str);
+        if let (Some(master_s), Some(slave_s)) = (master_s_opt, slave_s_opt) {
+            Some((
+                // Master data
+                (
+                    get_current_playback_time_secs(master_deck_id_str, master_s), 
+                    master_s.original_bpm, 
+                    master_s.first_beat_sec, 
+                    *master_s.target_pitch_rate.lock().unwrap()
+                ),
+                // Slave data
+                (
+                    get_current_playback_time_secs(slave_deck_id_str, slave_s), 
+                    slave_s.original_bpm, 
+                    slave_s.first_beat_sec, 
+                    slave_s.target_pitch_rate_for_bpm_match, // Use the just-set target rate
+                    slave_s.sample_rate,
+                    *slave_s.is_playing.lock().unwrap() // For updating paused_position_read_head
+                )
+            ))
         } else {
-            log::error!(
-                "Sync Enable (One-Shot) [Step 3.5]: Slave deck '{}' not found after pitch set. Aborting sync.", 
-                slave_deck_id
-            );
-            emit_error_event(app_handle, slave_deck_id, "Slave deck lost during sync setup.");
-            return;
-        }
-    }
-    
-    // Short delay to let rodio stabilize after pitch/play changes before we measure for phase alignment.
-    const SETTLING_DELAY_MS: u64 = 100; // Reduced delay, as this is just for our one-shot measurement.
-    log::info!(
-        "Sync Enable (One-Shot) [Step 3.5]: Introducing {}ms settling delay for slave '{}'.", 
-        SETTLING_DELAY_MS, slave_deck_id
-    );
-    tokio::time::sleep(Duration::from_millis(SETTLING_DELAY_MS)).await;
-    log::info!(
-        "Sync Enable (One-Shot) [Step 3.5]: Settling delay complete for slave '{}'.", 
-        slave_deck_id
-    );
-
-    // Step 4: Calculate phase alignment seek based on "settled" times
-    log::debug!(
-        "Sync Enable (One-Shot) [Step 4]: Calculating phase alignment seek for slave '{}' (post-settle)", 
-        slave_deck_id
-    );
-    let slave_seek_target_time_secs = {
-        let master_current_time_settled = local_states.get(master_deck_id)
-            .map(|s| get_current_playback_time_secs(s))
-            .unwrap_or(0.0);
-        let (master_fbs_settled, master_actual_pitch_settled, master_bpm_val_opt_settled, master_is_playing_settled) = 
-            local_states.get(master_deck_id)
-                .map(|s| (s.first_beat_sec, *s.current_pitch_rate.lock().unwrap(), s.original_bpm, *s.is_playing.lock().unwrap()))
-                .unwrap_or((None, 1.0, None, false));
-
-        let slave_current_time_settled = local_states.get(slave_deck_id)
-            .map(|s| get_current_playback_time_secs(s))
-            .unwrap_or(0.0);
-        let (slave_fbs_settled, slave_actual_pitch_settled, slave_bpm_val_opt_settled, slave_is_playing_settled) = 
-            local_states.get(slave_deck_id)
-                .map(|s| (s.first_beat_sec, *s.current_pitch_rate.lock().unwrap(), s.original_bpm, *s.is_playing.lock().unwrap()))
-                .unwrap_or((None, 1.0, None, false));
-        
-        if !master_is_playing_settled {
-            log::warn!(
-                "Sync Enable (One-Shot) [Step 4]: Master deck '{}' stopped playing during settling delay. Phase alignment skipped.", 
-                master_deck_id
-            );
-            // Sync is active at matched BPM, but phase won't be aligned from this step.
-            // PLL will have to do all the work if master starts playing again.
-            None 
-        } else if !slave_is_playing_settled && slave_should_be_playing {
-            log::warn!(
-                "Sync Enable (One-Shot) [Step 4]: Slave deck '{}' is not playing after attempt to start. Phase alignment skipped.", 
-                slave_deck_id
-            );
             None
-        } else if !slave_is_playing_settled && !slave_should_be_playing {
-            log::info!(
-                "Sync Enable (One-Shot) [Step 4]: Slave deck '{}' is not playing and master is not playing. Phase alignment skipped.", 
-                slave_deck_id
-            );
-            None
-        }else {
-            log::info!(
-                "Sync Enable (One-Shot) [Debug FBS Settled]: Master '{}' fbs: {:?}, pitch: {:.4}, bpm: {:?}", 
-                master_deck_id, master_fbs_settled, master_actual_pitch_settled, master_bpm_val_opt_settled
-            );
-            log::info!(
-                "Sync Enable (One-Shot) [Debug FBS Settled]: Slave '{}' fbs: {:?}, pitch: {:.4}, bpm: {:?}", 
-                slave_deck_id, slave_fbs_settled, slave_actual_pitch_settled, slave_bpm_val_opt_settled
-            );
-            log::info!(
-                "Sync Enable (One-Shot) [Debug Times for Phase Settled]: MTime={:.3}, STime={:.3}", 
-                master_current_time_settled, slave_current_time_settled
-            );
-
-            if let (Some(m_fbs), Some(s_fbs), Some(m_bpm), Some(s_bpm)) = 
-                (master_fbs_settled, slave_fbs_settled, master_bpm_val_opt_settled, slave_bpm_val_opt_settled) {
-                if m_bpm.abs() > 1e-6 && s_bpm.abs() > 1e-6 && 
-                   master_actual_pitch_settled.abs() > 1e-6 && slave_actual_pitch_settled.abs() > 1e-6 {
-                    
-                    let master_effective_interval = (60.0 / m_bpm) / master_actual_pitch_settled;
-                    let slave_effective_interval = if target_rate_for_slave.abs() > 1e-6 {
-                        (60.0 / s_bpm) / target_rate_for_slave 
-                    } else {
-                        log::warn!(
-                            "Sync Enable (One-Shot) Beat Align: target_rate_for_slave is near zero ({:.4}) for slave '{}'. Using s_bpm only for interval.",
-                            target_rate_for_slave, slave_deck_id
-                        );
-                        60.0 / s_bpm // Fallback to interval at original speed if target rate is zero
-                    };
-
-                    let master_time_since_fbs = (master_current_time_settled - m_fbs as f64).max(0.0);
-                    let slave_time_since_fbs = (slave_current_time_settled - s_fbs as f64).max(0.0);
-                    
-                    let master_phase = (master_time_since_fbs / master_effective_interval as f64) % 1.0;
-                    let slave_phase = (slave_time_since_fbs / slave_effective_interval as f64) % 1.0;
-                    
-                    let phase_diff = master_phase - slave_phase;
-                    let wrapped_phase_diff = if phase_diff.abs() < 1e-6 { 
-                        0.0 // Avoid tiny adjustments if already aligned
-                    } else if phase_diff > 0.5 { 
-                        phase_diff - 1.0 
-                    } else if phase_diff < -0.5 { 
-                        phase_diff + 1.0 
-                    } else { 
-                        phase_diff 
-                    };
-                    
-                    let time_adjustment_secs = wrapped_phase_diff * slave_effective_interval as f64;
-                    
-                    // Seek target is relative to the slave's current time *after* pitch set and settling delay
-                    let calculated_seek_target = slave_current_time_settled + time_adjustment_secs;
-                    
-                    log::info!(
-                        "Sync Enable (One-Shot) Beat Align {}: MTime={:.3}, STime={:.3}, MPh={:.3}, SPh={:.3}, Diff={:.3}, WRAP_Diff={:.3} Adjust={:.3}s, TargetSeek={:.3}s", 
-                        slave_deck_id, master_current_time_settled, slave_current_time_settled, 
-                        master_phase, slave_phase, phase_diff, wrapped_phase_diff, time_adjustment_secs, calculated_seek_target
-                    );
-                    Some(calculated_seek_target)
-                } else { 
-                    log::warn!(
-                        "Sync Enable (One-Shot) Beat Align Skip (Settled): Invalid BPM or pitch. M_BPM: {:?}, S_BPM: {:?}, M_Pitch: {:.4}, S_Pitch: {:.4}", 
-                        m_bpm, s_bpm, master_actual_pitch_settled, slave_actual_pitch_settled
-                    ); 
-                    None 
-                }
-            } else { 
-                log::warn!(
-                    "Sync Enable (One-Shot) Beat Align Skip (Settled): Missing FBS/BPM. M_FBS: {:?}, S_FBS: {:?}, M_BPM: {:?}, S_BPM: {:?}", 
-                    master_fbs_settled, slave_fbs_settled, master_bpm_val_opt_settled, slave_bpm_val_opt_settled
-                ); 
-                None 
-            }
         }
     };
 
-    // Step 5: Apply the calculated seek for phase alignment IF a target was determined
-    if let Some(seek_target) = slave_seek_target_time_secs {
-        if let Some(slave_state_for_seek) = local_states.get(slave_deck_id) {
-            // Only seek if the adjustment is significant enough to avoid micro-seeks from tiny phase errors
-            let current_slave_time_before_seek = get_current_playback_time_secs(slave_state_for_seek);
-            if (seek_target - current_slave_time_before_seek).abs() > 0.001 { // Only seek if diff > 1ms
-                log::debug!(
-                    "Sync Enable (One-Shot) [Step 5]: Applying phase alignment seek for slave '{}' to {:.3}s (current: {:.3}s)", 
-                    slave_deck_id, seek_target, current_slave_time_before_seek
-                );
-                audio_thread_handle_seek(slave_deck_id, seek_target, local_states, app_handle);
-                log::debug!(
-                    "Sync Enable (One-Shot) [Step 5 End]: Finished applying phase alignment seek for slave '{}'", 
-                    slave_deck_id
-                );
+    if let Some(((master_current_time_secs, m_bpm_opt, m_fbs_opt, master_pitch),
+                  (slave_current_time_secs, s_bpm_opt, s_fbs_opt, slave_pitch, slave_sample_rate_val, slave_is_playing_val))) = phase_alignment_params {
+        
+        log::trace!(
+            "PhaseAlign CALC INPUTS Master ('{}'): CurrentTimeS {:.4}, BPM {:?}, FBS {:?}, Pitch {:.4}",
+            master_deck_id_str, master_current_time_secs, m_bpm_opt, m_fbs_opt, master_pitch
+        );
+        log::trace!(
+            "PhaseAlign CALC INPUTS Slave ('{}'): CurrentTimeS {:.4}, BPM {:?}, FBS {:?}, TargetPitch {:.4}, SampleRate {}, IsPlaying {}",
+            slave_deck_id_str, slave_current_time_secs, s_bpm_opt, s_fbs_opt, slave_pitch, slave_sample_rate_val, slave_is_playing_val
+        );
+
+        if let (Some(m_bpm), Some(m_fbs), Some(s_bpm), Some(s_fbs)) = (
+            m_bpm_opt,
+            m_fbs_opt,
+            s_bpm_opt,
+            s_fbs_opt,
+        ) {
+            // slave_pitch is already slave_state.target_pitch_rate_for_bpm_match from the tuple
+
+            if m_bpm.abs() > 1e-6 && s_bpm.abs() > 1e-6 && master_pitch.abs() > 1e-6 && slave_pitch.abs() > 1e-6 && slave_sample_rate_val > 0.0 {
+                let master_effective_interval = (60.0 / m_bpm) / master_pitch;
+                let slave_effective_interval = (60.0 / s_bpm) / slave_pitch;
+
+                let master_time_since_fbs = (master_current_time_secs - m_fbs as f64).max(0.0);
+                let slave_time_since_fbs = (slave_current_time_secs - s_fbs as f64).max(0.0); // Use original slave_current_time_secs
+
+                let master_phase = (master_time_since_fbs / master_effective_interval as f64) % 1.0;
+                let slave_phase = (slave_time_since_fbs / slave_effective_interval as f64) % 1.0; // Slave interval for its own phase
+
+                let mut phase_diff = master_phase - slave_phase;
+                if phase_diff > 0.5 { phase_diff -= 1.0; }
+                else if phase_diff < -0.5 { phase_diff += 1.0; }
+
+                let time_adjustment_secs = phase_diff * slave_effective_interval as f64;
+                let sample_adjustment_f64 = time_adjustment_secs * slave_sample_rate_val as f64;
+
+                if sample_adjustment_f64.abs() > 0.001 * slave_sample_rate_val as f64 { // Only adjust if > 1ms
+                    if let Some(slave_deck_state_mut_for_seek) = local_states.get_mut(slave_deck_id_str) {
+                        let old_read_head = *slave_deck_state_mut_for_seek.current_sample_read_head.lock().unwrap();
+                        let new_read_head = old_read_head + sample_adjustment_f64;
+                        *slave_deck_state_mut_for_seek.current_sample_read_head.lock().unwrap() = new_read_head.max(0.0);
+                        
+                        if !slave_is_playing_val { // Use the captured slave_is_playing_val
+                            *slave_deck_state_mut_for_seek.paused_position_read_head.lock().unwrap() = Some(new_read_head.max(0.0));
+                        }
+
+                        // Invalidate precise timing fields after micro-seek to ensure next time read is accurate
+                        *slave_deck_state_mut_for_seek.last_playback_instant.lock().unwrap() = None;
+                        *slave_deck_state_mut_for_seek.read_head_at_last_playback_instant.lock().unwrap() = None;
+
+                        log::info!(
+                            "EnableSync (Phase 5): Slave '{}' phase micro-seek. MPh: {:.3}, SPh: {:.3}, Diff: {:.3}, TAdj: {:.3}s, SmpAdj: {:.2}. RH: {:.2} -> {:.2}",
+                            slave_deck_id_str, master_phase, slave_phase, phase_diff, time_adjustment_secs, sample_adjustment_f64, old_read_head, new_read_head
+                        );
+                        // Emit tick to reflect immediate change for UI
+                        emit_tick_event(app_handle, slave_deck_id_str, new_read_head.max(0.0) / slave_sample_rate_val as f64);
+                    } else {
+                        log::warn!("EnableSync (Phase 5): Slave '{}' not found for micro-seek update.", slave_deck_id_str);
+                    }
+                } else {
+                    log::info!("EnableSync (Phase 5): Phase alignment for '{}' too small, skipped. Diff: {:.3} ({:.3}s)", slave_deck_id_str, phase_diff, time_adjustment_secs);
+                }
             } else {
-                log::info!(
-                    "Sync Enable (One-Shot) [Step 5 Skip]: Phase alignment seek for slave '{}' deemed too small. Target: {:.3}s, Current: {:.3}s. Difference: {:.4}s", 
-                    slave_deck_id, seek_target, current_slave_time_before_seek, (seek_target - current_slave_time_before_seek).abs()
-                );
+                log::warn!("EnableSync (Phase 5): Invalid BPM, pitch, or sample rate for phase alignment. M_BPM: {}, S_BPM: {}, M_Pitch: {}, S_Pitch: {}, S_SR: {}", m_bpm, s_bpm, master_pitch, slave_pitch, slave_sample_rate_val);
             }
         } else {
-             log::error!("Sync Enable (One-Shot) [Step 5]: Slave '{}' not found before final seek.", slave_deck_id);
+            log::warn!("EnableSync (Phase 5): Missing BPM or FBS for phase alignment for master '{}' or slave '{}'", master_deck_id_str, slave_deck_id_str);
         }
     } else {
-        log::warn!(
-            "Sync Enable (One-Shot) [Step 5 Skip]: Could not calculate beat alignment seek for '{}'. Phase alignment skipped.", 
-            slave_deck_id
-        );
+        log::warn!("EnableSync (Phase 5): Master or Slave state not found for phase alignment parameter extraction. Master: '{}', Slave: '{}'", master_deck_id_str, slave_deck_id_str);
     }
-    log::info!(
-        "Sync Enable (One-Shot) for {} to {} complete. Slave is now tempo-matched and (attempted) phase-aligned. PLL will handle further drift.", 
-        slave_deck_id, master_deck_id
-    );
+    // --- End Phase 5: One-Shot Phase Alignment ---
 }
 
 pub(crate) fn audio_thread_handle_disable_sync<R: Runtime>(
-    deck_id: &str,
+    deck_id_str: &str,
     local_states: &mut HashMap<String, AudioThreadDeckState>,
     app_handle: &AppHandle<R>,
 ) {
-    log::info!("Audio Thread: Handling DisableSync for deck: {}", deck_id);
-    if let Some(deck_state) = local_states.get_mut(deck_id) {
+    log::info!("Audio Thread: Handling DisableSync (Phase 4) for deck: {}", deck_id_str);
+    let mut former_master_id: Option<String> = None;
+    let pitch_to_restore_this_deck;
+
+    if let Some(deck_state) = local_states.get_mut(deck_id_str) {
         if !deck_state.is_sync_active && !deck_state.is_master {
-            log::warn!("DisableSync: Deck '{}' is not currently synced or master.", deck_id);
+            log::warn!("DisableSync: Deck '{}' is not currently synced or master.", deck_id_str);
             return;
         }
-        let was_master = deck_state.is_master;
-        let pitch_to_restore = deck_state.manual_pitch_rate;
+
+        pitch_to_restore_this_deck = deck_state.manual_pitch_rate; // Get the pitch to restore
+        if deck_state.is_master {
+            former_master_id = Some(deck_id_str.to_string());
+        }
+        
         deck_state.is_sync_active = false;
         deck_state.is_master = false;
         deck_state.master_deck_id = None;
-        deck_state.target_pitch_rate_for_bpm_match = 1.0; // Reset this.
-        deck_state.pll_integral_error = 0.0; // Reset integral error
-        log::info!("Deck '{}' sync disabled. Restoring pitch to: {}", deck_id, pitch_to_restore);
-        emit_sync_status_update_event(app_handle, deck_id, false, false); // is_synced = false, is_master = false
+        deck_state.target_pitch_rate_for_bpm_match = 1.0;
+        deck_state.pll_integral_error = 0.0;
 
-        let deck_id_clone = deck_id.to_string();
-        audio_thread_handle_set_pitch_rate(&deck_id_clone, pitch_to_restore, false, local_states, app_handle);
-        emit_pitch_tick_event(app_handle, &deck_id_clone, pitch_to_restore);
+        log::info!("Deck '{}' sync/master status disabled. Will restore its pitch to: {:.4}", deck_id_str, pitch_to_restore_this_deck);
+        emit_sync_status_update_event(app_handle, deck_id_str, false, false);
 
+    } else {
+        log::error!("DisableSync: Deck '{}' not found.", deck_id_str);
+        emit_error_event(app_handle, deck_id_str, "Deck not found for disable sync");
+        return;
+    }
 
-        if was_master {
-            log::info!("Deck '{}' was master. Checking slaves...", deck_id);
-            let slaves_to_disable: Vec<String> = local_states
-                .iter()
-                .filter(|(_id, state)| state.master_deck_id.as_deref() == Some(deck_id))
-                .map(|(id, _)| id.clone())
-                .collect();
-            if !slaves_to_disable.is_empty() {
-                log::info!("Disabling sync for former slaves of '{}': {:?}", deck_id, slaves_to_disable);
-                for slave_id in slaves_to_disable {
-                     audio_thread_handle_disable_sync(&slave_id, local_states, app_handle);
-                }
+    // Restore pitch on the deck that had disable_sync called on it
+    // This is a user-initiated change because sync is being manually turned off for this deck.
+    audio_thread_handle_set_pitch_rate(deck_id_str, pitch_to_restore_this_deck, true, local_states, app_handle);
+
+    // If the disabled deck was a master, disable sync for all its slaves
+    if let Some(master_id) = former_master_id {
+        log::info!("Deck '{}' was master. Finding and disabling sync for its slaves...", master_id);
+        let slaves_to_disable: Vec<String> = local_states
+            .iter()
+            .filter(|(_id, state)| state.master_deck_id.as_deref() == Some(&master_id))
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        if !slaves_to_disable.is_empty() {
+            log::info!("Disabling sync for former slaves of '{}': {:?}", master_id, slaves_to_disable);
+            for slave_id_str in slaves_to_disable {
+                // This is a recursive call, but it processes different deck_ids. 
+                // Ensure local_states is handled correctly if it leads to re-borrow issues.
+                // For Phase 4, this structure should be okay as set_pitch_rate was simplified.
+                audio_thread_handle_disable_sync(&slave_id_str, local_states, app_handle);
             }
         }
-    } else {
-        log::error!("DisableSync: Deck '{}' not found.", deck_id);
-        emit_error_event(app_handle, deck_id, "Deck not found for disable sync");
     }
 }
 

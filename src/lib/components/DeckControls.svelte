@@ -18,7 +18,6 @@
             midGainDb: 0.0,
             highGainDb: 0.0,
         } as EqParams),
-        pitchRate = $bindable(1.0),
         currentBpm = null as number | null,
         originalBpm = null as number | null | undefined,
     }: {
@@ -34,11 +33,11 @@
             | "cleanup"
             | "setVolume"
             | "setCuePoint"
+            | "setPitchRate"
         >;
         trimDb?: number;
         faderLevel?: number;
         eqParams?: EqParams;
-        pitchRate?: number;
         currentBpm?: number | null;
         originalBpm?: number | null | undefined;
     } = $props();
@@ -128,6 +127,18 @@
     });
 
     const SEEK_AMOUNT = 5; // Seek 5 seconds
+
+    // Event handler for pitch slider changes from Slider's onchangeValue event
+    function handlePitchSliderChange(newPitchValue: number) {
+        if (playerActions && typeof playerActions.setPitchRate === "function") {
+            playerActions.setPitchRate(newPitchValue).catch((err) => {
+                console.error(
+                    `[TrackPlayer ${deckId}] Error invoking setPitchRate prop:`,
+                    err,
+                );
+            });
+        }
+    }
 
     // --- Event Handlers for Buttons (use playerActions props) ---
     function handlePlayPause() {
@@ -261,11 +272,12 @@
                 id="{deckId}-pitch"
                 label="Pitch"
                 orientation="vertical"
-                outputMin={0.5}
-                outputMax={2.0}
+                outputMin={0.75}
+                outputMax={1.25}
                 centerValue={1.0}
                 step={0.0001}
-                bind:value={pitchRate}
+                value={playerStoreState.pitchRate ?? 1.0}
+                onchangeValue={handlePitchSliderChange}
                 disabled={playerStoreState.isSyncActive &&
                     !playerStoreState.isMaster}
             />

@@ -1,13 +1,13 @@
-// use crate::audio::config; // Commented out for CPAL Phase 1
-// use crate::audio::errors::AudioEffectsError; // Commented out for CPAL Phase 1
-// use crate::audio::types::EqParams; // Commented out for CPAL Phase 1
-// use biquad::{Biquad as _, Coefficients, DirectForm1, ToHertz, Type}; // Commented out for CPAL Phase 1
-// use rodio::{Sample, Source}; // Commented out for CPAL Phase 1
-// use std::{ // Commented out for CPAL Phase 1
-//     fmt::Debug, // Commented out for CPAL Phase 1
-//     sync::{Arc, Mutex}, // Commented out for CPAL Phase 1
-//     time::Duration, // Commented out for CPAL Phase 1
-// }; // Commented out for CPAL Phase 1
+use crate::audio::config;
+use crate::audio::errors::AudioEffectsError;
+
+use biquad::{Coefficients, ToHertz, Type};
+// use rodio::{Sample, Source}; // This remains commented
+// use std::{ // These std imports remain commented as they were for EqSource
+//     fmt::Debug,
+//     sync::{Arc, Mutex},
+//     time::Duration,
+// };
 
 // /// A custom Rodio source that applies Trim Gain and 3-band EQ (Low Shelf, Peaking, High Shelf)
 // /// to an inner source.
@@ -75,7 +75,7 @@
 //                         reason: "Mutex poisoned during update check".to_string(), // Commented out for CPAL Phase 1
 //                     })?; // Commented out for CPAL Phase 1
 //             params_changed = !self.last_params.approx_eq(&current_params_guard); // Commented out for CPAL Phase 1
-//             if params_changed { // Commented out for CPAL Phase 1
+//             if params_changed { // Commented out for C   PAL Phase 1
 //                 new_params = current_params_guard.clone(); // Commented out for CPAL Phase 1
 //             } else { // Commented out for CPAL Phase 1
 //                 return Ok(()); // No changes, exit early // Commented out for CPAL Phase 1
@@ -95,9 +95,9 @@
 //     } // Commented out for CPAL Phase 1
 // } // Commented out for CPAL Phase 1
 
-// --- Filter Calculation Helpers ---
-/* // Commented out for CPAL Phase 1
-fn calculate_low_shelf(
+// --- Filter Calculation Helpers (Uncommented and adapted for direct use) ---
+
+pub(crate) fn calculate_low_shelf(
     sample_rate: f32,
     gain_db: f32,
 ) -> Result<Coefficients<f32>, AudioEffectsError> {
@@ -112,7 +112,7 @@ fn calculate_low_shelf(
     })
 }
 
-fn calculate_mid_peak(
+pub(crate) fn calculate_mid_peak(
     sample_rate: f32,
     gain_db: f32,
 ) -> Result<Coefficients<f32>, AudioEffectsError> {
@@ -127,7 +127,7 @@ fn calculate_mid_peak(
     })
 }
 
-fn calculate_high_shelf(
+pub(crate) fn calculate_high_shelf(
     sample_rate: f32,
     gain_db: f32,
 ) -> Result<Coefficients<f32>, AudioEffectsError> {
@@ -141,7 +141,6 @@ fn calculate_high_shelf(
         filter_type: format!("HighShelf: {:?}", e),
     })
 }
-*/ // Commented out for CPAL Phase 1
 
 // --- Source Trait Implementation ---
 

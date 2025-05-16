@@ -350,14 +350,7 @@ pub(crate) fn analyze_bpm(samples: &[f32], sample_rate: f32) -> Result<(f32, f32
         .collect();
 
     let best_first_peak = if !early_candidates.is_empty() {
-        *early_candidates
-            .iter()
-            .max_by(|&&a, &&b| {
-                smoothed_flux[a]
-                    .partial_cmp(&smoothed_flux[b])
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .unwrap_or(&early_candidates[0]) // Fallback to first early peak if max_by fails
+        early_candidates[0] // Pick the first available peak in the early window
     } else {
         peaks[0] // Default to the very first peak if no candidates in early window
     };
@@ -372,7 +365,7 @@ pub(crate) fn analyze_bpm(samples: &[f32], sample_rate: f32) -> Result<(f32, f32
 
         if denominator.abs() > 1e-6 {
             let p = 0.5 * (y_minus_1 - y_plus_1) / denominator;
-            let clamped_p = p.max(-0.75).min(0.25); // Asymmetrical clamp, bias earlier
+            let clamped_p = p.max(-0.5).min(0.5); // Symmetrical clamp
             best_first_peak as f32 + clamped_p
         } else {
             best_first_peak as f32 // Fallback for flat peak
@@ -382,7 +375,7 @@ pub(crate) fn analyze_bpm(samples: &[f32], sample_rate: f32) -> Result<(f32, f32
     };
     // --- End Parabolic Interpolation ---+
 
-    // Convert best_first_peak to seconds
+    // Convert refined_first_peak_index to seconds
     let first_beat_sec = (refined_first_peak_index * hop_size as f32) / effective_sample_rate;
     Ok((bpm, first_beat_sec))
 }
