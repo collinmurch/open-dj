@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tauri::{AppHandle, Runtime};
 use tokio::sync::mpsc;
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, HostTrait};
 
 use crate::audio::config::AUDIO_THREAD_TIME_UPDATE_INTERVAL_MS;
 use crate::audio::playback::commands::AudioThreadCommand;
