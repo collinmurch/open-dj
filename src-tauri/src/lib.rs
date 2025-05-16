@@ -23,7 +23,9 @@ pub fn run() {
             // Spawn the dedicated audio thread
             let app_handle_for_thread = app_handle.clone();
             std::thread::spawn(move || {
-                audio::playback::run_audio_thread(app_handle_for_thread, audio_cmd_rx); // Pass audio_cmd_rx here
+                if let Err(e) = audio::playback::run_audio_thread(app_handle_for_thread, audio_cmd_rx) {
+                    log::error!("Audio thread exited with error: {}", e);
+                }
             });
             Ok(())
         })

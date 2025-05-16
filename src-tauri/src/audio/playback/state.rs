@@ -1,6 +1,6 @@
-use rodio::Sink;
+use cpal::Stream;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::audio::types::EqParams; // EqParams is in audio::types
@@ -27,13 +27,13 @@ impl AppState {
 }
 
 pub(crate) struct AudioThreadDeckState {
-    pub(crate) sink: Sink,
+    pub(crate) cpal_stream: Option<Stream>,
     pub(crate) decoded_samples: Arc<Vec<f32>>,
     pub(crate) sample_rate: f32,
-    pub(crate) playback_start_time: Option<Instant>,
-    pub(crate) paused_position: Option<Duration>,
+    pub(crate) current_sample_index: Arc<Mutex<usize>>,
+    pub(crate) paused_position_samples: Arc<Mutex<Option<usize>>>,
     pub(crate) duration: Duration,
-    pub(crate) is_playing: bool,
+    pub(crate) is_playing: Arc<Mutex<bool>>,
     pub(crate) eq_params: Arc<Mutex<EqParams>>,
     pub(crate) trim_gain: Arc<Mutex<f32>>,
     pub(crate) cue_point: Option<Duration>,
