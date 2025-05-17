@@ -22,7 +22,6 @@ pub(crate) fn decode_file_to_mono_samples(
     })?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
     let hint = Hint::new();
-
     let probed = symphonia::default::get_probe()
         .format(
             &hint,
@@ -35,7 +34,6 @@ pub(crate) fn decode_file_to_mono_samples(
             source: e,
         })?;
     let mut format = probed.format;
-
     let track = format
         .tracks()
         .iter()
@@ -43,7 +41,6 @@ pub(crate) fn decode_file_to_mono_samples(
         .ok_or_else(|| AudioDecodingError::NoSuitableTrack {
             path: path.to_string(),
         })?;
-
     let track_id = track.id;
     let sample_rate =
         track
@@ -60,17 +57,14 @@ pub(crate) fn decode_file_to_mono_samples(
         })?
         .count();
     let codec_params = track.codec_params.clone();
-
     let mut decoder = symphonia::default::get_codecs()
         .make(&codec_params, &DecoderOptions::default())
         .map_err(|e| AudioDecodingError::DecoderCreationError {
             path: path.to_string(),
             source: e,
         })?;
-
     let mut samples: Vec<f32> = Vec::with_capacity(DEFAULT_MONO_SAMPLE_CAPACITY);
     let mut sample_buf: Option<SampleBuffer<f32>> = None;
-
     loop {
         match format.next_packet() {
             Ok(packet) => {
@@ -133,7 +127,6 @@ pub(crate) fn decode_file_to_mono_samples(
             }
         }
     }
-
     decoder.finalize();
     log::debug!(
         "Central Decode: Decoded {} mono samples at {} Hz for '{}'",
@@ -146,6 +139,5 @@ pub(crate) fn decode_file_to_mono_samples(
             path: path.to_string(),
         });
     }
-
     Ok((samples, sample_rate))
 }
