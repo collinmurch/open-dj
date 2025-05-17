@@ -277,35 +277,24 @@ pub(crate) fn analyze_bpm(samples: &[f32], sample_rate: f32) -> Result<(f32, f32
     if samples.is_empty() {
         return Err(BpmError::EmptySamplesForBpm);
     }
-
-    // Sensible defaults - these could be parameters if needed
     let frame_size = 1024;
     let hop_size = frame_size / 4;
     let downsample_factor = 2;
-
-    // --- Preprocessing ---
     let mut processed_samples = samples.to_vec();
     normalize_in_place(&mut processed_samples);
     downsample_in_place(&mut processed_samples, downsample_factor);
     let effective_sample_rate = sample_rate / downsample_factor as f32;
-
     if processed_samples.is_empty() {
         return Err(BpmError::EmptyAfterDownsample {
             factor: downsample_factor,
             original_count: samples.len(),
         });
     }
-
-    // --- Compute Spectral Flux ---
     let flux = compute_spectral_flux(&processed_samples, frame_size, hop_size);
     if flux.is_empty() {
         return Err(BpmError::EmptyFluxVector);
     }
-
-    // --- Estimate BPM from Flux ---
     let bpm = estimate_bpm(&flux, effective_sample_rate, hop_size)?;
-
-    // --- ADDED: Smooth the flux signal for First Beat Detection ---
     let smoothed_flux = if flux.len() >= 3 {
         let mut smoothed = vec![0.0; flux.len()];
         smoothed[0] = flux[0];
@@ -315,17 +304,12 @@ pub(crate) fn analyze_bpm(samples: &[f32], sample_rate: f32) -> Result<(f32, f32
         });
         smoothed
     } else {
-        flux.clone() // Use original if too short to smooth (need a copy)
+        flux.clone()
     };
-    // --- END ADDED ---
-
-    // --- First Beat Detection (using smoothed_flux) ---
-    // Peak picking: find local maxima above a threshold in smoothed_flux
     let mean_smoothed_flux = smoothed_flux.iter().copied().sum::<f32>() / (smoothed_flux.len() as f32);
-    let threshold = mean_smoothed_flux * 1.05; // Reduced threshold slightly
+    let threshold = mean_smoothed_flux * 1.05;
     let peaks = {
         let mut peaks = Vec::new();
-        // Find peaks in the smoothed flux
         for i in 1..smoothed_flux.len().saturating_sub(1) {
             if smoothed_flux[i] > threshold && smoothed_flux[i] > smoothed_flux[i - 1] && smoothed_flux[i] > smoothed_flux[i + 1] {
                 peaks.push(i);
@@ -334,48 +318,35 @@ pub(crate) fn analyze_bpm(samples: &[f32], sample_rate: f32) -> Result<(f32, f32
         peaks
     };
     if peaks.is_empty() {
-        return Err(BpmError::EmptySpectralFlux); // Reuse error for no onsets
+        return Err(BpmError::EmptySpectralFlux);
     }
-
-    // --- ADDED: Define a window for first beat candidates ---
-    const MAX_FIRST_BEAT_CANDIDATE_TIME_SEC: f32 = 45.0; // Consider onsets within first 45s
+    const MAX_FIRST_BEAT_CANDIDATE_TIME_SEC: f32 = 45.0;
     let max_candidate_flux_index = (MAX_FIRST_BEAT_CANDIDATE_TIME_SEC * effective_sample_rate / hop_size as f32).round() as usize;
-    // --- END ADDED ---
-
-    // --- REVISED: Select best_first_peak as the strongest peak in the early window --- 
     let early_candidates: Vec<usize> = peaks
         .iter()
         .filter(|&&p_idx| p_idx <= max_candidate_flux_index)
         .cloned()
         .collect();
-
     let best_first_peak = if !early_candidates.is_empty() {
-        early_candidates[0] // Pick the first available peak in the early window
+        early_candidates[0]
     } else {
-        peaks[0] // Default to the very first peak if no candidates in early window
+        peaks[0]
     };
-    // --- END REVISED ---
-
-    // --- Parabolic Interpolation for Refined First Beat Peak (using smoothed_flux) ---+
     let refined_first_peak_index = if best_first_peak > 0 && best_first_peak < smoothed_flux.len() - 1 {
-        let y_minus_1 = smoothed_flux[best_first_peak - 1]; // Use smoothed
-        let y_0 = smoothed_flux[best_first_peak];         // Use smoothed
-        let y_plus_1 = smoothed_flux[best_first_peak + 1]; // Use smoothed
+        let y_minus_1 = smoothed_flux[best_first_peak - 1];
+        let y_0 = smoothed_flux[best_first_peak];
+        let y_plus_1 = smoothed_flux[best_first_peak + 1];
         let denominator = y_minus_1 - 2.0 * y_0 + y_plus_1;
-
         if denominator.abs() > 1e-6 {
             let p = 0.5 * (y_minus_1 - y_plus_1) / denominator;
-            let clamped_p = p.max(-0.5).min(0.5); // Symmetrical clamp
+            let clamped_p = p.max(-0.5).min(0.5);
             best_first_peak as f32 + clamped_p
         } else {
-            best_first_peak as f32 // Fallback for flat peak
+            best_first_peak as f32
         }
     } else {
-        best_first_peak as f32 // Fallback if peak is at edge
+        best_first_peak as f32
     };
-    // --- End Parabolic Interpolation ---+
-
-    // Convert refined_first_peak_index to seconds
     let first_beat_sec = (refined_first_peak_index * hop_size as f32) / effective_sample_rate;
     Ok((bpm, first_beat_sec))
 }

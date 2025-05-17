@@ -36,13 +36,11 @@ fn get_track_basic_metadata_internal(
         "Metadata Intern: Starting basic metadata analysis for: {}",
         path
     );
-
     let (samples, sample_rate) = crate::audio::decoding::decode_file_to_mono_samples(path)
         .map_err(|e| AudioProcessorError::AnalysisDecodingError {
             path: path.to_string(),
             source: e,
         })?;
-
     let duration_result = if sample_rate > 0.0 && !samples.is_empty() {
         Ok(samples.len() as f64 / sample_rate as f64)
     } else {
@@ -54,18 +52,14 @@ fn get_track_basic_metadata_internal(
             path: path.to_string(),
         })
     };
-
-    // Use new analyze_bpm function
     let (bpm, first_beat_sec) = crate::audio::analysis::bpm_analyzer::analyze_bpm(&samples, sample_rate)
         .map_err(|e| AudioProcessorError::AnalysisBpmError {
             path: path.to_string(),
             source: e,
         })?;
-
     let final_duration = log_and_convert_to_option(duration_result, path, "Duration");
     let final_bpm = Some(bpm);
     let final_first_beat_sec = Some(first_beat_sec);
-
     Ok(TrackBasicMetadata {
         duration_seconds: final_duration,
         bpm: final_bpm,
@@ -77,15 +71,12 @@ fn get_track_basic_metadata_internal(
 fn get_track_volume_analysis_internal(
     path: &str,
 ) -> Result<crate::audio::types::AudioAnalysis, AudioProcessorError> {
-    // Adjusted type path
     log::info!("Volume Intern: Starting volume analysis for: {}", path);
-
     let (samples, sample_rate) = crate::audio::decoding::decode_file_to_mono_samples(path)
         .map_err(|e| AudioProcessorError::AnalysisDecodingError {
             path: path.to_string(),
             source: e,
         })?;
-
     crate::audio::analysis::volume_analyzer::calculate_rms_intervals(&samples, sample_rate)
         .map_err(|e| AudioProcessorError::AnalysisVolumeError {
             path: path.to_string(),

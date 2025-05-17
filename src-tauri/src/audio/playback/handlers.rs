@@ -23,18 +23,20 @@ use biquad::Biquad; // Import the Biquad trait
 
 // --- Private Handler Functions for Audio Thread Commands ---
 
+/// Initializes a new deck in the local state.
+/// Returns an error if a lock cannot be acquired or the deck already exists.
 pub(crate) fn audio_thread_handle_init<R: Runtime>(
     deck_id: &str,
     local_states: &mut HashMap<String, AudioThreadDeckState>,
-    app_handle: &AppHandle<R>, // Removed audio_handle: &rodio::OutputStreamHandle
-) {
+    app_handle: &AppHandle<R>,
+) -> Result<(), PlaybackError> {
     if local_states.contains_key(deck_id) {
         log::warn!(
             "Audio Thread: InitDeck: Deck '{}' already exists. No action taken.",
             deck_id
         );
         emit_error_event(app_handle, deck_id, "Deck already initialized.");
-        return;
+        return Ok(());
     }
 
     // No Sink creation here. Stream is created on load.
@@ -115,44 +117,35 @@ pub(crate) fn audio_thread_handle_init<R: Runtime>(
     emit_status_update_event(app_handle, deck_id, false);
     emit_sync_status_update_event(app_handle, deck_id, false, false);
     emit_pitch_tick_event(app_handle, deck_id, 1.0);
+    Ok(())
 }
 
 pub(crate) async fn audio_thread_handle_load<R: Runtime>(
-    deck_id: String, // Keep as String for map keys
+    deck_id: String,
     path: String,
     original_bpm: Option<f32>,
     first_beat_sec: Option<f32>,
     local_states: &mut HashMap<String, AudioThreadDeckState>,
-    cpal_device: &Device, // Added CPAL device
+    cpal_device: &Device,
     app_handle: &AppHandle<R>,
-) {
-    // Ensure deck exists (after init)
-    let deck_state_exists = local_states.contains_key(&deck_id);
-    if !deck_state_exists {
+) -> Result<(), PlaybackError> {
+    if !local_states.contains_key(&deck_id) {
         let err_msg = format!("Deck '{}' not initialized before load.", deck_id);
         log::error!("Audio Thread: LoadTrack: {}", err_msg);
         emit_error_event(app_handle, &deck_id, &err_msg);
-        return;
+        return Ok(());
     }
-    
-    // If a stream already exists for this deck, drop it.
-    // Taking it out of local_states temporarily to satisfy borrow checker if needed
-    // and ensure its Drop implementation (which stops the stream) is called.
     if let Some(state) = local_states.get_mut(&deck_id) {
         if state.cpal_stream.take().is_some() {
             log::info!("Audio Thread: Dropped existing CPAL stream for deck '{}' before loading new track.", deck_id);
         }
     }
-
-
-    let path_clone = path.clone(); // For spawn_blocking
-    let decode_app_handle = app_handle.clone(); // Clone for spawn_blocking error reporting
+    let path_clone = path.clone();
+    let decode_app_handle = app_handle.clone();
     let decode_deck_id = deck_id.clone();
-
     let decode_result = tokio::task::spawn_blocking(move || {
         decoding::decode_file_to_mono_samples(&path_clone)
     }).await;
-
     match decode_result {
         Ok(Ok((samples, rate))) => {
             let duration_val = Duration::from_secs_f64(samples.len() as f64 / rate as f64);
@@ -160,22 +153,17 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
                 "Audio Thread: Decoded '{}'. Duration: {:?}, Rate: {}, Samples: {}",
                 path, duration_val, rate, samples.len()
             );
-
-            // Find a supported CPAL output configuration
             let supported_configs = match cpal_device.supported_output_configs() {
                 Ok(configs) => configs.collect::<Vec<_>>(),
                 Err(e) => {
                     let err = PlaybackError::CpalSupportedStreamConfigsError(e);
                     log::error!("Audio Thread: LoadTrack: Could not get supported configs for deck '{}': {:?}", deck_id, err);
                     emit_error_event(app_handle, &deck_id, &err.to_string());
-                    return;
+                    return Ok(());
                 }
             };
-
             let target_track_sample_rate = rate as u32;
             let mut best_config: Option<SupportedStreamConfigRange> = None;
-
-            // Priority 1: Exact match for track sample rate, F32, prefer 2 channels
             for config_range in supported_configs.iter() {
                 if config_range.sample_format() == cpal::SampleFormat::F32 {
                     if config_range.min_sample_rate().0 <= target_track_sample_rate && config_range.max_sample_rate().0 >= target_track_sample_rate {
@@ -183,14 +171,12 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
                             best_config = Some(config_range.clone());
                             break;
                         }
-                        if best_config.is_none() || best_config.as_ref().unwrap().channels() != 2 {
+                        if best_config.is_none() || best_config.as_ref().map(|c| c.channels() != 2).unwrap_or(false) {
                             best_config = Some(config_range.clone());
                         }
                     }
                 }
             }
-
-            // Priority 2: Common rates (48k, 44.1k), F32, prefer 2 channels
             if best_config.is_none() {
                 for target_sr in [48000, 44100].iter() {
                     for config_range in supported_configs.iter() {
@@ -200,84 +186,64 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
                                     best_config = Some(config_range.clone());
                                     break;
                                 }
-                                if best_config.is_none() || best_config.as_ref().unwrap().channels() != 2 {
-                                   best_config = Some(config_range.clone());
+                                if best_config.is_none() || best_config.as_ref().map(|c| c.channels() != 2).unwrap_or(false) {
+                                    best_config = Some(config_range.clone());
                                 }
                             }
                         }
                     }
-                    if best_config.is_some() && best_config.as_ref().unwrap().channels() == 2 && 
-                       (best_config.as_ref().unwrap().min_sample_rate().0 <= *target_sr && best_config.as_ref().unwrap().max_sample_rate().0 >= *target_sr) {
-                        break; 
+                    if best_config.is_some() && best_config.as_ref().map(|c| c.channels() == 2 && c.min_sample_rate().0 <= *target_sr && c.max_sample_rate().0 >= *target_sr).unwrap_or(false) {
+                        break;
                     }
                 }
             }
-            
-            // Priority 3: Any F32, prefer 2 channels, then highest sample rate
             if best_config.is_none() {
                 let mut f32_configs: Vec<SupportedStreamConfigRange> = supported_configs.iter()
                     .filter(|c| c.sample_format() == cpal::SampleFormat::F32)
                     .cloned()
                     .collect();
-
                 if !f32_configs.is_empty() {
                     f32_configs.sort_by(|a, b| {
-                        // Prefer 2 channels, then by max sample rate
-                        b.channels().cmp(&a.channels()) 
+                        b.channels().cmp(&a.channels())
                          .then_with(|| b.max_sample_rate().cmp(&a.max_sample_rate()))
                     });
                     best_config = Some(f32_configs[0].clone());
                 }
             }
-            
-            // Priority 4: Fallback to first available if absolutely no F32 found (least ideal)
-            // This part of logic is removed as we strictly want F32. 
-            // If best_config is still None, it means no F32 config was found.
-
             let chosen_supported_config_range = match best_config {
                 Some(conf) => conf,
                 None => {
                     log::error!("Audio Thread: LoadTrack: No suitable F32 output stream configuration found for device on deck '{}'. Available: {:?}", deck_id, supported_configs);
                     emit_error_event(app_handle, &deck_id, "No suitable F32 audio output configuration found.");
-                    return;
+                    return Ok(());
                 }
             };
-            
             let cpal_sample_rate_val = if chosen_supported_config_range.min_sample_rate().0 <= target_track_sample_rate && chosen_supported_config_range.max_sample_rate().0 >= target_track_sample_rate {
                 target_track_sample_rate 
             } else if chosen_supported_config_range.min_sample_rate().0 <= 48000 && chosen_supported_config_range.max_sample_rate().0 >= 48000 {
-                 48000 // Prefer 48kHz if track rate not directly supported but 48k is
+                 48000
             } else if chosen_supported_config_range.min_sample_rate().0 <= 44100 && chosen_supported_config_range.max_sample_rate().0 >= 44100 {
-                 44100 // Then 44.1kHz
+                 44100
             }
             else {
-                 chosen_supported_config_range.max_sample_rate().0 // Fallback to max supported by the chosen range
+                 chosen_supported_config_range.max_sample_rate().0
             };
-
             let cpal_sample_rate = cpal::SampleRate(cpal_sample_rate_val);
             let cpal_channels = chosen_supported_config_range.channels();
-            
-            if (cpal_sample_rate.0 as f32 - rate).abs() > 1.0 { // 'rate' is the track's original float sample rate
+            if (cpal_sample_rate.0 as f32 - rate).abs() > 1.0 {
                  log::warn!("Audio Thread: Sample rate mismatch for deck '{}'. Track: {} Hz, CPAL Stream: {} Hz. Playback quality may be affected if resampling is not perfect (or not yet implemented).",
                     deck_id, rate, cpal_sample_rate.0);
             } else {
                 log::info!("Audio Thread: Matched sample rate for deck '{}'. Track: {} Hz, CPAL Stream: {} Hz.", deck_id, rate, cpal_sample_rate.0);
             }
-
             let stream_config = StreamConfig {
                 channels: cpal_channels,
                 sample_rate: cpal_sample_rate,
-                buffer_size: cpal::BufferSize::Default, // Added buffer_size
+                buffer_size: cpal::BufferSize::Default,
             };
-
-            // Prepare data for the audio callback
-            let samples_arc = Arc::new(samples); // samples from decoding
-            
-            // Must re-fetch deck_state mutably to store the stream
-            let deck_state = local_states.get_mut(&deck_id).unwrap(); // Should exist
-
-            // Assign to deck_state *before* samples_arc is moved into the closure
-            deck_state.decoded_samples = samples_arc.clone(); 
+            let samples_arc = std::sync::Arc::new(samples);
+            let deck_state = local_states.get_mut(&deck_id).ok_or_else(|| PlaybackError::DeckNotFound { deck_id: deck_id.clone() })?;
+            deck_state.decoded_samples = samples_arc.clone();
 
             let current_sample_read_head_arc = deck_state.current_sample_read_head.clone();
             let is_playing_arc = deck_state.is_playing.clone();
@@ -466,7 +432,7 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
                     let err = PlaybackError::CpalBuildStreamError(e);
                     log::error!("Audio Thread: LoadTrack: Failed to build CPAL stream for deck '{}': {:?}", deck_id, err);
                     emit_error_event(app_handle, &deck_id, &err.to_string());
-                    return;
+                    return Ok(());
                 }
             };
             
@@ -499,113 +465,84 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
             emit_load_update_event(app_handle, &deck_id, duration_val.as_secs_f64(), None, original_bpm, first_beat_sec);
             emit_status_update_event(app_handle, &deck_id, false);
             emit_pitch_tick_event(app_handle, &deck_id, 1.0);
-
+            Ok(())
         }
-        Ok(Err(e_decode)) => { // Inner error from decode_file_to_mono_samples
+        Ok(Err(e_decode)) => {
             let err = PlaybackError::PlaybackDecodeError { deck_id: decode_deck_id, source: e_decode };
             log::error!("Audio Thread: Decode failed for path '{}': {:?}", path, err);
             emit_error_event(&decode_app_handle, &deck_id, &err.to_string());
+            Ok(())
         }
-        Err(join_error) => { // JoinError from spawn_blocking
+        Err(join_error) => {
             log::error!("Audio Thread: Decode task panicked for deck '{}': {}", decode_deck_id, join_error);
             let error_msg = format!("Audio decoding task failed: {}", join_error);
             emit_error_event(&decode_app_handle, &deck_id, &error_msg);
+            Ok(())
         }
     }
 }
-
 
 pub(crate) fn audio_thread_handle_play<R: Runtime>(
     deck_id: &str,
     local_states: &mut HashMap<String, AudioThreadDeckState>,
     app_handle: &AppHandle<R>,
-) {
-    if let Some(state) = local_states.get_mut(deck_id) {
-        if state.cpal_stream.is_none() {
-            log::warn!("Audio Thread: Play ignored for deck '{}', no CPAL stream (track not loaded?).", deck_id);
-            emit_error_event(app_handle, deck_id, "Cannot play: Track not loaded.");
-            return;
-        }
-        if state.decoded_samples.is_empty() {
-             log::warn!("Audio Thread: Play ignored for deck '{}', decoded samples are empty.", deck_id);
-            emit_error_event(app_handle, deck_id, "Cannot play: Track data is empty.");
-            return;
-        }
-
-        match state.cpal_stream.as_ref().unwrap().play() {
-            Ok(_) => {
-                // Lock and update is_playing first
-                let mut playing_guard = state.is_playing.lock().unwrap();
-                *playing_guard = true;
-                drop(playing_guard); // Release the lock on is_playing
-
-                // Reset precise timing fields on play/resume to avoid using stale data
-                *state.last_playback_instant.lock().unwrap() = None;
-                *state.read_head_at_last_playback_instant.lock().unwrap() = None;
-
-                log::info!("Audio Thread: Playing deck '{}' via CPAL", deck_id);
-                emit_status_update_event(app_handle, deck_id, true);
-            }
-            Err(e) => {
-                let err = PlaybackError::CpalPlayStreamError(e);
-                log::error!("Audio Thread: Failed to play CPAL stream for deck '{}': {:?}", deck_id, err);
-                emit_error_event(app_handle, deck_id, &err.to_string());
-                // Attempt to recover by setting is_playing to false.
-                *state.is_playing.lock().unwrap() = false;
-
-            }
-        }
-    } else {
-        log::error!("Audio Thread: Play: Deck '{}' not found.", deck_id);
-        emit_error_event(app_handle, deck_id, "Deck not found for play operation.");
+) -> Result<(), PlaybackError> {
+    let state = local_states.get_mut(deck_id).ok_or_else(|| PlaybackError::DeckNotFound { deck_id: deck_id.to_string() })?;
+    if state.cpal_stream.is_none() {
+        log::warn!("Audio Thread: Play ignored for deck '{}', no CPAL stream (track not loaded?).", deck_id);
+        emit_error_event(app_handle, deck_id, "Cannot play: Track not loaded.");
+        return Ok(());
     }
+    if state.decoded_samples.is_empty() {
+        log::warn!("Audio Thread: Play ignored for deck '{}', decoded samples are empty.", deck_id);
+        emit_error_event(app_handle, deck_id, "Cannot play: Track data is empty.");
+        return Ok(());
+    }
+    state.cpal_stream.as_ref().unwrap().play().map_err(PlaybackError::CpalPlayStreamError)?;
+    {
+        let mut playing_guard = state.is_playing.lock().map_err(|_| PlaybackError::LogicalStateLockError(format!("Failed to lock is_playing for deck '{}'.", deck_id)))?;
+        *playing_guard = true;
+    }
+    *state.last_playback_instant.lock().map_err(|_| PlaybackError::LogicalStateLockError(format!("Failed to lock last_playback_instant for deck '{}'.", deck_id)))? = None;
+    *state.read_head_at_last_playback_instant.lock().map_err(|_| PlaybackError::LogicalStateLockError(format!("Failed to lock read_head_at_last_playback_instant for deck '{}'.", deck_id)))? = None;
+    log::info!("Audio Thread: Playing deck '{}' via CPAL", deck_id);
+    emit_status_update_event(app_handle, deck_id, true);
+    Ok(())
 }
 
 pub(crate) fn audio_thread_handle_pause<R: Runtime>(
     deck_id: &str,
     local_states: &mut HashMap<String, AudioThreadDeckState>,
     app_handle: &AppHandle<R>,
-) {
-    if let Some(state) = local_states.get_mut(deck_id) {
-        // Set is_playing to false first, so the callback starts producing silence.
-        *state.is_playing.lock().unwrap() = false;
-
-        if state.cpal_stream.is_none() {
-            log::warn!("Audio Thread: Pause ignored for deck '{}', no CPAL stream.", deck_id);
-            // No error event, as it's effectively paused if not loaded.
-            emit_status_update_event(app_handle, deck_id, false); // Reflect logical state
-            return;
-        }
-
-        match state.cpal_stream.as_ref().unwrap().pause() {
-            Ok(_) => {
-                // Store current position when pausing
-                let current_idx = *state.current_sample_read_head.lock().unwrap();
-                *state.paused_position_read_head.lock().unwrap() = Some(current_idx);
-                
-                log::info!("Audio Thread: Paused deck '{}' via CPAL at sample {}", deck_id, current_idx);
-                emit_status_update_event(app_handle, deck_id, false);
-
-                // Sync logic for pause (Phase 4/5, placeholder for now)
-                let was_master = state.is_master;
-                let was_slave = state.is_sync_active;
-                if was_master {
-                    // TODO: Disable sync for slaves in later phases
-                } else if was_slave {
-                    // TODO: Disable sync for this slave in later phases
-                }
-            }
-            Err(e) => {
-                let err = PlaybackError::CpalPauseStreamError(e);
-                log::error!("Audio Thread: Failed to pause CPAL stream for deck '{}': {:?}", deck_id, err);
-                emit_error_event(app_handle, deck_id, &err.to_string());
-                // is_playing is already false.
-            }
-        }
-    } else {
-        log::error!("Audio Thread: Pause: Deck '{}' not found.", deck_id);
-        emit_error_event(app_handle, deck_id, "Deck not found for pause operation.");
+) -> Result<(), PlaybackError> {
+    let state = local_states.get_mut(deck_id).ok_or_else(|| PlaybackError::DeckNotFound { deck_id: deck_id.to_string() })?;
+    {
+        let mut playing_guard = state.is_playing.lock().map_err(|_| PlaybackError::LogicalStateLockError(format!("Failed to lock is_playing for deck '{}'.", deck_id)))?;
+        *playing_guard = false;
     }
+    if state.cpal_stream.is_none() {
+        log::warn!("Audio Thread: Pause ignored for deck '{}', no CPAL stream.", deck_id);
+        emit_status_update_event(app_handle, deck_id, false);
+        return Ok(());
+    }
+    state.cpal_stream.as_ref().unwrap().pause().map_err(PlaybackError::CpalPauseStreamError)?;
+    let current_idx = *state.current_sample_read_head.lock().map_err(|_| PlaybackError::LogicalStateLockError(format!("Failed to lock current_sample_read_head for deck '{}'.", deck_id)))?;
+    *state.paused_position_read_head.lock().map_err(|_| PlaybackError::LogicalStateLockError(format!("Failed to lock paused_position_read_head for deck '{}'.", deck_id)))? = Some(current_idx);
+    log::info!("Audio Thread: Paused deck '{}' via CPAL at sample {}", deck_id, current_idx);
+    emit_status_update_event(app_handle, deck_id, false);
+
+    // --- NEW: Disengage sync for both decks if either is master or synced ---
+    let any_deck_synced_or_master = local_states.values().any(|s| s.is_sync_active || s.is_master);
+    if any_deck_synced_or_master {
+        let deck_ids: Vec<String> = local_states.keys().cloned().collect();
+        for id in deck_ids {
+            // Ignore errors here to ensure all decks are processed
+            let _ = crate::audio::playback::sync::audio_thread_handle_disable_sync(&id, local_states, app_handle);
+        }
+    }
+    // --- END NEW ---
+
+    Ok(())
 }
 
 pub(crate) fn audio_thread_handle_seek<R: Runtime>(
@@ -613,209 +550,179 @@ pub(crate) fn audio_thread_handle_seek<R: Runtime>(
     position_seconds: f64,
     local_states: &mut HashMap<String, AudioThreadDeckState>,
     app_handle: &AppHandle<R>,
-) {
-    if let Some(state) = local_states.get_mut(deck_id) {
-        if state.decoded_samples.is_empty() || state.sample_rate == 0.0 {
-            log::warn!("Audio Thread: Seek ignored for deck '{}', no track loaded or invalid sample rate.", deck_id);
-            return;
-        }
-
-        let total_samples = state.decoded_samples.len();
-        let target_sample_float = position_seconds * state.sample_rate as f64;
-        let mut target_sample_index = target_sample_float.round() as usize;
-
-        if target_sample_index >= total_samples {
-            log::warn!(
-                "Audio Thread: Seek position {:.2}s (sample {}) beyond duration for deck '{}'. Clamping to end.",
-                position_seconds, target_sample_index, deck_id
-            );
-            target_sample_index = total_samples.saturating_sub(1); // Ensure it's a valid index
-        } else {
-            target_sample_index = target_sample_index.max(0);
-        }
-        
-        log::info!("Audio Thread: Seeking deck '{}' to {:.2}s (sample {})", deck_id, position_seconds, target_sample_index);
-
-        *state.current_sample_read_head.lock().unwrap() = target_sample_index as f64;
-        *state.seek_fade_state.lock().unwrap() = Some(super::state::SeekFadeProgress::FadingIn { progress: 0.0 });
-
-        if !*state.is_playing.lock().unwrap() {
-            *state.paused_position_read_head.lock().unwrap() = Some(target_sample_index as f64);
-        }
-        
-        // Emit tick event to update UI immediately with the new position
-        let current_time_secs = target_sample_index as f64 / state.sample_rate as f64;
-        emit_tick_event(app_handle, deck_id, current_time_secs);
-
-    } else {
-        log::error!("Audio Thread: Seek: Deck '{}' not found.", deck_id);
-        emit_error_event(app_handle, deck_id, "Deck not found for seek operation.");
+) -> Result<(), PlaybackError> {
+    let state = local_states.get_mut(deck_id).ok_or_else(|| PlaybackError::DeckNotFound { deck_id: deck_id.to_string() })?;
+    if state.decoded_samples.is_empty() || state.sample_rate == 0.0 {
+        log::warn!("Audio Thread: Seek ignored for deck '{}', no track loaded or invalid sample rate.", deck_id);
+        return Ok(());
     }
+    let total_samples = state.decoded_samples.len();
+    let target_sample_float = position_seconds * state.sample_rate as f64;
+    let mut target_sample_index = target_sample_float.round() as usize;
+    if target_sample_index >= total_samples {
+        log::warn!(
+            "Audio Thread: Seek position {:.2}s (sample {}) beyond duration for deck '{}'. Clamping to end.",
+            position_seconds, target_sample_index, deck_id
+        );
+        target_sample_index = total_samples.saturating_sub(1);
+    } else {
+        target_sample_index = target_sample_index.max(0);
+    }
+    *state.current_sample_read_head.lock().map_err(|_| PlaybackError::LogicalStateLockError(format!("Failed to lock current_sample_read_head for deck '{}'.", deck_id)))? = target_sample_index as f64;
+    *state.seek_fade_state.lock().map_err(|_| PlaybackError::LogicalStateLockError(format!("Failed to lock seek_fade_state for deck '{}'.", deck_id)))? = Some(super::state::SeekFadeProgress::FadingIn { progress: 0.0 });
+    if !*state.is_playing.lock().map_err(|_| PlaybackError::LogicalStateLockError(format!("Failed to lock is_playing for deck '{}'.", deck_id)))? {
+        *state.paused_position_read_head.lock().map_err(|_| PlaybackError::LogicalStateLockError(format!("Failed to lock paused_position_read_head for deck '{}'.", deck_id)))? = Some(target_sample_index as f64);
+    }
+    let current_time_secs = target_sample_index as f64 / state.sample_rate as f64;
+    emit_tick_event(app_handle, deck_id, current_time_secs);
+    Ok(())
 }
 
 pub(crate) fn audio_thread_handle_set_fader_level(
     deck_id: &str,
     level: f32,
     local_states: &mut HashMap<String, AudioThreadDeckState>,
-) {
-    // For Phase 1, fader level is not directly applied to CPAL stream volume.
-    // This would require per-sample multiplication in the data callback or a volume effect.
-    // We can store the value if needed for later phases, or just log for now.
+) -> Result<(), PlaybackError> {
     if local_states.contains_key(deck_id) {
         let clamped_level = level.clamp(0.0, 1.0);
-        // Placeholder: In a later phase, this level would be read by the data callback
-        // to scale samples. For now, it's a no-op on audio output.
         log::debug!(
             "Audio Thread: Set fader level for deck '{}' to {} (Note: Not applied in CPAL Phase 1)",
             deck_id, clamped_level
         );
+        Ok(())
     } else {
         log::warn!("Audio Thread: SetFaderLevel: Deck '{}' not found.", deck_id);
+        Err(PlaybackError::DeckNotFound { deck_id: deck_id.to_string() })
     }
 }
 
 pub(crate) fn audio_thread_handle_set_trim_gain(
     deck_id: &str,
-    gain: f32, // This is linear gain
+    gain: f32,
     local_states: &mut HashMap<String, AudioThreadDeckState>,
-) {
-    if let Some(state) = local_states.get_mut(deck_id) {
-        *state.target_trim_gain.lock().unwrap() = gain;
-        log::debug!(
-            "Audio Thread: Set target_trim_gain (linear) for deck '{}' to {}",
-            deck_id, gain
-        );
-    } else {
-        log::warn!("Audio Thread: SetTrimGain: Deck '{}' not found.", deck_id);
-    }
+) -> Result<(), PlaybackError> {
+    let state = local_states.get_mut(deck_id).ok_or_else(|| PlaybackError::DeckNotFound { deck_id: deck_id.to_string() })?;
+    *state.target_trim_gain.lock().map_err(|_| PlaybackError::LogicalStateLockError(format!("Failed to lock target_trim_gain for deck '{}'.", deck_id)))? = gain;
+    log::debug!(
+        "Audio Thread: Set target_trim_gain (linear) for deck '{}' to {}",
+        deck_id, gain
+    );
+    Ok(())
 }
 
 pub(crate) fn audio_thread_handle_set_eq(
     deck_id: &str,
     new_params: EqParams,
     local_states: &mut HashMap<String, AudioThreadDeckState>,
-) {
-    if let Some(state) = local_states.get_mut(deck_id) {
-        *state.target_eq_params.lock().unwrap() = new_params;
-        log::debug!("Audio Thread: Updated target_eq_params for deck '{}'", deck_id);
-    } else {
-        log::warn!("Audio Thread: SetEq: Deck '{}' not found.", deck_id);
-    }
+) -> Result<(), PlaybackError> {
+    let state = local_states.get_mut(deck_id).ok_or_else(|| PlaybackError::DeckNotFound { deck_id: deck_id.to_string() })?;
+    *state.target_eq_params.lock().map_err(|_| PlaybackError::LogicalStateLockError(format!("Failed to lock target_eq_params for deck '{}'.", deck_id)))? = new_params;
+    log::debug!("Audio Thread: Updated target_eq_params for deck '{}'", deck_id);
+    Ok(())
 }
 
 pub(crate) fn audio_thread_handle_set_cue<R: Runtime>(
     deck_id: &str,
     position_seconds: f64,
     local_states: &mut HashMap<String, AudioThreadDeckState>,
-    _app_handle: &AppHandle<R>, // app_handle not used for emitting cue specific event in this phase
-) {
-    if let Some(state) = local_states.get_mut(deck_id) {
-        if state.duration == Duration::ZERO {
-            log::warn!("Audio Thread: SetCue ignored for deck '{}', track duration is zero (not loaded?).", deck_id);
-            return;
-        }
-        let cue_duration =
-            Duration::from_secs_f64(position_seconds.max(0.0).min(state.duration.as_secs_f64()));
-        state.cue_point = Some(cue_duration);
-        log::info!(
-            "Audio Thread: Set cue point for deck '{}' to {:.2}s",
-            deck_id, cue_duration.as_secs_f64()
-        );
-    } else {
-        log::error!("Audio Thread: SetCue: Deck '{}' not found.", deck_id);
-        // emit_error_event might be too noisy for this if UI handles it.
+    _app_handle: &AppHandle<R>,
+) -> Result<(), PlaybackError> {
+    let state = local_states.get_mut(deck_id).ok_or_else(|| PlaybackError::DeckNotFound { deck_id: deck_id.to_string() })?;
+    if state.duration == Duration::ZERO {
+        log::warn!("Audio Thread: SetCue ignored for deck '{}', track duration is zero (not loaded?).", deck_id);
+        return Ok(());
     }
+    let cue_duration = Duration::from_secs_f64(position_seconds.max(0.0).min(state.duration.as_secs_f64()));
+    state.cue_point = Some(cue_duration);
+    log::info!(
+        "Audio Thread: Set cue point for deck '{}' to {:.2}s",
+        deck_id, cue_duration.as_secs_f64()
+    );
+    Ok(())
 }
 
 pub(crate) fn audio_thread_handle_cleanup(
     deck_id: &str,
     local_states: &mut HashMap<String, AudioThreadDeckState>,
-) {
+) -> Result<(), PlaybackError> {
     if let Some(mut removed_state) = local_states.remove(deck_id) {
-        // Dropping the stream will stop it.
         if let Some(stream) = removed_state.cpal_stream.take() {
-            drop(stream); // Explicitly drop to ensure it's handled before log.
+            drop(stream);
         }
         log::info!("Audio Thread: Cleaned up deck '{}' (CPAL stream dropped if existed).", deck_id);
+        Ok(())
     } else {
         log::warn!("Audio Thread: CleanupDeck: Deck '{}' not found for cleanup.", deck_id);
+        Err(PlaybackError::DeckNotFound { deck_id: deck_id.to_string() })
     }
 }
 
 pub(crate) fn audio_thread_handle_set_pitch_rate<R: Runtime>(
     deck_id: &str,
     rate: f32,
-    is_user_initiated_change: bool, // Renamed from is_major_adjustment
+    is_user_initiated_change: bool,
     local_states: &mut HashMap<String, AudioThreadDeckState>,
     app_handle: &AppHandle<R>,
-) {
+) -> Result<(), PlaybackError> {
     let mut master_new_target_pitch_for_slaves: Option<f32> = None;
-
-    if let Some(state) = local_states.get_mut(deck_id) {
-        let clamped_new_target_rate = rate.clamp(0.5, 2.0); 
-
-        if is_user_initiated_change {
-            state.manual_pitch_rate = clamped_new_target_rate;
-            if state.is_master {
-                master_new_target_pitch_for_slaves = Some(clamped_new_target_rate);
-            }
+    let state = local_states.get_mut(deck_id).ok_or_else(|| PlaybackError::DeckNotFound { deck_id: deck_id.to_string() })?;
+    let clamped_new_target_rate = rate.clamp(0.5, 2.0);
+    let old_current_pitch_rate = *state.current_pitch_rate.lock().map_err(|_| PlaybackError::LogicalStateLockError(format!("Failed to lock current_pitch_rate for deck '{}'.", deck_id)))?;
+    if is_user_initiated_change {
+        state.manual_pitch_rate = clamped_new_target_rate;
+        if state.is_master {
+            master_new_target_pitch_for_slaves = Some(clamped_new_target_rate);
         }
-        // Set the target for smoothing
-        *state.target_pitch_rate.lock().unwrap() = clamped_new_target_rate;
-        
-        if !is_user_initiated_change {
-            // SNAP current_pitch_rate immediately for system changes (like sync tempo matching)
-            *state.current_pitch_rate.lock().unwrap() = clamped_new_target_rate;
-            log::info!( // Changed to info to ensure visibility
-                "Audio Thread: Snapped current_pitch_rate for deck '{}' to {} (System-initiated change for sync/tempo).",
-                deck_id, clamped_new_target_rate
-            );
-            // For system changes, we emit the tick based on the snapped rate
-            emit_pitch_tick_event(app_handle, deck_id, clamped_new_target_rate);
-            state.last_ui_pitch_rate = Some(clamped_new_target_rate);
-            log::info!(
-                "Audio Thread: Set target_pitch_rate and SNAPPED current_pitch_rate for deck '{}' to {} (System change).",
-                deck_id, clamped_new_target_rate
-            );
-        } else {
-            // For user-initiated changes, only target is set here, current_pitch_rate smooths in callback
-            // Emit pitch_tick_event for the target rate, UI will see this target.
-            // The audio callback will smooth current_pitch_rate towards this target.
-            emit_pitch_tick_event(app_handle, deck_id, clamped_new_target_rate);
-            state.last_ui_pitch_rate = Some(clamped_new_target_rate); // Reflect that UI was told about this target
-            log::info!(
-                "Audio Thread: Set target_pitch_rate for deck '{}' to {} (User initiated: {}). Smoothing will occur in callback.",
-                deck_id, clamped_new_target_rate, is_user_initiated_change
-            );
-        }
-    } else {
-        log::warn!("Audio Thread: SetPitchRate: Deck '{}' not found.", deck_id);
-        return; 
     }
-
+    *state.target_pitch_rate.lock().map_err(|_| PlaybackError::LogicalStateLockError(format!("Failed to lock target_pitch_rate for deck '{}'.", deck_id)))? = clamped_new_target_rate;
+    if !is_user_initiated_change {
+        *state.current_pitch_rate.lock().map_err(|_| PlaybackError::LogicalStateLockError(format!("Failed to lock current_pitch_rate for deck '{}'.", deck_id)))? = clamped_new_target_rate;
+        if (clamped_new_target_rate - old_current_pitch_rate).abs() > 1e-5 {
+            *state.last_playback_instant.lock().map_err(|_| PlaybackError::LogicalStateLockError(format!("Failed to lock last_playback_instant for deck '{}'.", deck_id)))? = None;
+            *state.read_head_at_last_playback_instant.lock().map_err(|_| PlaybackError::LogicalStateLockError(format!("Failed to lock read_head_at_last_playback_instant for deck '{}'.", deck_id)))? = None;
+            log::info!(
+                "Audio Thread: Invalidated precise timing for deck '{}' due to system pitch change from {:.4} to {:.4}.",
+                deck_id, old_current_pitch_rate, clamped_new_target_rate
+            );
+        }
+        log::info!(
+            "Audio Thread: Snapped current_pitch_rate for deck '{}' to {} (System-initiated change for sync/tempo).",
+            deck_id, clamped_new_target_rate
+        );
+        emit_pitch_tick_event(app_handle, deck_id, clamped_new_target_rate);
+        state.last_ui_pitch_rate = Some(clamped_new_target_rate);
+        log::info!(
+            "Audio Thread: Set target_pitch_rate and SNAPPED current_pitch_rate for deck '{}' to {} (System change).",
+            deck_id, clamped_new_target_rate
+        );
+    } else {
+        emit_pitch_tick_event(app_handle, deck_id, clamped_new_target_rate);
+        state.last_ui_pitch_rate = Some(clamped_new_target_rate);
+        log::info!(
+            "Audio Thread: Set target_pitch_rate for deck '{}' to {} (User initiated: {}). Smoothing will occur in callback.",
+            deck_id, clamped_new_target_rate, is_user_initiated_change
+        );
+    }
     if let Some(master_new_target_pitch) = master_new_target_pitch_for_slaves {
-        let master_deck_id_str = deck_id.to_string(); 
+        let master_deck_id_str = deck_id.to_string();
         let master_original_bpm = local_states.get(deck_id).and_then(|s| s.original_bpm);
-
         if let Some(master_bpm) = master_original_bpm {
             let mut slave_updates: Vec<(String, f32)> = Vec::new();
-            for (id, state) in local_states.iter() { // First pass: collect updates
+            for (id, state) in local_states.iter() {
                 if state.is_sync_active && state.master_deck_id.as_deref() == Some(&master_deck_id_str) {
                     if let Some(slave_bpm) = state.original_bpm {
-                        if slave_bpm.abs() > 1e-6 { 
+                        if slave_bpm.abs() > 1e-6 {
                             let new_target_rate_for_slave = (master_bpm / slave_bpm) * master_new_target_pitch;
                             slave_updates.push((id.clone(), new_target_rate_for_slave));
                         }
                     }
                 }
             }
-            // Second pass: apply updates (modifies local_states)
             for (slave_id_str, new_target_rate_for_slave) in slave_updates {
-                if let Some(slave_state) = local_states.get_mut(&slave_id_str) { 
-                    slave_state.target_pitch_rate_for_bpm_match = new_target_rate_for_slave; // This is important for PLL
-                    *slave_state.target_pitch_rate.lock().unwrap() = new_target_rate_for_slave.clamp(0.5, 2.0);
-                    log::info!("Audio Thread: Master '{}' target pitch change, slave '{}' new target_pitch_rate: {:.4}", 
-                               master_deck_id_str, slave_id_str, new_target_rate_for_slave);
+                if let Some(slave_state) = local_states.get_mut(&slave_id_str) {
+                    slave_state.target_pitch_rate_for_bpm_match = new_target_rate_for_slave;
+                    *slave_state.target_pitch_rate.lock().map_err(|_| PlaybackError::LogicalStateLockError(format!("Failed to lock target_pitch_rate for deck '{}'.", slave_id_str)))? = new_target_rate_for_slave.clamp(0.5, 2.0);
+                    log::info!("Audio Thread: Master '{}' target pitch change, slave '{}' new target_pitch_rate: {:.4}", master_deck_id_str, slave_id_str, new_target_rate_for_slave);
                     emit_pitch_tick_event(app_handle, &slave_id_str, new_target_rate_for_slave.clamp(0.5, 2.0));
                     slave_state.last_ui_pitch_rate = Some(new_target_rate_for_slave.clamp(0.5, 2.0));
                 } else {
@@ -826,4 +733,5 @@ pub(crate) fn audio_thread_handle_set_pitch_rate<R: Runtime>(
             log::warn!("Audio Thread: Master '{}' missing BPM, cannot update slave target pitches.", deck_id);
         }
     }
+    Ok(())
 } 
