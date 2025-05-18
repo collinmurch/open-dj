@@ -272,8 +272,8 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
             const EQ_TRIM_SMOOTHING_FACTOR: f32 = 0.1; // For per-sample smoothing
 
             // --- Pitch Smoothing (Phase 6) ---
-            let current_pitch_rate_arc_cb = deck_state.current_pitch_rate.clone(); // Renamed to avoid conflict with outer scope
-            let target_pitch_rate_arc_cb = deck_state.target_pitch_rate.clone(); // Renamed
+            let current_pitch_rate_arc_cb = deck_state.current_pitch_rate.clone(); 
+            let target_pitch_rate_arc_cb = deck_state.target_pitch_rate.clone(); 
             const PITCH_SMOOTHING_FACTOR: f32 = 0.1; // Per-sample smoothing factor for pitch
 
             // --- Seek Fading (Phase 6) ---
