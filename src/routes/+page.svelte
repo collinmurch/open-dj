@@ -47,10 +47,6 @@
     // --- Global Mixer Controls ---
     let crossfaderSliderValue = $state($syncStore.crossfaderValue);
 
-    // --- Deck Volume Derivations (from Crossfader in syncStore) ---
-    const deckAVolume = $derived(() => 1 - $syncStore.crossfaderValue);
-    const deckBVolume = $derived(() => $syncStore.crossfaderValue);
-
     // --- Waveform Colors ---
     const deckALowBandColor: [number, number, number] = [0.3, 0.2, 0.6];
     const deckAMidBandColor: [number, number, number] = [0.48, 0.38, 0.72];
@@ -60,16 +56,17 @@
     const deckBHighBandColor: [number, number, number] = [0.88, 0.9, 0.92];
 
     // --- Effects to apply derived volumes to player stores ---
-    $effect(() => {
-        void (async () => {
-            await playerStoreA.setVolume(deckAVolume());
-        })();
-    });
-    $effect(() => {
-        void (async () => {
-            await playerStoreB.setVolume(deckBVolume());
-        })();
-    });
+    // Remove these effects as individual faders will now control volume
+    // $effect(() => {
+    //     void (async () => {
+    //         await playerStoreA.setVolume(deckAVolume());
+    //     })();
+    // });
+    // $effect(() => {
+    //     void (async () => {
+    //         await playerStoreB.setVolume(deckBVolume());
+    //     })();
+    // });
 
     // --- SIMPLIFIED Effect to update syncStore from local slider state ---
     const CROSSFADER_TOLERANCE = 1e-5;
@@ -175,6 +172,60 @@
     $effect(() => {
         const _isSyncedB = $playerStoreB.isSyncActive;
         const _filePathB = deckBFilePath;
+    });
+
+    // --- NEW Effects for Individual Deck Faders (incorporating crossfader) ---
+    $effect(() => {
+        const individual_level_A = deckAFaderLevel; // User's direct setting for Deck A's fader
+        const crossfade_effect_on_A = 1.0 - crossfaderSliderValue; // 1.0 when left, 0.0 when right
+        let calculated_level_A = individual_level_A * crossfade_effect_on_A;
+        const final_level_A = Math.max(0.0, Math.min(1.0, calculated_level_A));
+
+        // console.log(`[Fader A Effect] Indiv: ${individual_level_A.toFixed(2)}, XFadeVal: ${crossfaderSliderValue.toFixed(2)}, XFadeEffect: ${crossfade_effect_on_A.toFixed(2)}, Final: ${final_level_A.toFixed(2)}`);
+
+        if ($playerStoreA.duration > 0) {
+            invoke("set_fader_level", {
+                deckId: "A",
+                level: final_level_A,
+            }).catch((err) =>
+                console.error("[Page] Error setting fader A level:", err),
+            );
+        }
+    });
+
+    $effect(() => {
+        const individual_level_B = deckBFaderLevel; // User's direct setting for Deck B's fader
+        const crossfade_effect_on_B = crossfaderSliderValue; // 0.0 when left, 1.0 when right
+        let calculated_level_B = individual_level_B * crossfade_effect_on_B;
+        const final_level_B = Math.max(0.0, Math.min(1.0, calculated_level_B));
+
+        // console.log(`[Fader B Effect] Indiv: ${individual_level_B.toFixed(2)}, XFadeVal: ${crossfaderSliderValue.toFixed(2)}, XFadeEffect: ${crossfade_effect_on_B.toFixed(2)}, Final: ${final_level_B.toFixed(2)}`);
+
+        if ($playerStoreB.duration > 0) {
+            invoke("set_fader_level", {
+                deckId: "B",
+                level: final_level_B,
+            }).catch((err) =>
+                console.error("[Page] Error setting fader B level:", err),
+            );
+        }
+    });
+
+    // --- REVISED Crossfader Logic: Effect for crossfaderSliderValue (now only updates syncStore) ---
+    $effect(() => {
+        const localCrossfaderValue = crossfaderSliderValue;
+        // This effect now PRIMARILY exists to update the syncStore if other components observe it.
+        // The actual application of the crossfader to audio levels happens in the individual deck fader effects above.
+        if (
+            Math.abs($syncStore.crossfaderValue - localCrossfaderValue) >
+            CROSSFADER_TOLERANCE
+        ) {
+            syncStore.setCrossfader(localCrossfaderValue);
+        }
+        // IMPORTANT: We do NOT want deckAFaderLevel = 1 - crossfaderValue here anymore,
+        // as that would create a loop and prevent independent fader control.
+        // The individual faders (deckAFaderLevel, deckBFaderLevel) are the source of truth for their max level.
+        // The crossfaderSliderValue is now a modulator used in their respective effects.
     });
 
     // --- Effects to bridge PlayerStore sync flags to SyncStore ---
@@ -359,7 +410,7 @@
                     playerActions={playerStoreA}
                     bind:eqParams={deckAEqParams}
                     bind:faderLevel={deckAFaderLevel}
-                    bind:pitchRate={uiSliderPitchRateA}
+                    pitchRate={uiSliderPitchRateA}
                     currentBpm={currentBpmA()}
                     originalBpm={trackInfoA?.metadata?.bpm}
                 />
@@ -372,7 +423,7 @@
                     playerActions={playerStoreB}
                     bind:eqParams={deckBEqParams}
                     bind:faderLevel={deckBFaderLevel}
-                    bind:pitchRate={uiSliderPitchRateB}
+                    pitchRate={uiSliderPitchRateB}
                     currentBpm={currentBpmB()}
                     originalBpm={trackInfoB?.metadata?.bpm}
                 />

@@ -68,9 +68,6 @@ pub enum AudioEffectsError {
     /// Failed to calculate filter coefficients.
     #[error("Failed to calculate {filter_type} coefficients")]
     CoefficientCalculationError { filter_type: String },
-    /// Failed to lock EQ params.
-    #[error("Failed to lock EQ params: {reason}")]
-    EqParamsLockError { reason: String },
 }
 
 /// Errors that can occur during audio decoding (file I/O, format, etc).
