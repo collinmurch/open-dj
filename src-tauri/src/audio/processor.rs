@@ -1,16 +1,10 @@
-use crate::audio::analysis::{volume_analyzer};
+use crate::audio::types::TrackBasicMetadata;
 use crate::audio::errors::AudioProcessorError;
 use rayon::prelude::*;
 use std::collections::HashMap;
 
 // --- New Struct for Basic Metadata ---
-#[derive(serde::Serialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct TrackBasicMetadata {
-    pub duration_seconds: Option<f64>,
-    pub bpm: Option<f32>,
-    pub first_beat_sec: Option<f32>,
-}
+
 
 // --- Internal Helper Functions ---
 
@@ -42,13 +36,11 @@ fn get_track_basic_metadata_internal(
         "Metadata Intern: Starting basic metadata analysis for: {}",
         path
     );
-
     let (samples, sample_rate) = crate::audio::decoding::decode_file_to_mono_samples(path)
         .map_err(|e| AudioProcessorError::AnalysisDecodingError {
             path: path.to_string(),
             source: e,
         })?;
-
     let duration_result = if sample_rate > 0.0 && !samples.is_empty() {
         Ok(samples.len() as f64 / sample_rate as f64)
     } else {
@@ -60,18 +52,14 @@ fn get_track_basic_metadata_internal(
             path: path.to_string(),
         })
     };
-
-    // Use new analyze_bpm function
     let (bpm, first_beat_sec) = crate::audio::analysis::bpm_analyzer::analyze_bpm(&samples, sample_rate)
         .map_err(|e| AudioProcessorError::AnalysisBpmError {
             path: path.to_string(),
             source: e,
         })?;
-
     let final_duration = log_and_convert_to_option(duration_result, path, "Duration");
     let final_bpm = Some(bpm);
     let final_first_beat_sec = Some(first_beat_sec);
-
     Ok(TrackBasicMetadata {
         duration_seconds: final_duration,
         bpm: final_bpm,
@@ -82,22 +70,19 @@ fn get_track_basic_metadata_internal(
 /// Decodes audio and calculates full volume analysis (WaveBin levels).
 fn get_track_volume_analysis_internal(
     path: &str,
-) -> Result<volume_analyzer::AudioAnalysis, AudioProcessorError> {
-    // Adjusted type path
+) -> Result<crate::audio::types::AudioAnalysis, AudioProcessorError> {
     log::info!("Volume Intern: Starting volume analysis for: {}", path);
-
     let (samples, sample_rate) = crate::audio::decoding::decode_file_to_mono_samples(path)
         .map_err(|e| AudioProcessorError::AnalysisDecodingError {
             path: path.to_string(),
             source: e,
         })?;
-
-    volume_analyzer::calculate_rms_intervals(&samples, sample_rate)
+    crate::audio::analysis::volume_analyzer::calculate_rms_intervals(&samples, sample_rate)
         .map_err(|e| AudioProcessorError::AnalysisVolumeError {
             path: path.to_string(),
             source: e,
         })
-        .map(|(levels, max_band_energy)| volume_analyzer::AudioAnalysis {
+        .map(|(levels, max_band_energy)| crate::audio::types::AudioAnalysis {
             levels,
             max_band_energy,
         })
@@ -134,7 +119,7 @@ pub fn analyze_features_batch(
 
 // --- New Command for On-Demand Volume Analysis ---
 #[tauri::command(async)]
-pub fn get_track_volume_analysis(path: String) -> Result<volume_analyzer::AudioAnalysis, String> {
+pub fn get_track_volume_analysis(path: String) -> Result<crate::audio::types::AudioAnalysis, String> {
     log::info!("Volume CMD: Request for: {}", path);
     get_track_volume_analysis_internal(&path).map_err(|e| {
         log::error!("Volume CMD: Error for path '{}': {}", path, e);

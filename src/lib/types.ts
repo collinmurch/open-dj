@@ -68,6 +68,9 @@ export interface PlayerState {
     isLoading: boolean;
     error: string | null;
     cuePointTime: number | null;
+    isSyncActive: boolean;
+    isMaster: boolean;
+    pitchRate: number | null;
 }
 
 // --- Drag and Drop Types ---

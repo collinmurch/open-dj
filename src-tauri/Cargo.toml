@@ -33,7 +33,7 @@ features = []
 # ──────────────────────────────────────────────────────────────
 [dependencies]
 # --- Tauri Core ---
-tauri = { version = "2.5.1", default-features = false, features = ["wry"] }
+tauri = { version = "2.0.0-beta.18", features = [] }
 
 # --- Tauri Plugins ---
 tauri-plugin-opener = { version = "2.2", default-features = false }
@@ -41,24 +41,22 @@ tauri-plugin-dialog = { version = "2.2", default-features = false }
 tauri-plugin-fs = { version = "2.2", default-features = false }
 
 # --- Audio Libraries ---
-symphonia = { version = "0.5.4", default-features = false, features = [
-    "wav",
-    "mp3",
-] }
-rodio = { version = "0.20.1", features = ["symphonia-wav", "symphonia-mp3"] }
+symphonia = { version = "0.5.3", features = ["all-codecs", "all-formats"] }
+cpal = "0.15.3"
 rustfft = "6.2"
-biquad = "0.4"
+biquad = "0.4.0"
+rubato = "0.13.0"
 
 # --- Utility & Misc Libraries ---
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-log = "0.4"
+log = "0.4.20"
 rayon = "1.10"
 num = "0.4"
 lazy_static = "1.5"
 env_logger = "0.11"
-tokio = { version = "1", features = ["full"] }
-thiserror = "1.0"
+tokio = { version = "1.32.0", features = ["sync", "time", "rt", "macros"] }
+thiserror = "1.0.50"
 
 # ──────────────────────────────────────────────────────────────
 # Profiles

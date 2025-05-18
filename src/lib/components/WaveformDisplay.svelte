@@ -143,14 +143,6 @@
 
     let initialDimensionsSet = $state(false);
 
-    // --- Interpolation State ---
-    let interpolationCtx = $state({
-        internalDisplayTime: 0,
-        lastHostUpdateTime: performance.now(),
-        lastHostTimeValue: 0,
-        hostIsPlaying: false,
-    });
-
     // --- Animation State ---
     let seekAnimationCtx = $state({
         isActive: false,
@@ -220,7 +212,8 @@
         // The `PITCH_AGNOSTIC_ZOOM_SCALAR * audioDuration` part calculates a base zoom
         // for the track as if it were playing at its original speed (pitchRate = 1.0).
         // Dividing by `pitchRate` then scales this view according to the current playback speed.
-        return (PITCH_AGNOSTIC_ZOOM_SCALAR * audioDuration) / pitchRate;
+        const result = (PITCH_AGNOSTIC_ZOOM_SCALAR * audioDuration) / pitchRate;
+        return result;
     });
 
     // Effect to update geometry ONLY when the track/analysis actually changes
@@ -271,38 +264,6 @@
         }
     });
 
-    // Effect to sync with host state for interpolation
-    $effect(() => {
-        const hostTimeProp = currentTime; // Prop value from playerStore
-        const hostPlayingStatusProp = isPlaying; // Prop value
-
-        const timeDelta = Math.abs(
-            hostTimeProp - interpolationCtx.lastHostTimeValue,
-        );
-
-        if (
-            timeDelta > SEEK_TRIGGER_THRESHOLD_SECONDS &&
-            !seekAnimationCtx.isActive
-        ) {
-            // Likely a seek or significant jump, trigger animation
-            console.log(
-                `[WebGLWaveform] Animation triggered. From: ${$state.snapshot(interpolationCtx.internalDisplayTime).toFixed(3)}s to: ${hostTimeProp.toFixed(3)}s`,
-            );
-            seekAnimationCtx.isActive = true;
-            seekAnimationCtx.startTime = performance.now();
-            seekAnimationCtx.startDisplayTime =
-                interpolationCtx.internalDisplayTime; // Current visual position
-            seekAnimationCtx.targetDisplayTime = hostTimeProp; // Target from prop
-        } else if (!seekAnimationCtx.isActive) {
-            // Not animating, so update baseline for normal interpolation or static display
-            interpolationCtx.internalDisplayTime = hostTimeProp;
-        }
-        // Always update these for the next frame's interpolation logic or delta check
-        interpolationCtx.lastHostTimeValue = hostTimeProp;
-        interpolationCtx.lastHostUpdateTime = performance.now();
-        interpolationCtx.hostIsPlaying = hostPlayingStatusProp;
-    });
-
     // Effect to manage the continuous render loop
     $effect(() => {
         if (isTrackLoaded && initialDimensionsSet && glContext.ctx) {
@@ -339,9 +300,7 @@
 
         // Current normalized time at the center of the view (playhead position)
         const normalizedCenterTime =
-            audioDuration > 0
-                ? interpolationCtx.internalDisplayTime / audioDuration
-                : 0;
+            audioDuration > 0 ? currentTime / audioDuration : 0;
 
         // Calculate target normalized time based on click offset from center
         let normalizedTargetTime =
@@ -729,9 +688,7 @@
 
             // Set shared uniforms once
             const normalizedTimeAtPlayhead =
-                audioDuration > 0
-                    ? interpolationCtx.internalDisplayTime / audioDuration
-                    : 0;
+                audioDuration > 0 ? currentTime / audioDuration : 0;
             gl.uniform1f(
                 waveformRendering.uniforms.timeAtPlayheadLoc,
                 normalizedTimeAtPlayhead,
@@ -817,8 +774,7 @@
             gl.useProgram(cueLineRendering.program);
 
             const normalizedCueTime = cuePointTime / audioDuration;
-            const normalizedPlayheadCenterTime =
-                interpolationCtx.internalDisplayTime / audioDuration;
+            const normalizedPlayheadCenterTime = currentTime / audioDuration;
 
             const cueNdcX =
                 (normalizedCueTime - normalizedPlayheadCenterTime) *
@@ -853,14 +809,15 @@
         ) {
             gl.useProgram(cueLineRendering.program);
             const interval = 60.0 / bpm;
-            const normalizedPlayheadCenterTime =
-                interpolationCtx.internalDisplayTime / audioDuration;
+            const normalizedPlayheadCenterTime = currentTime / audioDuration; // USE PROP DIRECTLY
             // Draw lines at firstBeatSec + n * interval
             for (
-                let beat = firstBeatSec;
-                beat < audioDuration + interval;
-                beat += interval
+                let baseBeatTimeSec = firstBeatSec;
+                baseBeatTimeSec < audioDuration + interval;
+                baseBeatTimeSec += interval
             ) {
+                const beat = baseBeatTimeSec; // Keep original beat time without drift correction
+
                 if (beat < 0) continue;
                 const normalizedBeat = beat / audioDuration;
                 const beatNdcX =
@@ -890,48 +847,7 @@
             return;
         }
 
-        if (seekAnimationCtx.isActive) {
-            const elapsedAnimationTime =
-                performance.now() - seekAnimationCtx.startTime;
-            if (elapsedAnimationTime < SEEK_ANIMATION_DURATION_MS) {
-                const animationProgress =
-                    elapsedAnimationTime / SEEK_ANIMATION_DURATION_MS;
-                // Simple linear interpolation, can be replaced with easing function
-                interpolationCtx.internalDisplayTime =
-                    seekAnimationCtx.startDisplayTime +
-                    (seekAnimationCtx.targetDisplayTime -
-                        seekAnimationCtx.startDisplayTime) *
-                        animationProgress;
-            } else {
-                interpolationCtx.internalDisplayTime =
-                    seekAnimationCtx.targetDisplayTime;
-                seekAnimationCtx.isActive = false;
-                // Sync up the host time references after animation completes
-                interpolationCtx.lastHostTimeValue =
-                    interpolationCtx.internalDisplayTime;
-                interpolationCtx.lastHostUpdateTime = performance.now();
-                console.log(
-                    `[WebGLWaveform] Animation finished at: ${interpolationCtx.internalDisplayTime.toFixed(3)}s`,
-                );
-            }
-        } else if (interpolationCtx.hostIsPlaying) {
-            const now = performance.now();
-            const elapsedTimeMs = now - interpolationCtx.lastHostUpdateTime;
-            let newCalculatedTime =
-                interpolationCtx.lastHostTimeValue + elapsedTimeMs / 1000.0;
-            newCalculatedTime = Math.max(
-                0,
-                Math.min(newCalculatedTime, audioDuration),
-            );
-            interpolationCtx.internalDisplayTime = newCalculatedTime;
-        } else {
-            // Not playing and not animating seek, internalDisplayTime should be stable from the $effect
-            if (!seekAnimationCtx.isActive) {
-                interpolationCtx.internalDisplayTime =
-                    interpolationCtx.lastHostTimeValue;
-            }
-        }
-
+        // Simplified: Just call render, time is handled by reactive prop
         render();
         animationFrameId = requestAnimationFrame(continuousRender);
     }

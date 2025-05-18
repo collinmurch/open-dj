@@ -1,14 +1,28 @@
 use serde::{Deserialize, Serialize};
-use tokio::sync::oneshot;
+
+// --- Track Metadata ---
+/// Basic metadata for an audio track, including duration, BPM, and first beat offset.
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackBasicMetadata {
+    /// Duration of the track in seconds, if known.
+    pub duration_seconds: Option<f64>,
+    /// Estimated BPM of the track, if analyzed.
+    pub bpm: Option<f32>,
+    /// Time (in seconds) of the first beat, if detected.
+    pub first_beat_sec: Option<f32>,
+}
 
 // --- EQ Parameters ---
-
-/// Holds the gain values (in dB) for the 3-band EQ.
+/// Parameters for 3-band EQ (low, mid, high) in decibels.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct EqParams {
+    /// Gain for the low band in dB.
     pub low_gain_db: f32,
+    /// Gain for the mid band in dB.
     pub mid_gain_db: f32,
+    /// Gain for the high band in dB.
     pub high_gain_db: f32,
 }
 
@@ -22,100 +36,39 @@ impl Default for EqParams {
     }
 }
 
-// Add approximate comparison for f32
 impl EqParams {
+    /// Returns true if all bands are approximately equal to another set of EQ params.
     pub(crate) fn approx_eq(&self, other: &Self) -> bool {
-        const EPSILON: f32 = 1e-5; // Tolerance for float comparison
+        const EPSILON: f32 = 1e-5;
         (self.low_gain_db - other.low_gain_db).abs() < EPSILON
             && (self.mid_gain_db - other.mid_gain_db).abs() < EPSILON
             && (self.high_gain_db - other.high_gain_db).abs() < EPSILON
     }
 }
 
-// --- Audio Thread Communication ---
-
-#[derive(Debug)]
-pub enum AudioThreadCommand {
-    InitDeck(String), // deck_id
-    LoadTrack {
-        deck_id: String,
-        path: String,
-    },
-    Play(String),  // deck_id
-    Pause(String), // deck_id
-    Seek {
-        deck_id: String,
-        position_seconds: f64,
-    },
-    SetFaderLevel {
-        deck_id: String,
-        level: f32, // Linear level 0.0 to 1.0
-    },
-    SetTrimGain {
-        deck_id: String,
-        gain: f32, // Linear gain, e.g., 0.0 to 4.0 (+12dB)
-    },
-    SetEq {
-        deck_id: String,
-        params: EqParams,
-    },
-    SetCue {
-        deck_id: String,
-        position_seconds: f64,
-    },
-    SetPitchRate {
-        deck_id: String,
-        rate: f32,
-    },
-    CleanupDeck(String), // deck_id
-    Shutdown(oneshot::Sender<()>),
-}
-
-// --- State Definitions ---
-
-#[derive(Serialize, Clone, Debug)]
+// --- Audio Analysis Types ---
+/// Audio analysis results for a track, including waveform levels and max energy.
+#[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct PlaybackState {
-    pub is_playing: bool,
-    pub is_loading: bool,
-    pub current_time: f64,
-    pub duration: Option<f64>,
-    pub error: Option<String>,
-    pub cue_point_seconds: Option<f64>,
-    pub pitch_rate: Option<f32>,
+pub struct AudioAnalysis {
+    /// Waveform levels for each band and interval.
+    pub levels: Vec<Vec<WaveBin>>,
+    /// Maximum energy found in any band.
+    pub max_band_energy: f32,
 }
 
-impl Default for PlaybackState {
-    fn default() -> Self {
-        PlaybackState {
-            is_playing: false,
-            is_loading: false,
-            current_time: 0.0,
-            duration: None,
-            error: None,
-            cue_point_seconds: None,
-            pitch_rate: Some(1.0),
-        }
-    }
-}
-
-#[derive(Serialize, Clone, Debug)]
+/// A single bin of waveform energy for low, mid, and high bands.
+#[derive(Serialize, Debug, Clone, Copy)]
 #[serde(rename_all = "camelCase")]
-pub struct PlaybackUpdateEventPayload {
-    pub deck_id: String,
-    pub state: PlaybackState,
+pub struct WaveBin {
+    /// Energy in the low band.
+    pub low: f32,
+    /// Energy in the mid band.
+    pub mid: f32,
+    /// Energy in the high band.
+    pub high: f32,
 }
 
-#[derive(Serialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct PlaybackTickEventPayload {
-    pub deck_id: String,
-    pub current_time: f64,
-}
+// --- Audio Thread Commands ---
 
-#[derive(Serialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct PlaybackErrorEventPayload {
-    pub deck_id: String,
-    pub error: String,
-}
+// --- Event Payloads for Frontend ---

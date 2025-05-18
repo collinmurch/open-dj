@@ -4,6 +4,7 @@
     import { formatTime } from "$lib/utils/timeUtils";
     import { invoke } from "@tauri-apps/api/core";
     import Slider from "./Slider.svelte";
+    import { syncStore, type SyncStatus } from "$lib/stores/syncStore";
 
     let {
         filePath = null,
@@ -17,8 +18,8 @@
             midGainDb: 0.0,
             highGainDb: 0.0,
         } as EqParams),
-        pitchRate = $bindable(1.0),
         currentBpm = null as number | null,
+        originalBpm = null as number | null | undefined,
     }: {
         filePath: string | null;
         deckId: string;
@@ -32,12 +33,13 @@
             | "cleanup"
             | "setVolume"
             | "setCuePoint"
+            | "setPitchRate"
         >;
         trimDb?: number;
         faderLevel?: number;
         eqParams?: EqParams;
-        pitchRate?: number;
         currentBpm?: number | null;
+        originalBpm?: number | null | undefined;
     } = $props();
 
     // --- Volume, Trim & EQ State (remains the same) ---
@@ -59,21 +61,14 @@
         return cueTime !== null && Math.abs(currentTime - cueTime) < 0.1; // Tolerance of 100ms
     });
 
-    // --- Effects ---
-
-    // Effect to load audio data when filePath prop changes
-    $effect(() => {
-        const currentFilePath = filePath;
-        if (!currentFilePath) {
-            return;
-        }
-        playerActions.loadTrack(currentFilePath).catch((err) => {
-            console.error(
-                `[TrackPlayer ${deckId}] Error invoking loadTrack prop:`,
-                err,
-            );
-        });
+    // --- Sync State Access ---
+    const syncButtonStatus = $derived.by((): SyncStatus => {
+        if (playerStoreState.isMaster) return "master";
+        if (playerStoreState.isSyncActive) return "synced";
+        return "off";
     });
+
+    // --- Effects ---
 
     // Effect for component cleanup (if needed for timeouts)
     $effect(() => {
@@ -133,6 +128,18 @@
 
     const SEEK_AMOUNT = 5; // Seek 5 seconds
 
+    // Event handler for pitch slider changes from Slider's onchangeValue event
+    function handlePitchSliderChange(newPitchValue: number) {
+        if (playerActions && typeof playerActions.setPitchRate === "function") {
+            playerActions.setPitchRate(newPitchValue).catch((err) => {
+                console.error(
+                    `[TrackPlayer ${deckId}] Error invoking setPitchRate prop:`,
+                    err,
+                );
+            });
+        }
+    }
+
     // --- Event Handlers for Buttons (use playerActions props) ---
     function handlePlayPause() {
         if (playerStoreState.isPlaying) {
@@ -188,19 +195,14 @@
 
     // --- CUE Button Handlers ---
     function handleCueClick() {
-        console.log(
-            `[TrackPlayer ${deckId}] Cue CLICKED. Playing: ${playerStoreState.isPlaying}, Cue Time: ${playerStoreState.cuePointTime}`,
-        );
         if (playerStoreState.isPlaying) {
             playerActions.setCuePoint(playerStoreState.currentTime);
         } else {
             if (playerStoreState.cuePointTime !== null) {
-                // If cue point exists, seek to it
                 playerActions.seek(playerStoreState.cuePointTime);
             } else {
-                // If no cue point exists, set it to the start (0.0)
                 playerActions.setCuePoint(0.0);
-                playerActions.seek(0.0); // And seek there
+                playerActions.seek(0.0);
             }
         }
     }
@@ -208,7 +210,6 @@
     function handleCuePointerDown() {
         isCueHeld = true;
         if (!playerStoreState.isPlaying && isAtCuePoint()) {
-            // If paused AT the cue point, start temporary playback
             wasPausedAtCueWhenCuePressed = true;
             playerActions.play();
         } else {
@@ -219,16 +220,23 @@
     function handleCuePointerUp() {
         isCueHeld = false;
         if (wasPausedAtCueWhenCuePressed) {
-            // If we started temporary playback, stop it and return to cue
             playerActions.pause().then(() => {
-                // Ensure seek happens *after* pause confirmation if possible,
-                // though state updates might race slightly. Seeking paused is okay.
                 if (playerStoreState.cuePointTime !== null) {
                     playerActions.seek(playerStoreState.cuePointTime);
                 }
             });
         }
-        wasPausedAtCueWhenCuePressed = false; // Reset flag
+        wasPausedAtCueWhenCuePressed = false;
+    }
+
+    // --- Sync Button Handler ---
+    function handleSyncToggle() {
+        const currentDeckId = deckId === "A" ? "A" : "B";
+        if (syncButtonStatus === "off") {
+            syncStore.enableSync(currentDeckId);
+        } else {
+            syncStore.disableSync(currentDeckId);
+        }
     }
 </script>
 
@@ -259,16 +267,21 @@
             step={0.01}
             bind:value={faderLevel}
         />
-        <Slider
-            id="pitch-fader-{deckId}"
-            label="Pitch"
-            orientation="vertical"
-            outputMin={0.75}
-            outputMax={1.25}
-            centerValue={1.0}
-            step={0.005}
-            bind:value={pitchRate}
-        />
+        <div class="control-group pitch-controls">
+            <Slider
+                id="{deckId}-pitch"
+                label="Pitch"
+                orientation="vertical"
+                outputMin={0.75}
+                outputMax={1.25}
+                centerValue={1.0}
+                step={0.0001}
+                value={playerStoreState.pitchRate ?? 1.0}
+                onchangeValue={handlePitchSliderChange}
+                disabled={playerStoreState.isSyncActive &&
+                    !playerStoreState.isMaster}
+            />
+        </div>
         <Slider
             id="low-eq-slider-{deckId}"
             label="Low"
@@ -312,10 +325,31 @@
             onpointerleave={handleCuePointerUp}
             disabled={playerStoreState.isLoading ||
                 playerStoreState.duration <= 0 ||
-                !!playerStoreState.error}
+                !!playerStoreState.error ||
+                !originalBpm}
             aria-label="Set or return to Cue point"
         >
             CUE
+        </button>
+        <button
+            class="sync-button"
+            class:active={syncButtonStatus === "synced" ||
+                syncButtonStatus === "master"}
+            class:master={syncButtonStatus === "master"}
+            onclick={handleSyncToggle}
+            disabled={playerStoreState.isLoading ||
+                playerStoreState.duration <= 0 ||
+                !!playerStoreState.error ||
+                !originalBpm}
+            aria-label={syncButtonStatus === "off"
+                ? "Enable Sync"
+                : "Disable Sync"}
+        >
+            {syncButtonStatus === "master"
+                ? "MASTER"
+                : syncButtonStatus === "synced"
+                  ? "SYNCED"
+                  : "SYNC"}
         </button>
         <button
             class="seek-button"
@@ -486,6 +520,26 @@
         margin-left: 0;
     }
 
+    .sync-button {
+        background-color: var(--sync-button-off-bg, #777);
+        color: var(--sync-button-off-text, #eee);
+        border-color: var(--sync-button-off-border, #666);
+        min-width: 60px; /* Slightly wider for MASTER text */
+        transition:
+            background-color 0.2s ease,
+            border-color 0.2s ease;
+    }
+    .sync-button.active {
+        background-color: var(--sync-button-on-bg, #5cb85c);
+        color: var(--sync-button-on-text, #fff);
+        border-color: var(--sync-button-on-border, #4cae4c);
+    }
+    .sync-button.master {
+        background-color: var(--sync-button-master-bg, #337ab7);
+        color: var(--sync-button-master-text, #fff);
+        border-color: var(--sync-button-master-border, #2e6da4);
+    }
+
     @media (prefers-color-scheme: dark) {
         .deck-controls-wrapper {
             border-color: var(--section-border-light, #444);
@@ -534,6 +588,21 @@
         .time-info {
             background-color: #555;
             color: #eee;
+        }
+        .sync-button {
+            background-color: var(--sync-button-off-bg-dark, #5a5a5a);
+            color: var(--sync-button-off-text-dark, #ccc);
+            border-color: var(--sync-button-off-border-dark, #444);
+        }
+        .sync-button.active {
+            background-color: var(--sync-button-on-bg-dark, #449d44);
+            color: var(--sync-button-on-text-dark, #fff);
+            border-color: var(--sync-button-on-border-dark, #398439);
+        }
+        .sync-button.master {
+            background-color: var(--sync-button-master-bg-dark, #286090);
+            color: var(--sync-button-master-text-dark, #fff);
+            border-color: var(--sync-button-master-border-dark, #204d74);
         }
     }
 </style>

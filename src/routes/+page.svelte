@@ -8,6 +8,7 @@
         createPlayerStore,
         type PlayerStore,
     } from "$lib/stores/playerStore";
+    import { syncStore } from "$lib/stores/syncStore";
     import type { VolumeAnalysis, EqParams } from "$lib/types";
     import { invoke } from "@tauri-apps/api/core";
 
@@ -29,7 +30,7 @@
         midGainDb: 0.0,
         highGainDb: 0.0,
     });
-    let deckAPitchRate = $state(1.0);
+    let uiSliderPitchRateA = $state(1.0);
 
     // --- Deck B: File Path, Analysis, EQ, Fader ---
     let deckBFilePath = $state<string | null>(null);
@@ -41,48 +42,154 @@
         midGainDb: 0.0,
         highGainDb: 0.0,
     });
-    let deckBPitchRate = $state(1.0);
+    let uiSliderPitchRateB = $state(1.0);
 
     // --- Global Mixer Controls ---
-    let crossfaderValue = $state(0.5);
+    let crossfaderSliderValue = $state($syncStore.crossfaderValue);
 
-    // --- Deck Volume Derivations (from Crossfader) ---
-    const deckAVolume = $derived(() => {
-        return 1 - crossfaderValue;
-    });
-    const deckBVolume = $derived(() => {
-        return crossfaderValue;
-    });
+    // --- Deck Volume Derivations (from Crossfader in syncStore) ---
+    const deckAVolume = $derived(() => 1 - $syncStore.crossfaderValue);
+    const deckBVolume = $derived(() => $syncStore.crossfaderValue);
 
     // --- Waveform Colors ---
-
-    // Deck A Band Colors (Purple-based)
-    const deckALowBandColor: [number, number, number] = [0.3, 0.2, 0.6]; // Deeper Purple HSL(270, 50%, 40%)
-    const deckAMidBandColor: [number, number, number] = [0.48, 0.38, 0.72]; // Main Purple HSL(255, 45%, 55%)
-    const deckAHighBandColor: [number, number, number] = [0.55, 0.55, 0.85]; // Lighter Lavender HSL(240, 50%, 70%)
-
-    // Deck B Band Colors (Gray-based)
-    const deckBLowBandColor: [number, number, number] = [0.475, 0.5, 0.525]; // Darker Gray HSL(210, 10%, 50%)
-    const deckBMidBandColor: [number, number, number] = [0.66, 0.7, 0.74]; // Main Gray HSL(210, 12%, 70%)
-    const deckBHighBandColor: [number, number, number] = [0.88, 0.9, 0.92]; // Light Gray/Off-white HSL(210, 20%, 90%)
+    const deckALowBandColor: [number, number, number] = [0.3, 0.2, 0.6];
+    const deckAMidBandColor: [number, number, number] = [0.48, 0.38, 0.72];
+    const deckAHighBandColor: [number, number, number] = [0.55, 0.55, 0.85];
+    const deckBLowBandColor: [number, number, number] = [0.475, 0.5, 0.525];
+    const deckBMidBandColor: [number, number, number] = [0.66, 0.7, 0.74];
+    const deckBHighBandColor: [number, number, number] = [0.88, 0.9, 0.92];
 
     // --- Effects to apply derived volumes to player stores ---
     $effect(() => {
-        const volumeA = deckAVolume();
-        playerStoreA.setVolume(volumeA);
+        void (async () => {
+            await playerStoreA.setVolume(deckAVolume());
+        })();
+    });
+    $effect(() => {
+        void (async () => {
+            await playerStoreB.setVolume(deckBVolume());
+        })();
+    });
+
+    // --- SIMPLIFIED Effect to update syncStore from local slider state ---
+    const CROSSFADER_TOLERANCE = 1e-5;
+
+    // Effect to update STORE state from LOCAL state
+    $effect(() => {
+        const localValue = crossfaderSliderValue;
+        // Check against the *current* store value before updating
+        if (
+            Math.abs($syncStore.crossfaderValue - localValue) >
+            CROSSFADER_TOLERANCE
+        ) {
+            syncStore.setCrossfader(localValue); // Update store if local UI changed significantly
+        }
+    });
+
+    // --- REVISED Effects for Pitch Rate Handling ---
+
+    // --- Deck A Pitch Effects ---
+
+    // Effect 1A: Initialize/Update uiSliderPitchRateA from playerStoreA
+    $effect(() => {
+        const storeRate = $playerStoreA.pitchRate;
+        // Dependencies to trigger re-evaluation
+        const _isSyncActive = $playerStoreA.isSyncActive;
+        const _isMaster = $playerStoreA.isMaster;
+        const _path = deckAFilePath;
+
+        if (storeRate !== null) {
+            if (uiSliderPitchRateA !== storeRate) {
+                uiSliderPitchRateA = storeRate;
+            }
+        } else {
+            // Fallback, though pitchRate in store should be initialized
+            uiSliderPitchRateA = 1.0;
+        }
+    });
+
+    // Effect 2A: Send uiSliderPitchRateA changes to playerStoreA if allowed
+    $effect(() => {
+        const localUiRate = uiSliderPitchRateA;
+        const storeRate = $playerStoreA.pitchRate;
+        const isSlave = $playerStoreA.isSyncActive && !$playerStoreA.isMaster;
+        // Dependency to ensure this runs after path changes too (after Effect 1A might have run)
+        const _path = deckAFilePath;
+
+        if (!isSlave) {
+            // Allow sending if not a slave (i.e., unsynced or master)
+            // Send if UI rate is different from store rate (with tolerance for float comparison)
+            if (
+                storeRate === null ||
+                Math.abs(localUiRate - storeRate) > 0.00001
+            ) {
+                void playerStoreA.setPitchRate(localUiRate);
+            }
+        }
+    });
+
+    // --- Deck B Pitch Effects ---
+
+    // Effect 1B: Initialize/Update uiSliderPitchRateB from playerStoreB
+    $effect(() => {
+        const storeRate = $playerStoreB.pitchRate;
+        // Dependencies to trigger re-evaluation
+        const _isSyncActive = $playerStoreB.isSyncActive;
+        const _isMaster = $playerStoreB.isMaster;
+        const _path = deckBFilePath;
+
+        if (storeRate !== null) {
+            if (uiSliderPitchRateB !== storeRate) {
+                uiSliderPitchRateB = storeRate;
+            }
+        } else {
+            // Fallback
+            uiSliderPitchRateB = 1.0;
+        }
+    });
+
+    // Effect 2B: Send uiSliderPitchRateB changes to playerStoreB if allowed
+    $effect(() => {
+        const localUiRate = uiSliderPitchRateB;
+        const storeRate = $playerStoreB.pitchRate;
+        const isSlave = $playerStoreB.isSyncActive && !$playerStoreB.isMaster;
+        // Dependency
+        const _path = deckBFilePath;
+
+        if (!isSlave) {
+            // Allow sending if not a slave
+            if (
+                storeRate === null ||
+                Math.abs(localUiRate - storeRate) > 0.00001
+            ) {
+                void playerStoreB.setPitchRate(localUiRate);
+            }
+        }
+    });
+
+    // --- Effects to reset last sent pitch rate on sync/load changes ---
+    $effect(() => {
+        const _isSyncedA = $playerStoreA.isSyncActive;
+        const _filePathA = deckAFilePath;
+    });
+    $effect(() => {
+        const _isSyncedB = $playerStoreB.isSyncActive;
+        const _filePathB = deckBFilePath;
+    });
+
+    // --- Effects to bridge PlayerStore sync flags to SyncStore ---
+    $effect(() => {
+        const deckId = "A";
+        const isSync = $playerStoreA.isSyncActive;
+        const isMaster = $playerStoreA.isMaster;
+        syncStore.updateDeckSyncFlags(deckId, isSync, isMaster);
     });
 
     $effect(() => {
-        const volumeB = deckBVolume();
-        playerStoreB.setVolume(volumeB);
-    });
-
-    $effect(() => {
-        playerStoreA.setPitchRate(deckAPitchRate);
-    });
-
-    $effect(() => {
-        playerStoreB.setPitchRate(deckBPitchRate);
+        const deckId = "B";
+        const isSync = $playerStoreB.isSyncActive;
+        const isMaster = $playerStoreB.isMaster;
+        syncStore.updateDeckSyncFlags(deckId, isSync, isMaster);
     });
 
     // --- Deck A Data Derivations ---
@@ -101,11 +208,13 @@
 
     const currentBpmA = $derived(() => {
         const bpm = trackInfoA?.metadata?.bpm;
-        return bpm && deckAPitchRate ? bpm * deckAPitchRate : null;
+        const rate = $playerStoreA.pitchRate ?? 1.0;
+        return bpm && rate ? bpm * rate : null;
     });
     const currentBpmB = $derived(() => {
         const bpm = trackInfoB?.metadata?.bpm;
-        return bpm && deckBPitchRate ? bpm * deckBPitchRate : null;
+        const rate = $playerStoreB.pitchRate ?? 1.0;
+        return bpm && rate ? bpm * rate : null;
     });
 
     async function loadTrackToDeck(deckId: "A" | "B") {
@@ -119,12 +228,17 @@
             return;
         }
 
-        const trackToLoad = selectedTrack; // Capture selectedTrack
+        const trackToLoad = selectedTrack;
+
+        const bpm = trackToLoad.metadata?.bpm ?? null;
+        const firstBeat = trackToLoad.metadata?.firstBeatSec ?? null;
 
         if (deckId === "A") {
             deckAFilePath = trackToLoad.path;
+            playerStoreA.loadTrack(trackToLoad.path, bpm, firstBeat);
         } else {
             deckBFilePath = trackToLoad.path;
+            playerStoreB.loadTrack(trackToLoad.path, bpm, firstBeat);
         }
 
         if (trackToLoad.path) {
@@ -137,9 +251,6 @@
             }
 
             try {
-                console.log(
-                    `[Page] Loading volume analysis for Deck ${deckId}: ${trackToLoad.path}`,
-                );
                 const result = await invoke<VolumeAnalysis>(
                     "get_track_volume_analysis",
                     { path: trackToLoad.path },
@@ -149,10 +260,6 @@
                 } else {
                     deckBVolumeAnalysis = result;
                 }
-                console.log(
-                    `[Page] Volume analysis loaded for Deck ${deckId}`,
-                    result,
-                );
             } catch (error) {
                 console.error(
                     `[Page] Error loading volume analysis for Deck ${deckId}: ${trackToLoad.path}`,
@@ -173,7 +280,6 @@
         }
     }
 
-    // Seek handlers for VolumeAnalysis components
     function seekDeckA(time: number) {
         playerStoreA.seek(time);
     }
@@ -205,7 +311,7 @@
                     highBandColor={deckAHighBandColor}
                     eqParams={deckAEqParams}
                     faderLevel={deckAFaderLevel}
-                    pitchRate={deckAPitchRate}
+                    pitchRate={$playerStoreA.pitchRate ?? 1.0}
                     firstBeatSec={trackInfoA?.metadata?.firstBeatSec}
                     bpm={trackInfoA?.metadata?.bpm}
                 />
@@ -225,7 +331,7 @@
                     highBandColor={deckBHighBandColor}
                     eqParams={deckBEqParams}
                     faderLevel={deckBFaderLevel}
-                    pitchRate={deckBPitchRate}
+                    pitchRate={$playerStoreB.pitchRate ?? 1.0}
                     firstBeatSec={trackInfoB?.metadata?.firstBeatSec}
                     bpm={trackInfoB?.metadata?.bpm}
                 />
@@ -239,7 +345,7 @@
                     outputMax={1}
                     centerValue={0.5}
                     step={0.01}
-                    bind:value={crossfaderValue}
+                    bind:value={crossfaderSliderValue}
                 />
             </div>
         </section>
@@ -253,8 +359,9 @@
                     playerActions={playerStoreA}
                     bind:eqParams={deckAEqParams}
                     bind:faderLevel={deckAFaderLevel}
-                    bind:pitchRate={deckAPitchRate}
+                    bind:pitchRate={uiSliderPitchRateA}
                     currentBpm={currentBpmA()}
+                    originalBpm={trackInfoA?.metadata?.bpm}
                 />
             </div>
             <div class="deck-stacked deck-b-style">
@@ -265,13 +372,13 @@
                     playerActions={playerStoreB}
                     bind:eqParams={deckBEqParams}
                     bind:faderLevel={deckBFaderLevel}
-                    bind:pitchRate={deckBPitchRate}
+                    bind:pitchRate={uiSliderPitchRateB}
                     currentBpm={currentBpmB()}
+                    originalBpm={trackInfoB?.metadata?.bpm}
                 />
             </div>
         </section>
 
-        <!-- Music Library below -->
         <section class="library-section library-section-expanded">
             <h2>Music Library</h2>
             <div class="load-controls">
@@ -354,7 +461,7 @@
         height: 80px;
         border-radius: 4px;
         overflow: hidden;
-        background-color: var(--waveform-area-bg); /* Default */
+        background-color: var(--waveform-area-bg);
         transition: background-color 0.3s ease;
         margin-bottom: 0.1rem;
     }
@@ -382,9 +489,7 @@
         display: flex;
         flex-direction: column;
         align-items: center;
-        background-color: var(
-            --deck-bg
-        ); /* Default, can be overridden by deck-a/b-style */
+        background-color: var(--deck-bg);
         flex: 1;
         min-width: 0;
         border: 3px solid transparent;
@@ -505,7 +610,6 @@
         .load-controls button:hover:not(:disabled) {
             background-color: #666;
         }
-        /* Dark theme Deck-specific button styles - Increased specificity */
         .load-controls .load-deck-a-button {
             background-color: var(--deck-a-button-bg-dark);
             color: var(--deck-a-button-text-dark);
@@ -524,7 +628,6 @@
             background-color: var(--deck-b-button-hover-bg-light);
         }
 
-        /* Styles for specific components in dark mode using the variables */
         .waveform-container.deck-a-style {
             background-color: var(--deck-a-waveform-bg-dark);
         }
@@ -541,7 +644,6 @@
         }
     }
 
-    /* Global base styles - should ideally be in a global CSS file or app.html */
     :root {
         *,
         *::before,
@@ -560,7 +662,6 @@
         -moz-osx-font-smoothing: grayscale;
         -webkit-text-size-adjust: 100%;
 
-        /* General text and page background colors here, if not set by SvelteKit defaults */
         --text-color: #0f0f0f;
         --bg-color: #f6f6f6;
     }
