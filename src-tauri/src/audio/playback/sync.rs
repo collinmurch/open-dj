@@ -1,7 +1,7 @@
-pub(crate) const PLL_KP: f32 = 0.001; // Reduced from 0.002
-pub(crate) const MAX_PLL_PITCH_ADJUSTMENT: f32 = 0.04; // Max +/- adjustment from PLL (e.g., 4%), increased from 0.01
-pub(crate) const PLL_KI: f32 = 0.0015; // Reduced from 0.003
-pub(crate) const MAX_PLL_INTEGRAL_ERROR: f32 = 5.0; // Max accumulated error for I-term clamping
+pub(crate) const PLL_KP: f32 = 0.001; // Reduced for stability
+pub(crate) const MAX_PLL_PITCH_ADJUSTMENT: f32 = 0.02; // Reduced for gentler corrections
+pub(crate) const PLL_KI: f32 = 0.0005; // Reduced for stability
+pub(crate) const MAX_PLL_INTEGRAL_ERROR: f32 = 2.0; // Reduced to prevent windup
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -11,6 +11,7 @@ use super::state::AudioThreadDeckState;
 use super::events::{emit_error_event, emit_sync_status_update_event};
 use crate::audio::playback::events::emit_tick_event;
 use super::handlers::{audio_thread_handle_set_pitch_rate};
+
 
 // --- Sync Handler Functions ---
 
@@ -99,121 +100,61 @@ pub(crate) async fn audio_thread_handle_enable_sync_async<R: Runtime>(
             slave_deck_id_str, master_deck_id_str
         );
 
-        // --- Phase 5: One-Shot Phase Alignment ---
-        log::debug!(
-            "EnableSync (Phase 5): Attempting one-shot phase alignment for slave '{}' to master '{}'",
-            slave_deck_id_str, master_deck_id_str
-        );
+        // --- Phase 5: Simple Direct Phase Alignment ---
+        log::info!("EnableSync: Performing direct phase alignment for slave '{}' to master '{}'", slave_deck_id_str, master_deck_id_str);
 
-        let phase_alignment_params = {
-            let master_s_opt = local_states.get(master_deck_id_str);
-            let slave_s_opt = local_states.get(slave_deck_id_str);
-            if let (Some(master_s), Some(slave_s)) = (master_s_opt, slave_s_opt) {
-                let master_calculated_time = {
-                    let head_pos = if *master_s.is_playing.lock().map_err(|_| crate::audio::errors::PlaybackError::LogicalStateLockError(format!("Failed to lock is_playing for master deck '{}'.", master_deck_id_str)))? {
-                        *master_s.current_sample_read_head.lock().map_err(|_| crate::audio::errors::PlaybackError::LogicalStateLockError(format!("Failed to lock current_sample_read_head for master deck '{}'.", master_deck_id_str)))?
-                    } else {
-                        master_s.paused_position_read_head.lock().map_err(|_| crate::audio::errors::PlaybackError::LogicalStateLockError(format!("Failed to lock paused_position_read_head for master deck '{}'.", master_deck_id_str)))?.unwrap_or(0.0)
-                    };
-                    if master_s.sample_rate > 1e-6 {
-                        (head_pos / master_s.sample_rate as f64)
-                            .min(master_s.duration.as_secs_f64())
-                            .max(0.0)
-                    } else { 0.0 }
-                };
-                let slave_calculated_time = {
-                    let head_pos = if *slave_s.is_playing.lock().map_err(|_| crate::audio::errors::PlaybackError::LogicalStateLockError(format!("Failed to lock is_playing for slave deck '{}'.", slave_deck_id_str)))? {
-                        *slave_s.current_sample_read_head.lock().map_err(|_| crate::audio::errors::PlaybackError::LogicalStateLockError(format!("Failed to lock current_sample_read_head for slave deck '{}'.", slave_deck_id_str)))?
-                    } else {
-                        slave_s.paused_position_read_head.lock().map_err(|_| crate::audio::errors::PlaybackError::LogicalStateLockError(format!("Failed to lock paused_position_read_head for slave deck '{}'.", slave_deck_id_str)))?.unwrap_or(0.0)
-                    };
-                    if slave_s.sample_rate > 1e-6 {
-                        (head_pos / slave_s.sample_rate as f64)
-                            .min(slave_s.duration.as_secs_f64())
-                            .max(0.0)
-                    } else { 0.0 }
-                };
-                Some((
-                    (
-                        master_calculated_time,
-                        master_s.original_bpm,
-                        master_s.first_beat_sec,
-                        *master_s.target_pitch_rate.lock().map_err(|_| crate::audio::errors::PlaybackError::LogicalStateLockError(format!("Failed to lock target_pitch_rate for master deck '{}'.", master_deck_id_str)))?
-                    ),
-                    (
-                        slave_calculated_time,
-                        slave_s.original_bpm,
-                        slave_s.first_beat_sec,
-                        slave_s.target_pitch_rate_for_bpm_match,
-                        slave_s.sample_rate,
-                        *slave_s.is_playing.lock().map_err(|_| crate::audio::errors::PlaybackError::LogicalStateLockError(format!("Failed to lock is_playing for slave deck '{}'.", slave_deck_id_str)))?
-                    )
-                ))
-            } else {
-                None
-            }
-        };
-
-        if let Some(((master_current_time_secs, m_bpm_opt, m_fbs_opt, master_pitch),
-                      (slave_current_time_secs, s_bpm_opt, s_fbs_opt, slave_pitch, slave_sample_rate_val, slave_is_playing_val))) = phase_alignment_params {
-            log::trace!(
-                "PhaseAlign CALC INPUTS Master ('{}'): CurrentTimeS {:.4}, BPM {:?}, FBS {:?}, Pitch {:.4}",
-                master_deck_id_str, master_current_time_secs, m_bpm_opt, m_fbs_opt, master_pitch
-            );
-            log::trace!(
-                "PhaseAlign CALC INPUTS Slave ('{}'): CurrentTimeS {:.4}, BPM {:?}, FBS {:?}, TargetPitch {:.4}, SampleRate {}, IsPlaying {}",
-                slave_deck_id_str, slave_current_time_secs, s_bpm_opt, s_fbs_opt, slave_pitch, slave_sample_rate_val, slave_is_playing_val
-            );
+        // Get current positions directly - no complex timing needed
+        if let (Some(master_state), Some(slave_state)) = (local_states.get(master_deck_id_str), local_states.get(slave_deck_id_str)) {
             if let (Some(m_bpm), Some(m_fbs), Some(s_bpm), Some(s_fbs)) = (
-                m_bpm_opt,
-                m_fbs_opt,
-                s_bpm_opt,
-                s_fbs_opt,
+                master_state.original_bpm,
+                master_state.first_beat_sec, 
+                slave_state.original_bpm,
+                slave_state.first_beat_sec
             ) {
-                if m_bpm.abs() > 1e-6 && s_bpm.abs() > 1e-6 && master_pitch.abs() > 1e-6 && slave_pitch.abs() > 1e-6 && slave_sample_rate_val > 0.0 {
-                    let master_effective_interval = (60.0 / m_bpm) / master_pitch;
-                    let slave_effective_interval = (60.0 / s_bpm) / slave_pitch;
-                    let master_time_since_fbs = (master_current_time_secs - m_fbs as f64).max(0.0);
-                    let slave_time_since_fbs = (slave_current_time_secs - s_fbs as f64).max(0.0);
-                    let master_phase = (master_time_since_fbs / master_effective_interval as f64) % 1.0;
-                    let slave_phase = (slave_time_since_fbs / slave_effective_interval as f64) % 1.0;
-                    let mut phase_diff = master_phase - slave_phase;
-                    if phase_diff > 0.5 { phase_diff -= 1.0; }
-                    else if phase_diff < -0.5 { phase_diff += 1.0; }
-                    let time_adjustment_secs = phase_diff * slave_effective_interval as f64;
-                    let sample_adjustment_f64 = time_adjustment_secs * slave_sample_rate_val as f64;
-                    // --- PATCH: Only apply micro-seek if adjustment is significant ---
-                    const PHASE_ADJUSTMENT_THRESHOLD_SECS: f64 = 0.03; // 30ms
-                    if sample_adjustment_f64.abs() > PHASE_ADJUSTMENT_THRESHOLD_SECS * slave_sample_rate_val as f64 {
-                        if let Some(slave_deck_state_mut_for_seek) = local_states.get_mut(slave_deck_id_str) {
-                            let old_read_head = *slave_deck_state_mut_for_seek.current_sample_read_head.lock().map_err(|_| crate::audio::errors::PlaybackError::LogicalStateLockError(format!("Failed to lock current_sample_read_head for slave deck '{}'.", slave_deck_id_str)))?;
-                            let new_read_head = old_read_head + sample_adjustment_f64;
-                            *slave_deck_state_mut_for_seek.current_sample_read_head.lock().map_err(|_| crate::audio::errors::PlaybackError::LogicalStateLockError(format!("Failed to lock current_sample_read_head for slave deck '{}'.", slave_deck_id_str)))? = new_read_head.max(0.0);
-                            if !slave_is_playing_val {
-                                *slave_deck_state_mut_for_seek.paused_position_read_head.lock().map_err(|_| crate::audio::errors::PlaybackError::LogicalStateLockError(format!("Failed to lock paused_position_read_head for slave deck '{}'.", slave_deck_id_str)))? = Some(new_read_head.max(0.0));
-                            }
-                            *slave_deck_state_mut_for_seek.last_playback_instant.lock().map_err(|_| crate::audio::errors::PlaybackError::LogicalStateLockError(format!("Failed to lock last_playback_instant for slave deck '{}'.", slave_deck_id_str)))? = None;
-                            *slave_deck_state_mut_for_seek.read_head_at_last_playback_instant.lock().map_err(|_| crate::audio::errors::PlaybackError::LogicalStateLockError(format!("Failed to lock read_head_at_last_playback_instant for slave deck '{}'.", slave_deck_id_str)))? = None;
-                            log::info!(
-                                "EnableSync (Phase 5): Slave '{}' phase micro-seek. MPh: {:.3}, SPh: {:.3}, Diff: {:.3}, TAdj: {:.3}s, SmpAdj: {:.2}. RH: {:.2} -> {:.2}",
-                                slave_deck_id_str, master_phase, slave_phase, phase_diff, time_adjustment_secs, sample_adjustment_f64, old_read_head, new_read_head
-                            );
-                            emit_tick_event(app_handle, slave_deck_id_str, new_read_head.max(0.0) / slave_sample_rate_val as f64);
-                        } else {
-                            log::warn!("EnableSync (Phase 5): Slave '{}' not found for micro-seek update.", slave_deck_id_str);
+                // Use accurate audio buffer timing for both decks
+                let master_time = super::time::get_audio_buffer_accurate_time_secs(master_deck_id_str, master_state)?;
+                let slave_time = super::time::get_audio_buffer_accurate_time_secs(slave_deck_id_str, slave_state)?;
+                
+                // Calculate beat intervals and phases
+                let master_beat_interval = 60.0 / m_bpm as f64;
+                let slave_beat_interval = 60.0 / s_bpm as f64;
+                let master_phase = ((master_time - m_fbs as f64) / master_beat_interval).fract();
+                let slave_phase = ((slave_time - s_fbs as f64) / slave_beat_interval).fract();
+                
+                // Calculate phase difference with wrapping
+                let mut phase_diff = slave_phase - master_phase;
+                if phase_diff > 0.5 { phase_diff -= 1.0; }
+                if phase_diff < -0.5 { phase_diff += 1.0; }
+                
+                let time_adjustment = phase_diff * slave_beat_interval;
+                let sample_adjustment = time_adjustment * slave_state.sample_rate as f64;
+                
+                log::info!(
+                    "Phase Sync: Master={:.3}° Slave={:.3}° Diff={:.3}° Adj={:.1}ms",
+                    master_phase * 360.0, slave_phase * 360.0, phase_diff * 360.0, time_adjustment * 1000.0
+                );
+                
+                // Apply adjustment if significant (>100 samples ~2ms at 44.1kHz)
+                if sample_adjustment.abs() > 100.0 {
+                    if let Some(slave_state_mut) = local_states.get_mut(slave_deck_id_str) {
+                        let current_read_head = *slave_state_mut.current_sample_read_head.lock().map_err(|_| 
+                            crate::audio::errors::PlaybackError::LogicalStateLockError(format!("Failed to lock slave read head")))?;
+                        let new_read_head = (current_read_head - sample_adjustment).max(0.0);
+                        *slave_state_mut.current_sample_read_head.lock().map_err(|_| 
+                            crate::audio::errors::PlaybackError::LogicalStateLockError(format!("Failed to lock slave read head for adjustment")))? = new_read_head;
+                        
+                        let is_playing = *slave_state_mut.is_playing.lock().map_err(|_| 
+                            crate::audio::errors::PlaybackError::LogicalStateLockError(format!("Failed to lock is_playing")))?;
+                        if !is_playing {
+                            *slave_state_mut.paused_position_read_head.lock().map_err(|_| 
+                                crate::audio::errors::PlaybackError::LogicalStateLockError(format!("Failed to lock paused position")))? = Some(new_read_head);
                         }
-                    } else {
-                        log::info!("EnableSync (Phase 5): Phase alignment skipped for '{}' (|adj| = {:.3}s, letting PLL handle fine sync)", slave_deck_id_str, time_adjustment_secs);
+                        
+                        emit_tick_event(app_handle, slave_deck_id_str, new_read_head / slave_state_mut.sample_rate as f64);
+                        log::info!("Applied phase adjustment: {:.1} samples", sample_adjustment);
                     }
-                    // --- END PATCH ---
-                } else {
-                    log::warn!("EnableSync (Phase 5): Invalid BPM, pitch, or sample rate for phase alignment. M_BPM: {}, S_BPM: {}, M_Pitch: {}, S_Pitch: {}, S_SR: {}", m_bpm, s_bpm, master_pitch, slave_pitch, slave_sample_rate_val);
                 }
-            } else {
-                log::warn!("EnableSync (Phase 5): Missing BPM or FBS for phase alignment for master '{}' or slave '{}'", master_deck_id_str, slave_deck_id_str);
             }
-        } else {
-            log::warn!("EnableSync (Phase 5): Master or Slave state not found for phase alignment parameter extraction. Master: '{}', Slave: '{}'", master_deck_id_str, slave_deck_id_str);
         }
         Ok(())
     } else {
@@ -301,86 +242,44 @@ pub(crate) fn audio_thread_handle_disable_sync<R: Runtime>(
     Ok(())
 }
 
-/// Calculates PLL pitch updates for all synced slave decks.
-/// Returns a map of deck_id to (proportional_correction, signed_error).
+/// Calculates PLL pitch corrections for synced slave decks
 pub(crate) fn calculate_pll_pitch_updates(
     local_states: &HashMap<String, AudioThreadDeckState>,
-    decks_with_current_times: &HashMap<String, (f64, bool)>,
+    deck_times: &HashMap<String, (f64, bool)>,
 ) -> Result<HashMap<String, (f32, f32)>, crate::audio::errors::PlaybackError> {
-    let mut slave_pitch_info: HashMap<String, (f32, f32)> = HashMap::new();
-    let deck_ids: Vec<String> = local_states.keys().cloned().collect();
-    for deck_id in deck_ids {
-        let is_slave_playing_and_synced = local_states.get(&deck_id).map_or(false, |s| s.is_sync_active && s.is_playing.lock().map(|v| *v).unwrap_or(false));
-        if is_slave_playing_and_synced {
-            let slave_data_for_pll = if let Some(s_state) = local_states.get(&deck_id) {
-                let live_slave_current_time_for_pll = decks_with_current_times.get(&deck_id).map(|(t, _)| *t);
-                Some(( 
-                    s_state.master_deck_id.clone(),
-                    s_state.original_bpm,
-                    s_state.first_beat_sec,
-                    s_state.target_pitch_rate_for_bpm_match,
-                    live_slave_current_time_for_pll
-                ))
-            } else { None };
-            if let Some((
-                Some(master_id),
-                Some(slave_bpm),
-                Some(slave_fbs),
-                target_bpm_match_rate,
-                Some(live_slave_time)
-            )) = slave_data_for_pll {
-                if let Some(master_state) = local_states.get(&master_id) {
-                    if let (
-                        Some(master_bpm_val),
-                        Some(master_fbs_val),
-                        Some(master_current_time_val_live)
-                    ) = (
-                        master_state.original_bpm,
-                        master_state.first_beat_sec,
-                        decks_with_current_times.get(&master_id).map(|(t, _)| *t)
-                    ) {
-                        let slave_actual_current_pitch = local_states.get(&deck_id)
-                            .map(|s| s.current_pitch_rate.lock().map(|v| *v).unwrap_or(target_bpm_match_rate))
-                            .unwrap_or(target_bpm_match_rate);
-                        if master_bpm_val > 1e-6 && slave_bpm > 1e-6 && master_state.is_playing.lock().map(|v| *v).unwrap_or(false) && slave_actual_current_pitch.abs() > 1e-6 {
-                            let master_current_pitch = master_state.current_pitch_rate.lock().map(|v| *v).unwrap_or(1.0);
-                            let master_effective_interval = (60.0 / master_bpm_val) / master_current_pitch;
-                            let slave_effective_interval_at_actual_pitch = if slave_actual_current_pitch.abs() > 1e-6 {
-                                (60.0 / slave_bpm) / slave_actual_current_pitch
-                            } else {
-                                log::warn!(
-                                    "PLL Warning (sync.rs): Slave '{}' actual current pitch is near zero. Using raw BPM interval for phase.", 
-                                    deck_id
-                                );
-                                60.0 / slave_bpm 
-                            };
-                            let master_time_since_fbs = (master_current_time_val_live - master_fbs_val as f64).max(0.0);
-                            let slave_time_since_fbs = (live_slave_time - slave_fbs as f64).max(0.0); 
-                            let master_phase = (master_time_since_fbs / master_effective_interval as f64) % 1.0;
-                            let slave_phase = (slave_time_since_fbs / slave_effective_interval_at_actual_pitch as f64) % 1.0;
-                            let phase_error = master_phase - slave_phase;
-                            let signed_error = if phase_error > 0.5 {
-                                phase_error - 1.0
-                            } else if phase_error < -0.5 {
-                                phase_error + 1.0
-                            } else {
-                                phase_error
-                            };
-                            let proportional_correction = signed_error as f32 * PLL_KP;
-                            slave_pitch_info.insert(deck_id.clone(), (proportional_correction, signed_error as f32));
-                            log::debug!(
-                                "PLL CALC {}: M_BPM={:.2}, S_BPM={:.2}, M_FBS={:.3}, S_FBS={:.3}, M_PITCH(actual)={:.3}, S_PITCH(actual)={:.3}, Target_S_PITCH={:.3}, M_TIME(Live)={:.3}, S_TIME(Live)={:.3}, M_EFF_INT={:.4}, S_EFF_INT(actual)={:.4}, S_PHASE={:.3}, M_PHASE={:.3}, ERR={:.3}, SIGNED_ERR={:.3} CORR={:.4}",
-                                deck_id, master_bpm_val, slave_bpm, master_fbs_val, slave_fbs, 
-                                master_current_pitch, slave_actual_current_pitch, target_bpm_match_rate, 
-                                master_current_time_val_live, live_slave_time, 
-                                master_effective_interval, slave_effective_interval_at_actual_pitch, 
-                                slave_phase, master_phase, phase_error, signed_error, proportional_correction
-                            );
-                        } else { log::trace!("PLL CALC Skip for {}: Master '{}' missing data (bpm, fbs, time) or not playing, or slave actual pitch is zero.", deck_id, master_id);}
-                    } else { log::trace!("PLL CALC Skip for {}: Master deck '{}' data incomplete in decks_with_current_times.", deck_id, master_id);}
-                } else { log::warn!("PLL CALC Skip: Master deck '{}' for slave '{}' not found in local_states.", master_id, deck_id); }
-            } else { log::trace!("PLL CALC Skip: Slave '{}' missing critical data (master_id, own_bpm, own_fbs, own_current_time, or target_bpm_match_rate).", deck_id); }
-        }
+    let mut corrections = HashMap::new();
+    
+    for (deck_id, deck_state) in local_states {
+        let is_synced_and_playing = deck_state.is_sync_active 
+            && deck_state.is_playing.lock().map(|v| *v).unwrap_or(false);
+        if !is_synced_and_playing { continue; }
+        let Some(master_id) = &deck_state.master_deck_id else { continue; };
+        let Some(slave_bpm) = deck_state.original_bpm else { continue; };
+        let Some(slave_fbs) = deck_state.first_beat_sec else { continue; };
+        let Some(slave_time) = deck_times.get(deck_id).map(|(t, _)| *t) else { continue; };
+        
+        let Some(master_state) = local_states.get(master_id) else { continue; };
+        let Some(master_bpm) = master_state.original_bpm else { continue; };
+        let Some(master_fbs) = master_state.first_beat_sec else { continue; };
+        let Some(master_time) = deck_times.get(master_id).map(|(t, _)| *t) else { continue; };
+        
+        let master_playing = master_state.is_playing.lock().map(|v| *v).unwrap_or(false);
+        if !master_playing { continue; }
+        
+        // Calculate phases using original BPM intervals
+        let master_beat_interval = 60.0 / master_bpm as f64;
+        let slave_beat_interval = 60.0 / slave_bpm as f64;
+        let master_phase = ((master_time - master_fbs as f64).max(0.0) / master_beat_interval) % 1.0;
+        let slave_phase = ((slave_time - slave_fbs as f64).max(0.0) / slave_beat_interval) % 1.0;
+        
+        // Calculate phase error with wrapping
+        let mut error = slave_phase - master_phase;
+        if error > 0.5 { error -= 1.0; }
+        if error < -0.5 { error += 1.0; }
+        
+        let correction = error as f32 * PLL_KP;
+        corrections.insert(deck_id.clone(), (correction, error as f32));
     }
-    Ok(slave_pitch_info)
+    
+    Ok(corrections)
 } 

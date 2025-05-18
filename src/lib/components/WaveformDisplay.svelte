@@ -808,15 +808,16 @@
                 waveformRendering.high.vertexCount > 0)
         ) {
             gl.useProgram(cueLineRendering.program);
-            const interval = 60.0 / bpm;
+            // Beat lines show original track beats - they don't move with pitch
+            const originalBeatInterval = 60.0 / bpm;
             const normalizedPlayheadCenterTime = currentTime / audioDuration; // USE PROP DIRECTLY
-            // Draw lines at firstBeatSec + n * interval
+            // Draw lines at firstBeatSec + n * originalBeatInterval
             for (
                 let baseBeatTimeSec = firstBeatSec;
-                baseBeatTimeSec < audioDuration + interval;
-                baseBeatTimeSec += interval
+                baseBeatTimeSec < audioDuration + originalBeatInterval;
+                baseBeatTimeSec += originalBeatInterval
             ) {
-                const beat = baseBeatTimeSec; // Keep original beat time without drift correction
+                const beat = baseBeatTimeSec; // Original beat positions in track
 
                 if (beat < 0) continue;
                 const normalizedBeat = beat / audioDuration;

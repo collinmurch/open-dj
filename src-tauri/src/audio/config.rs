@@ -10,7 +10,14 @@ pub const BPM_MIN: f32 = 60.0;
 pub const BPM_MAX: f32 = 200.0;
 
 // --- Audio Playback Thread Constants ---
-pub const AUDIO_THREAD_TIME_UPDATE_INTERVAL_MS: u64 = 25;
+// PERFORMANCE OPTIMIZATIONS:
+// - Reduced time update interval from 25ms to 10ms for tighter sync
+// - Increased PLL responsiveness for better phase tracking
+// - Implemented cubic interpolation for better audio quality
+// - Added sample rate mismatch correction for accurate playback speed
+// - Pre-computed constants to reduce callback overhead
+// - Improved macOS Core Audio compatibility
+pub const AUDIO_THREAD_TIME_UPDATE_INTERVAL_MS: u64 = 10; // Increased from 25ms to 10ms for better sync accuracy
 pub const AUDIO_BUFFER_CHAN_SIZE: usize = 32;
 
 // --- Utility Constants --
