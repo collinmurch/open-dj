@@ -87,6 +87,8 @@ pub(crate) struct AudioThreadDeckState {
     pub(crate) manual_pitch_rate: f32,
     /// Integral error for PLL sync.
     pub pll_integral_error: f32,
+    /// Channel fader level (0.0 to 1.0), controlled by individual deck faders.
+    pub(crate) channel_fader_level: Arc<Mutex<f32>>,
     // --- Precise Timing Fields (Phase 5) ---
     /// Output sample rate of the audio device (set on stream creation).
     pub(crate) output_sample_rate: Option<u32>,
@@ -95,15 +97,6 @@ pub(crate) struct AudioThreadDeckState {
     /// Read head at last playback instant (for precise timing).
     pub(crate) read_head_at_last_playback_instant: Arc<Mutex<Option<f64>>>,
     // --- Seek Fading (Phase 6) ---
-    /// State for seek fade in/out.
-    pub(crate) seek_fade_state: Arc<Mutex<Option<SeekFadeProgress>>>,
-}
-
-/// Progress state for seek fade in/out.
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum SeekFadeProgress {
-    /// Fading out: progress from 0.0 (start) to 1.0 (fully faded out).
-    FadingOut { progress: f32 },
-    /// Fading in: progress from 0.0 (start, muted) to 1.0 (fully faded in).
-    FadingIn { progress: f32 },
+    /// State for seek fade in/out. Value is progress from 0.0 (start, muted) to 1.0 (fully faded in).
+    pub(crate) seek_fade_state: Arc<Mutex<Option<f32>>>,
 } 

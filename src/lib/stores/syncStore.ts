@@ -112,18 +112,17 @@ function createSyncStore() {
             const newState = { ...s };
             if (deckIdToDisable === 'A') {
                 newState.deckASyncStatus = 'off';
+                if (newState.deckBSyncStatus === 'synced' || newState.deckBSyncStatus === 'master') {
+                    newState.deckBSyncStatus = 'off';
+                }
             } else {
                 newState.deckBSyncStatus = 'off';
+                if (newState.deckASyncStatus === 'synced' || newState.deckASyncStatus === 'master') {
+                    newState.deckASyncStatus = 'off';
+                }
             }
             if (newState.masterDeckId === deckIdToDisable) {
                 newState.masterDeckId = null;
-                // Also turn off the other deck if it was synced to this master
-                if (deckIdToDisable === 'A' && newState.deckBSyncStatus === 'synced') {
-                    newState.deckBSyncStatus = 'off';
-                }
-                if (deckIdToDisable === 'B' && newState.deckASyncStatus === 'synced') {
-                    newState.deckASyncStatus = 'off';
-                }
             }
             return newState;
         });

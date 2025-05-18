@@ -22,7 +22,6 @@ pub(crate) async fn audio_thread_handle_enable_sync_async<R: Runtime>(
     local_states: &mut HashMap<String, AudioThreadDeckState>, 
     app_handle: &AppHandle<R>,
 ) -> Result<(), crate::audio::errors::PlaybackError> {
-    log::info!("Audio Thread: Handling EnableSync (Phase 4 - Tempo Sync). Slave: {}, Master: {}", slave_deck_id_str, master_deck_id_str);
     let master_info = match local_states.get(master_deck_id_str) {
         Some(master_state) => {
             if master_state.duration <= Duration::ZERO {
@@ -229,37 +228,73 @@ pub(crate) fn audio_thread_handle_disable_sync<R: Runtime>(
     local_states: &mut HashMap<String, AudioThreadDeckState>,
     app_handle: &AppHandle<R>,
 ) -> Result<(), crate::audio::errors::PlaybackError> {
-    log::info!("Audio Thread: Handling DisableSync (Phase 4) for deck: {}", deck_id_str);
-    let mut former_master_id: Option<String> = None;
-    let pitch_to_restore_this_deck;
-    let deck_state = local_states.get_mut(deck_id_str).ok_or_else(|| crate::audio::errors::PlaybackError::DeckNotFound { deck_id: deck_id_str.to_string() })?;
-    if !deck_state.is_sync_active && !deck_state.is_master {
-        log::warn!("DisableSync: Deck '{}' is not currently synced or master.", deck_id_str);
-        return Ok(());
-    }
-    pitch_to_restore_this_deck = deck_state.manual_pitch_rate;
-    if deck_state.is_master {
-        former_master_id = Some(deck_id_str.to_string());
-    }
-    deck_state.is_sync_active = false;
-    deck_state.is_master = false;
-    deck_state.master_deck_id = None;
-    deck_state.target_pitch_rate_for_bpm_match = 1.0;
-    deck_state.pll_integral_error = 0.0;
+    log::info!("Audio Thread: Handling DisableSync for deck: {}", deck_id_str);
+
+    let (pitch_to_restore_this_deck, was_master_before_disable, id_of_former_master_if_slave) = {
+        let deck_state = local_states.get_mut(deck_id_str).ok_or_else(|| crate::audio::errors::PlaybackError::DeckNotFound { deck_id: deck_id_str.to_string() })?;
+        
+        if !deck_state.is_sync_active && !deck_state.is_master {
+            log::warn!("DisableSync: Deck '{}' is not currently synced or master. No action needed.", deck_id_str);
+            return Ok(());
+        }
+
+        let pitch = deck_state.manual_pitch_rate;
+        let was_master_flag = deck_state.is_master;
+        let former_master_id = if !was_master_flag && deck_state.is_sync_active {
+            deck_state.master_deck_id.clone()
+        } else {
+            None
+        };
+
+        deck_state.is_sync_active = false;
+        deck_state.is_master = false;
+        deck_state.master_deck_id = None;
+        deck_state.target_pitch_rate_for_bpm_match = 1.0; // Reset BPM match target
+        deck_state.pll_integral_error = 0.0; // Reset PLL error
+        (pitch, was_master_flag, former_master_id)
+    };
+
     log::info!("Deck '{}' sync/master status disabled. Will restore its pitch to: {:.4}", deck_id_str, pitch_to_restore_this_deck);
     emit_sync_status_update_event(app_handle, deck_id_str, false, false);
     audio_thread_handle_set_pitch_rate(deck_id_str, pitch_to_restore_this_deck, true, local_states, app_handle)?;
-    if let Some(master_id) = former_master_id {
-        log::info!("Deck '{}' was master. Finding and disabling sync for its slaves...", master_id);
-        let slaves_to_disable: Vec<String> = local_states
+
+    let mut potential_masters_to_demote: Vec<String> = Vec::new();
+
+    if was_master_before_disable {
+        log::info!("Deck '{}' was master. Finding and disabling sync for its former slaves...", deck_id_str);
+        let slaves_of_this_deck: Vec<String> = local_states
             .iter()
-            .filter(|(_id, state)| state.master_deck_id.as_deref() == Some(&master_id))
+            .filter(|(id, state)| *id != deck_id_str && state.master_deck_id.as_deref() == Some(deck_id_str))
             .map(|(id, _)| id.clone())
             .collect();
-        if !slaves_to_disable.is_empty() {
-            log::info!("Disabling sync for former slaves of '{}': {:?}", master_id, slaves_to_disable);
-            for slave_id_str in slaves_to_disable {
-                audio_thread_handle_disable_sync(&slave_id_str, local_states, app_handle)?;
+        
+        if !slaves_of_this_deck.is_empty() {
+            log::info!("Disabling sync for former slaves of '{}': {:?}", deck_id_str, slaves_of_this_deck);
+            for slave_id_str_of_disabled_master in slaves_of_this_deck {
+                // Recursive call. This will handle chains and also add the slaves' original masters (if any) to potential_masters_to_demote if they become relevant.
+                audio_thread_handle_disable_sync(&slave_id_str_of_disabled_master, local_states, app_handle)?;
+            }
+        }
+    } else if let Some(fm_id) = id_of_former_master_if_slave {
+        // This deck was a slave. Its former master is a candidate for demotion if it has no other slaves.
+        potential_masters_to_demote.push(fm_id);
+    }
+
+    // Process demotions for masters that might have lost their last slave
+    for master_to_check_id in potential_masters_to_demote {
+        // Check if this master_to_check_id still has any active slaves in the current state of local_states
+        let master_still_has_active_slaves = local_states.iter().any(|(_id, state)| {
+            state.is_sync_active && state.master_deck_id.as_deref() == Some(&master_to_check_id)
+        });
+
+        if !master_still_has_active_slaves {
+            // Only demote if it's actually still marked as master. It might have been demoted by another recursive call.
+            let should_demote_this_master = local_states.get(&master_to_check_id)
+                .map_or(false, |s| s.is_master);
+
+            if should_demote_this_master {
+                 log::info!("Audio Thread: Former master '{}' (of a now-disabled slave) no longer has other active slaves. Disabling its master status.", master_to_check_id);
+                 audio_thread_handle_disable_sync(&master_to_check_id, local_states, app_handle)?;
             }
         }
     }

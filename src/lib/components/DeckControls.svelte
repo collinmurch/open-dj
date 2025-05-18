@@ -20,6 +20,7 @@
         } as EqParams),
         currentBpm = null as number | null,
         originalBpm = null as number | null | undefined,
+        pitchRate = 1.0,
     }: {
         filePath: string | null;
         deckId: string;
@@ -40,6 +41,7 @@
         eqParams?: EqParams;
         currentBpm?: number | null;
         originalBpm?: number | null | undefined;
+        pitchRate?: number;
     } = $props();
 
     // --- Volume, Trim & EQ State (remains the same) ---
@@ -276,7 +278,7 @@
                 outputMax={1.25}
                 centerValue={1.0}
                 step={0.0001}
-                value={playerStoreState.pitchRate ?? 1.0}
+                value={pitchRate}
                 onchangeValue={handlePitchSliderChange}
                 disabled={playerStoreState.isSyncActive &&
                     !playerStoreState.isMaster}

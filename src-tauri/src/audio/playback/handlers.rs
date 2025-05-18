@@ -108,6 +108,7 @@ pub(crate) fn audio_thread_handle_init<R: Runtime>(
         last_playback_instant: Arc::new(Mutex::new(None)),
         read_head_at_last_playback_instant: Arc::new(Mutex::new(None)),
         seek_fade_state: Arc::new(Mutex::new(None)),
+        channel_fader_level: Arc::new(Mutex::new(1.0f32)), // Initialize channel_fader_level
     };
     local_states.insert(deck_id.to_string(), deck_state);
     log::info!("Audio Thread: Initialized deck '{}' for CPAL", deck_id);
@@ -278,8 +279,11 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
             // --- Seek Fading (Phase 6) ---
             let seek_fade_state_arc = deck_state.seek_fade_state.clone();
             const SEEK_FADE_INCREMENT_PER_BUFFER: f32 = 0.05; // Takes ~20 buffers to fade in
+            let channel_fader_level_arc = deck_state.channel_fader_level.clone(); // Clone for callback
 
             let data_callback = move |output: &mut [f32], _info: &cpal::OutputCallbackInfo| {
+                log::trace!("[Callback {}] Entered data_callback.", deck_id_clone_for_callback);
+
                 // --- Store Playback Timestamp (Phase 5) ---
                 let now_for_timing = std::time::Instant::now(); // Get current system time
                 let read_head_before_advancing_for_this_buffer = *current_sample_read_head_arc.lock().unwrap();
@@ -287,7 +291,16 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
                 *read_head_at_last_playback_instant_arc.lock().unwrap() = Some(read_head_before_advancing_for_this_buffer);
                 // --- End Store Playback Timestamp ---
 
-                let mut is_playing_guard = is_playing_arc.lock().unwrap();
+                let mut is_playing_guard = match is_playing_arc.lock() {
+                    Ok(guard) => guard,
+                    Err(poisoned) => {
+                        log::error!("[Callback {}] is_playing_arc Mutex poisoned: {}. Audio will stop.", deck_id_clone_for_callback, poisoned);
+                        // Fill output with silence and return to prevent further processing with a poisoned lock.
+                        for sample_out in output.iter_mut() { *sample_out = 0.0; }
+                        return;
+                    }
+                };
+
                 if !*is_playing_guard {
                     for sample_out in output.iter_mut() { *sample_out = 0.0; }
                     return;
@@ -301,15 +314,8 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
                 current_eq_params_guard.mid_gain_db = target_eq_params_guard.mid_gain_db * EQ_TRIM_SMOOTHING_FACTOR + current_eq_params_guard.mid_gain_db * (1.0 - EQ_TRIM_SMOOTHING_FACTOR);
                 current_eq_params_guard.high_gain_db = target_eq_params_guard.high_gain_db * EQ_TRIM_SMOOTHING_FACTOR + current_eq_params_guard.high_gain_db * (1.0 - EQ_TRIM_SMOOTHING_FACTOR);
                 
-                // The actual EqParams struct passed to calculate_coefficients is current_eq_params_guard.clone()
-                // The last_eq_params check is to see if coefficients *need* to be recalculated, 
-                // which should happen if current_eq_params_guard (smoothed) has changed significantly from last_eq_params.
-                // For simplicity with per-sample smoothing, we might recalculate coeffs more often if they are cheap, 
-                // or only if the *target* changed and current is now close enough to warrant update.
-                // Let's update based on significant change in smoothed current_eq_params from last_eq_params.
-
                 let mut last_eq_params_guard = last_eq_params_mut.lock().unwrap();
-                if !current_eq_params_guard.approx_eq(&*last_eq_params_guard) { // Check against the actual params used for calculation last time
+                if !current_eq_params_guard.approx_eq(&*last_eq_params_guard) { 
                     let mut low_filter = low_shelf_filter_mut.lock().unwrap();
                     let mut mid_filter = mid_peak_filter_mut.lock().unwrap();
                     let mut high_filter = high_shelf_filter_mut.lock().unwrap();
@@ -326,51 +332,50 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
                         Ok(coeffs) => high_filter.update_coefficients(coeffs),
                         Err(e) => log::error!("Deck {}: Failed to update high_shelf_filter: {}", deck_id_clone_for_callback, e),
                     }
-                    *last_eq_params_guard = current_eq_params_guard.clone(); // Update last_eq_params with the newly applied smoothed values
+                    *last_eq_params_guard = current_eq_params_guard.clone(); 
                 }
-                drop(target_eq_params_guard); // Release lock early
-                // --- End EQ Parameter Update Check & Smoothing ---
+                drop(target_eq_params_guard); 
+                drop(current_eq_params_guard); // Release lock before filter processing guards
+                drop(last_eq_params_guard); // Release lock
 
-                // Lock filters ONCE here after potential coefficient updates
                 let mut low_filter_processing_guard = low_shelf_filter_mut.lock().unwrap();
                 let mut mid_filter_processing_guard = mid_peak_filter_mut.lock().unwrap();
                 let mut high_filter_processing_guard = high_shelf_filter_mut.lock().unwrap();
 
-                // --- Pitch Smoothing (applied per buffer) ---
-                let mut smoothed_pitch_val = *current_pitch_rate_arc_cb.lock().unwrap(); // Get current smoothed value
-                let target_pitch_val = *target_pitch_rate_arc_cb.lock().unwrap(); // Get target
+                let mut smoothed_pitch_val = *current_pitch_rate_arc_cb.lock().unwrap(); 
+                let target_pitch_val = *target_pitch_rate_arc_cb.lock().unwrap(); 
                 smoothed_pitch_val = target_pitch_val * PITCH_SMOOTHING_FACTOR + smoothed_pitch_val * (1.0 - PITCH_SMOOTHING_FACTOR);
-                *current_pitch_rate_arc_cb.lock().unwrap() = smoothed_pitch_val; // Store updated smoothed value
-                // --- End Pitch Smoothing ---
+                *current_pitch_rate_arc_cb.lock().unwrap() = smoothed_pitch_val; 
 
                 let mut current_read_head_guard = current_sample_read_head_arc.lock().unwrap();
                 let source_samples_guard = samples_arc.as_ref();
-                let active_pitch_for_callback = smoothed_pitch_val; // Use the smoothed pitch value for this buffer
+                let active_pitch_for_callback = smoothed_pitch_val; 
                 
-                // --- Trim Gain Smoothing (Phase 6) ---
                 let mut current_trim_gain_val = *current_trim_gain_arc.lock().unwrap();
                 let target_trim_gain_val = *target_trim_gain_arc.lock().unwrap();
                 current_trim_gain_val = target_trim_gain_val * EQ_TRIM_SMOOTHING_FACTOR + current_trim_gain_val * (1.0 - EQ_TRIM_SMOOTHING_FACTOR);
                 *current_trim_gain_arc.lock().unwrap() = current_trim_gain_val;
-                // --- End Trim Gain Smoothing ---
 
-                // --- Calculate Seek Fade Gain (Phase 6) ---
+                let channel_fader_level_val = *channel_fader_level_arc.lock().unwrap(); // Get fader level for this buffer
+
                 let mut seek_fade_gain = 1.0f32;
-                let mut fade_state_guard = seek_fade_state_arc.lock().unwrap(); // Lock once
-                if let Some(fade_progress_enum_val) = fade_state_guard.as_mut() { // Get mutable ref to Option content
-                    match fade_progress_enum_val {
-                        super::state::SeekFadeProgress::FadingIn { progress } => {
-                            seek_fade_gain = *progress;
-                            *progress += SEEK_FADE_INCREMENT_PER_BUFFER;
-                            if *progress >= 1.0 {
-                                *fade_state_guard = None; // Clear the state in the Arc<Mutex<Option>>
+                match seek_fade_state_arc.lock() {
+                    Ok(mut fade_state_guard) => {
+                        if let Some(progress_ref_mut) = fade_state_guard.as_mut() {
+                            log::trace!("[Callback {}] Seek fade active. Progress: {:.2}", deck_id_clone_for_callback, *progress_ref_mut);
+                            seek_fade_gain = *progress_ref_mut;
+                            *progress_ref_mut += SEEK_FADE_INCREMENT_PER_BUFFER;
+                            if *progress_ref_mut >= 1.0 {
+                                *fade_state_guard = None; // Clear the Option<f32>
+                                log::debug!("[Callback {}] Seek fade complete.", deck_id_clone_for_callback);
                             }
                         }
-                        super::state::SeekFadeProgress::FadingOut { progress: _ } => {}
+                    },
+                    Err(poisoned) => {
+                        log::error!("[Callback {}] Seek fade state Mutex poisoned: {}. Setting fade gain to 1.0 to avoid silence.", deck_id_clone_for_callback, poisoned);
+                        seek_fade_gain = 1.0; // Default to full volume if lock fails
                     }
                 }
-                // drop(fade_state_guard) // Guard is dropped automatically at end of its scope
-                // End Revised Seek Fade Gain
 
                 for frame_out in output.chunks_mut(stream_output_channels as usize) {
                     let read_head_floor = current_read_head_guard.floor();
@@ -396,6 +401,7 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
 
                     // --- Apply Trim Gain and EQ (Phase 3 & 6) ---
                     interpolated_sample *= current_trim_gain_val; // Use smoothed value
+                    interpolated_sample *= channel_fader_level_val; // Apply channel fader level
 
                     // Use the guards acquired before the loop
                     interpolated_sample = low_filter_processing_guard.run(interpolated_sample);
@@ -569,7 +575,7 @@ pub(crate) fn audio_thread_handle_seek<R: Runtime>(
         target_sample_index = target_sample_index.max(0);
     }
     *state.current_sample_read_head.lock().map_err(|_| PlaybackError::LogicalStateLockError(format!("Failed to lock current_sample_read_head for deck '{}'.", deck_id)))? = target_sample_index as f64;
-    *state.seek_fade_state.lock().map_err(|_| PlaybackError::LogicalStateLockError(format!("Failed to lock seek_fade_state for deck '{}'.", deck_id)))? = Some(super::state::SeekFadeProgress::FadingIn { progress: 0.0 });
+    *state.seek_fade_state.lock().map_err(|_| PlaybackError::LogicalStateLockError(format!("Failed to lock seek_fade_state for deck '{}'.", deck_id)))? = Some(0.0);
     if !*state.is_playing.lock().map_err(|_| PlaybackError::LogicalStateLockError(format!("Failed to lock is_playing for deck '{}'.", deck_id)))? {
         *state.paused_position_read_head.lock().map_err(|_| PlaybackError::LogicalStateLockError(format!("Failed to lock paused_position_read_head for deck '{}'.", deck_id)))? = Some(target_sample_index as f64);
     }
@@ -583,17 +589,14 @@ pub(crate) fn audio_thread_handle_set_fader_level(
     level: f32,
     local_states: &mut HashMap<String, AudioThreadDeckState>,
 ) -> Result<(), PlaybackError> {
-    if local_states.contains_key(deck_id) {
-        let clamped_level = level.clamp(0.0, 1.0);
-        log::debug!(
-            "Audio Thread: Set fader level for deck '{}' to {} (Note: Not applied in CPAL Phase 1)",
-            deck_id, clamped_level
-        );
-        Ok(())
-    } else {
-        log::warn!("Audio Thread: SetFaderLevel: Deck '{}' not found.", deck_id);
-        Err(PlaybackError::DeckNotFound { deck_id: deck_id.to_string() })
-    }
+    let state = local_states.get_mut(deck_id).ok_or_else(|| PlaybackError::DeckNotFound { deck_id: deck_id.to_string() })?;
+    let clamped_level = level.clamp(0.0, 1.0);
+    *state.channel_fader_level.lock().map_err(|_| PlaybackError::LogicalStateLockError(format!("Failed to lock channel_fader_level for deck '{}'.", deck_id)))? = clamped_level;
+    log::debug!(
+        "Audio Thread: Set channel_fader_level for deck '{}' to {}",
+        deck_id, clamped_level
+    );
+    Ok(())
 }
 
 pub(crate) fn audio_thread_handle_set_trim_gain(
