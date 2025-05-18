@@ -269,12 +269,11 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
             let target_eq_params_arc = deck_state.target_eq_params.clone();
             let current_trim_gain_arc = deck_state.current_trim_gain.clone();
             let target_trim_gain_arc = deck_state.target_trim_gain.clone();
-            const EQ_TRIM_SMOOTHING_FACTOR: f32 = 0.1; // For per-sample smoothing
+            const AUDIO_PARAM_SMOOTHING_FACTOR: f32 = 0.1; // Consolidated smoothing factor
 
             // --- Pitch Smoothing (Phase 6) ---
-            let current_pitch_rate_arc_cb = deck_state.current_pitch_rate.clone(); // Renamed to avoid conflict with outer scope
-            let target_pitch_rate_arc_cb = deck_state.target_pitch_rate.clone(); // Renamed
-            const PITCH_SMOOTHING_FACTOR: f32 = 0.1; // Per-sample smoothing factor for pitch
+            let current_pitch_rate_arc_cb = deck_state.current_pitch_rate.clone(); 
+            let target_pitch_rate_arc_cb = deck_state.target_pitch_rate.clone(); 
 
             // --- Seek Fading (Phase 6) ---
             let seek_fade_state_arc = deck_state.seek_fade_state.clone();
@@ -310,9 +309,9 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
                 let mut current_eq_params_guard = current_eq_params_arc.lock().unwrap();
                 let target_eq_params_guard = target_eq_params_arc.lock().unwrap();
                 
-                current_eq_params_guard.low_gain_db = target_eq_params_guard.low_gain_db * EQ_TRIM_SMOOTHING_FACTOR + current_eq_params_guard.low_gain_db * (1.0 - EQ_TRIM_SMOOTHING_FACTOR);
-                current_eq_params_guard.mid_gain_db = target_eq_params_guard.mid_gain_db * EQ_TRIM_SMOOTHING_FACTOR + current_eq_params_guard.mid_gain_db * (1.0 - EQ_TRIM_SMOOTHING_FACTOR);
-                current_eq_params_guard.high_gain_db = target_eq_params_guard.high_gain_db * EQ_TRIM_SMOOTHING_FACTOR + current_eq_params_guard.high_gain_db * (1.0 - EQ_TRIM_SMOOTHING_FACTOR);
+                current_eq_params_guard.low_gain_db = target_eq_params_guard.low_gain_db * AUDIO_PARAM_SMOOTHING_FACTOR + current_eq_params_guard.low_gain_db * (1.0 - AUDIO_PARAM_SMOOTHING_FACTOR);
+                current_eq_params_guard.mid_gain_db = target_eq_params_guard.mid_gain_db * AUDIO_PARAM_SMOOTHING_FACTOR + current_eq_params_guard.mid_gain_db * (1.0 - AUDIO_PARAM_SMOOTHING_FACTOR);
+                current_eq_params_guard.high_gain_db = target_eq_params_guard.high_gain_db * AUDIO_PARAM_SMOOTHING_FACTOR + current_eq_params_guard.high_gain_db * (1.0 - AUDIO_PARAM_SMOOTHING_FACTOR);
                 
                 let mut last_eq_params_guard = last_eq_params_mut.lock().unwrap();
                 if !current_eq_params_guard.approx_eq(&*last_eq_params_guard) { 
@@ -344,7 +343,7 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
 
                 let mut smoothed_pitch_val = *current_pitch_rate_arc_cb.lock().unwrap(); 
                 let target_pitch_val = *target_pitch_rate_arc_cb.lock().unwrap(); 
-                smoothed_pitch_val = target_pitch_val * PITCH_SMOOTHING_FACTOR + smoothed_pitch_val * (1.0 - PITCH_SMOOTHING_FACTOR);
+                smoothed_pitch_val = target_pitch_val * AUDIO_PARAM_SMOOTHING_FACTOR + smoothed_pitch_val * (1.0 - AUDIO_PARAM_SMOOTHING_FACTOR);
                 *current_pitch_rate_arc_cb.lock().unwrap() = smoothed_pitch_val; 
 
                 let mut current_read_head_guard = current_sample_read_head_arc.lock().unwrap();
@@ -353,7 +352,7 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
                 
                 let mut current_trim_gain_val = *current_trim_gain_arc.lock().unwrap();
                 let target_trim_gain_val = *target_trim_gain_arc.lock().unwrap();
-                current_trim_gain_val = target_trim_gain_val * EQ_TRIM_SMOOTHING_FACTOR + current_trim_gain_val * (1.0 - EQ_TRIM_SMOOTHING_FACTOR);
+                current_trim_gain_val = target_trim_gain_val * AUDIO_PARAM_SMOOTHING_FACTOR + current_trim_gain_val * (1.0 - AUDIO_PARAM_SMOOTHING_FACTOR);
                 *current_trim_gain_arc.lock().unwrap() = current_trim_gain_val;
 
                 let channel_fader_level_val = *channel_fader_level_arc.lock().unwrap(); // Get fader level for this buffer
