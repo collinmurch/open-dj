@@ -32,6 +32,9 @@ features = []
 # Dependencies
 # ──────────────────────────────────────────────────────────────
 [dependencies]
+# --- Security Fix: Force glib >=0.20 to fix RUSTSEC-2024-0429 ---
+glib = ">=0.20.0"
+
 # --- Tauri Core ---
 tauri = { version = "2.5.0", features = [] }
 
