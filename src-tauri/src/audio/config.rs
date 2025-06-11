@@ -21,7 +21,21 @@ pub const AUDIO_THREAD_TIME_UPDATE_INTERVAL_MS: u64 = 20; // 50 FPS for smooth U
 pub const AUDIO_BUFFER_CHAN_SIZE: usize = 64; // Increased buffer size for better batching
 
 // --- Utility Constants --
-pub const DEFAULT_MONO_SAMPLE_CAPACITY: usize = 1024 * 256;
+// Increased default capacity for better performance with longer tracks
+pub const DEFAULT_MONO_SAMPLE_CAPACITY: usize = 1024 * 512;
+
+// --- Audio Analysis Performance Constants ---
+/// FFT frame size for BPM analysis - optimized for performance vs accuracy
+pub const BPM_FRAME_SIZE: usize = 1024;
+/// Hop size for BPM analysis - 25% overlap for good time resolution
+pub const BPM_HOP_SIZE: usize = BPM_FRAME_SIZE / 4;
+/// Downsampling factor for BPM analysis to reduce computational load
+pub const BPM_DOWNSAMPLE_FACTOR: usize = 2;
+
+/// FFT frame size for waveform analysis
+pub const WAVEFORM_FRAME_SIZE: usize = 1024;
+/// Hop size for waveform analysis - 50% overlap for smooth waveform
+pub const WAVEFORM_HOP_SIZE: usize = WAVEFORM_FRAME_SIZE / 2;
 
 // -- Initial Values --
 pub const INITIAL_TRIM_GAIN: f32 = 1.0;

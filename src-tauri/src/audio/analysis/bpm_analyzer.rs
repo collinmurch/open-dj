@@ -2,6 +2,7 @@ use crate::audio::config;
 use crate::audio::errors::BpmError;
 use rayon::prelude::*;
 use rustfft::{FftPlanner, num_complex::Complex, num_traits::Zero};
+use std::sync::Arc;
 
 // --- Private Helper Functions ---
 
@@ -13,7 +14,8 @@ fn normalize_in_place(samples: &mut [f32]) {
 
     // Avoid division by zero or near-zero
     if max_amplitude > 1e-6 {
-        samples.par_iter_mut().for_each(|x| *x /= max_amplitude);
+        let inv_max = 1.0 / max_amplitude;
+        samples.par_iter_mut().for_each(|x| *x *= inv_max);
     }
 }
 
@@ -41,44 +43,50 @@ fn compute_spectral_flux(samples: &[f32], frame_size: usize, hop_size: usize) ->
             samples.len(),
             frame_size
         );
-        return Vec::new(); // Not enough samples to fill the frame
+        return Vec::new();
     }
 
     let mut planner = FftPlanner::new();
-    let fft = planner.plan_fft_forward(frame_size);
+    let fft = Arc::new(planner.plan_fft_forward(frame_size));
     let num_frames = (samples.len() - frame_size) / hop_size + 1;
 
-    // --- ADDED: Precompute Hann window ---
-    let hann_window: Vec<f32> = (0..frame_size)
+    // Precompute Hann window once
+    let hann_window: Arc<Vec<f32>> = Arc::new((0..frame_size)
         .map(|i| 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / (frame_size - 1) as f32).cos()))
-        .collect();
-    // --- END ADDED ---
+        .collect());
 
-    // Compute spectra in parallel
+    // Pre-allocate spectrum storage to avoid repeated allocations
+    let spectrum_bins = frame_size / 2 + 1;
+    
+    // Compute spectra in parallel with optimized memory allocation
     let spectra: Vec<Vec<f32>> = (0..num_frames)
         .into_par_iter()
         .map(|i| {
             let start = i * hop_size;
-            // Ensure we don't go out of bounds, although num_frames calculation should prevent this
             let end = (start + frame_size).min(samples.len());
             let frame = &samples[start..end];
 
-            // Pad with zeros if the last frame is smaller than frame_size
-            let mut buffer: Vec<Complex<f32>> = vec![Complex::zero(); frame_size]; // Reused buffer
-            // --- MODIFIED: Apply window and copy to buffer ---
-            for ((b, &s), &w) in buffer.iter_mut().zip(frame.iter()).zip(hann_window.iter()) {
-                *b = Complex { re: s * w, im: 0.0 }; // Apply window here
+            // Pre-allocate buffer once per thread
+            let mut buffer: Vec<Complex<f32>> = Vec::with_capacity(frame_size);
+            buffer.resize(frame_size, Complex::zero());
+            
+            // Apply window and copy to buffer in single pass
+            for (j, (&s, &w)) in frame.iter().zip(hann_window.iter()).enumerate() {
+                buffer[j] = Complex { re: s * w, im: 0.0 };
             }
-
-            // --- END MODIFIED ---
+            // Zero-pad remaining if needed (frame < frame_size)
+            for j in frame.len()..frame_size {
+                buffer[j] = Complex::zero();
+            }
 
             fft.process(&mut buffer);
 
-            // Take magnitude of the first half (positive frequencies)
-            buffer[..frame_size / 2 + 1]
-                .iter()
-                .map(|c| c.norm())
-                .collect()
+            // Extract magnitude spectrum with pre-allocated capacity
+            let mut spectrum = Vec::with_capacity(spectrum_bins);
+            for c in &buffer[..spectrum_bins] {
+                spectrum.push(c.norm());
+            }
+            spectrum
         })
         .collect();
 
@@ -86,24 +94,24 @@ fn compute_spectral_flux(samples: &[f32], frame_size: usize, hop_size: usize) ->
         return Vec::new();
     }
 
-    // Must do sequentially as subsequent frames depend on predecessors
-    let mut flux = vec![0.0; num_frames]; // First frame flux is 0
+    // Compute flux differences in parallel where possible
+    let mut flux = vec![0.0; num_frames];
     if num_frames > 1 {
-        // Use parallel calculation for the flux summation within each frame difference
+        // Parallel flux computation with optimized difference calculation
         flux[1..].par_iter_mut().enumerate().for_each(|(idx, f)| {
-            let i = idx + 1; // Adjust index for spectra access
+            let i = idx + 1;
             *f = spectra[i]
-                .iter()
-                .zip(spectra[i - 1].iter())
-                // Summation of positive differences
+                .par_iter()
+                .zip(spectra[i - 1].par_iter())
                 .map(|(&curr, &prev)| (curr - prev).max(0.0))
                 .sum();
         });
     }
 
-    // Normalize the flux
-    let flux_mean = flux.iter().sum::<f32>() / num_frames as f32;
-    if flux_mean > 1e-6 {
+    // Fast normalization with parallel sum
+    let flux_sum = flux.par_iter().sum::<f32>();
+    if flux_sum > 1e-6 {
+        let flux_mean = flux_sum / num_frames as f32;
         flux.par_iter_mut().for_each(|f| *f /= flux_mean);
     }
 
@@ -115,36 +123,40 @@ fn fft_autocorrelation(signal: &[f32], max_lag: usize) -> Result<Vec<f32>, BpmEr
         return Ok(Vec::new());
     }
 
-    // Ensure n is large enough for the signal and the correlation result
+    // Optimize FFT size for better performance
     let n = (signal.len() + max_lag).next_power_of_two();
 
     let mut planner = FftPlanner::new();
     let fft = planner.plan_fft_forward(n);
     let ifft = planner.plan_fft_inverse(n);
 
-    // Prepare buffer for FFT: signal padded with zeros
-    let mut buffer: Vec<Complex<f32>> = signal
-        .iter()
-        .map(|&x| Complex { re: x, im: 0.0 })
-        .chain(std::iter::repeat(Complex::zero()).take(n - signal.len()))
-        .collect();
+    // Pre-allocate buffer with exact capacity to avoid reallocations
+    let mut buffer: Vec<Complex<f32>> = Vec::with_capacity(n);
+    
+    // Fast buffer initialization
+    buffer.extend(signal.iter().map(|&x| Complex { re: x, im: 0.0 }));
+    buffer.resize(n, Complex::zero());
 
     // Perform forward FFT
     fft.process(&mut buffer);
 
-    // Compute power spectrum (element-wise magnitude squared)
-    // Using parallel iterator for potentially large buffers
-    buffer.par_iter_mut().for_each(|c| *c = c.norm_sqr().into());
-    // buffer = buffer.par_iter().map(|c| (c * c.conj()).into()).collect(); // Alternative formulation
+    // Compute power spectrum in-place for memory efficiency
+    buffer.par_iter_mut().for_each(|c| {
+        let mag_sqr = c.norm_sqr();
+        *c = Complex { re: mag_sqr, im: 0.0 };
+    });
 
     // Perform inverse FFT to get autocorrelation
     ifft.process(&mut buffer);
 
-    // Extract the real part and normalize, up to max_lag
-    let autocorrelation: Vec<f32> = buffer[..max_lag.min(buffer.len())]
-        .par_iter()
-        .map(|c| c.re / n as f32)
-        .collect();
+    // Extract and normalize in single pass with pre-allocated capacity
+    let result_len = max_lag.min(buffer.len());
+    let mut autocorrelation = Vec::with_capacity(result_len);
+    let normalization_factor = 1.0 / n as f32;
+    
+    for i in 0..result_len {
+        autocorrelation.push(buffer[i].re * normalization_factor);
+    }
 
     Ok(autocorrelation)
 }
@@ -277,9 +289,9 @@ pub(crate) fn analyze_bpm(samples: &[f32], sample_rate: f32) -> Result<(f32, f32
     if samples.is_empty() {
         return Err(BpmError::EmptySamplesForBpm);
     }
-    let frame_size = 1024;
-    let hop_size = frame_size / 4;
-    let downsample_factor = 2;
+    let frame_size = config::BPM_FRAME_SIZE;
+    let hop_size = config::BPM_HOP_SIZE;
+    let downsample_factor = config::BPM_DOWNSAMPLE_FACTOR;
     let mut processed_samples = samples.to_vec();
     normalize_in_place(&mut processed_samples);
     downsample_in_place(&mut processed_samples, downsample_factor);
@@ -296,12 +308,17 @@ pub(crate) fn analyze_bpm(samples: &[f32], sample_rate: f32) -> Result<(f32, f32
     }
     let bpm = estimate_bpm(&flux, effective_sample_rate, hop_size)?;
     let smoothed_flux = if flux.len() >= 3 {
-        let mut smoothed = vec![0.0; flux.len()];
-        smoothed[0] = flux[0];
-        smoothed[flux.len() - 1] = flux[flux.len() - 1];
-        smoothed[1..flux.len()-1].par_iter_mut().enumerate().for_each(|(i, s)| {
+        let mut smoothed = Vec::with_capacity(flux.len());
+        smoothed.push(flux[0]);
+        
+        // Parallel smoothing with pre-allocated output
+        let middle_len = flux.len() - 2;
+        let mut middle_smoothed = vec![0.0; middle_len];
+        middle_smoothed.par_iter_mut().enumerate().for_each(|(i, s)| {
             *s = (flux[i] + flux[i+1] + flux[i+2]) / 3.0;
         });
+        smoothed.extend(middle_smoothed);
+        smoothed.push(flux[flux.len() - 1]);
         smoothed
     } else {
         flux.clone()

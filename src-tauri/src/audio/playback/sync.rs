@@ -7,13 +7,13 @@ pub(crate) const PLL_DEAD_ZONE: f32 = 0.01; // Dead zone to prevent micro-correc
 pub(crate) const PLL_DAMPENING_FACTOR: f32 = 0.3; // Dampening to smooth corrections
 
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tauri::{AppHandle, Runtime};
 
 use super::events::{emit_error_event, emit_sync_status_update_event};
 use super::handlers::audio_thread_handle_set_pitch_rate;
 use super::state::AudioThreadDeckState;
-use crate::audio::playback::events::emit_tick_event;
 
 // --- Sync Handler Functions ---
 
@@ -56,12 +56,7 @@ pub(crate) async fn audio_thread_handle_enable_sync_async<R: Runtime>(
             }
             Some((
                 master_state.original_bpm.unwrap(),
-                *master_state.target_pitch_rate.lock().map_err(|_| {
-                    crate::audio::errors::PlaybackError::LogicalStateLockError(format!(
-                        "Failed to lock target_pitch_rate for master deck '{}'.",
-                        master_deck_id_str
-                    ))
-                })?,
+                master_state.target_pitch_rate.load(Ordering::Relaxed),
             ))
         }
         None => {
@@ -103,12 +98,7 @@ pub(crate) async fn audio_thread_handle_enable_sync_async<R: Runtime>(
                 slave_state.is_master = false;
                 slave_state.master_deck_id = Some(master_deck_id_str.to_string());
                 slave_state.manual_pitch_rate =
-                    *slave_state.current_pitch_rate.lock().map_err(|_| {
-                        crate::audio::errors::PlaybackError::LogicalStateLockError(format!(
-                            "Failed to lock current_pitch_rate for slave deck '{}'.",
-                            slave_deck_id_str
-                        ))
-                    })?;
+                    slave_state.current_pitch_rate.load(Ordering::Relaxed);
                 slave_state.target_pitch_rate_for_bpm_match = target_rate;
                 log::info!(
                     "Tempo Sync for '{}': Target rate {:.4}. Stored manual pitch: {:.4}",
@@ -135,12 +125,7 @@ pub(crate) async fn audio_thread_handle_enable_sync_async<R: Runtime>(
                     master_state_mut.is_sync_active = false;
                     master_state_mut.master_deck_id = None;
                     master_state_mut.manual_pitch_rate =
-                        *master_state_mut.current_pitch_rate.lock().map_err(|_| {
-                            crate::audio::errors::PlaybackError::LogicalStateLockError(format!(
-                                "Failed to lock current_pitch_rate for master deck '{}'.",
-                                master_deck_id_str
-                            ))
-                        })?;
+                        master_state_mut.current_pitch_rate.load(Ordering::Relaxed);
                     emit_sync_status_update_event(app_handle, master_deck_id_str, false, true);
                 }
             } else {
@@ -183,14 +168,8 @@ pub(crate) async fn audio_thread_handle_enable_sync_async<R: Runtime>(
                 slave_state.first_beat_sec,
             ) {
                 // Use accurate audio buffer timing for both decks
-                let master_time = super::time::get_audio_buffer_accurate_time_secs(
-                    master_deck_id_str,
-                    master_state,
-                )?;
-                let slave_time = super::time::get_audio_buffer_accurate_time_secs(
-                    slave_deck_id_str,
-                    slave_state,
-                )?;
+                let master_time = super::time::get_audio_buffer_accurate_time_secs(master_state)?;
+                let slave_time = super::time::get_audio_buffer_accurate_time_secs(slave_state)?;
 
                 // Calculate beat intervals and phases
                 let master_beat_interval = 60.0 / m_bpm as f64;
@@ -221,45 +200,24 @@ pub(crate) async fn audio_thread_handle_enable_sync_async<R: Runtime>(
                 // Apply adjustment if significant (>100 samples ~2ms at 44.1kHz)
                 if sample_adjustment.abs() > 100.0 {
                     if let Some(slave_state_mut) = local_states.get_mut(slave_deck_id_str) {
-                        let current_read_head = *slave_state_mut
+                        let current_read_head = slave_state_mut
                             .current_sample_read_head
-                            .lock()
-                            .map_err(|_| {
-                                crate::audio::errors::PlaybackError::LogicalStateLockError(format!(
-                                    "Failed to lock slave read head"
-                                ))
-                            })?;
+                            .load(Ordering::Relaxed);
                         let new_read_head = (current_read_head - sample_adjustment).max(0.0);
-                        *slave_state_mut
+                        slave_state_mut
                             .current_sample_read_head
-                            .lock()
-                            .map_err(|_| {
-                                crate::audio::errors::PlaybackError::LogicalStateLockError(format!(
-                                    "Failed to lock slave read head for adjustment"
-                                ))
-                            })? = new_read_head;
+                            .store(new_read_head, Ordering::Relaxed);
 
-                        let is_playing = *slave_state_mut.is_playing.lock().map_err(|_| {
-                            crate::audio::errors::PlaybackError::LogicalStateLockError(format!(
-                                "Failed to lock is_playing"
-                            ))
-                        })?;
+                        let is_playing = slave_state_mut.is_playing.load(Ordering::Relaxed);
                         if !is_playing {
-                            *slave_state_mut
+                            slave_state_mut
                                 .paused_position_read_head
-                                .lock()
-                                .map_err(|_| {
-                                    crate::audio::errors::PlaybackError::LogicalStateLockError(
-                                        format!("Failed to lock paused position"),
-                                    )
-                                })? = Some(new_read_head);
+                                .store(new_read_head, Ordering::Relaxed);
                         }
 
-                        emit_tick_event(
-                            app_handle,
-                            slave_deck_id_str,
-                            new_read_head / slave_state_mut.sample_rate as f64,
-                        );
+                        // Note: Timing events are now handled exclusively by the audio callback
+                        // to prevent race conditions. The position update will be reflected
+                        // in the next audio callback timing emission.
                         log::info!("Applied phase adjustment: {:.1} samples", sample_adjustment);
                     }
                 }
@@ -397,7 +355,7 @@ pub(crate) fn calculate_pll_pitch_updates(
 
     for (deck_id, deck_state) in local_states {
         let is_synced_and_playing =
-            deck_state.is_sync_active && deck_state.is_playing.lock().map(|v| *v).unwrap_or(false);
+            deck_state.is_sync_active && deck_state.is_playing.load(Ordering::Relaxed);
         if !is_synced_and_playing {
             continue;
         }
@@ -427,7 +385,7 @@ pub(crate) fn calculate_pll_pitch_updates(
             continue;
         };
 
-        let master_playing = master_state.is_playing.lock().map(|v| *v).unwrap_or(false);
+        let master_playing = master_state.is_playing.load(Ordering::Relaxed);
         if !master_playing {
             continue;
         }
@@ -457,7 +415,7 @@ pub(crate) fn calculate_pll_pitch_updates(
         // Apply dampening to smooth corrections and prevent overshoot
         let dampened_error = error_f32 * PLL_DAMPENING_FACTOR;
         let correction = dampened_error * PLL_KP;
-        
+
         corrections.insert(deck_id.clone(), (correction, dampened_error));
     }
 

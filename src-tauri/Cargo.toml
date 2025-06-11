@@ -18,7 +18,7 @@ authors = ["collinmurch"]
 [lib]
 name = "open_dj_lib"
 path = "src/lib.rs"
-crate-type = ["rlib", "cdylib", "staticlib"]
+crate-type = ["rlib"]
 
 # ──────────────────────────────────────────────────────────────
 # Build Dependencies
@@ -44,27 +44,32 @@ tauri-plugin-dialog = { version = "2.2", default-features = false }
 tauri-plugin-fs = { version = "2.2", default-features = false }
 
 # --- Audio Libraries ---
-symphonia = { version = "0.5.3", features = ["all-codecs", "all-formats"] }
-cpal = "0.15.3"
-rustfft = "6.2"
+symphonia = { version = "0.5.3", features = ["mp3", "flac", "wav", "aac"] }
+cpal = { version = "0.15.3", default-features = false }
+rustfft = { version = "6.2", default-features = false }
 biquad = "0.4.0"
-rubato = "0.13.0"
+rubato = { version = "0.13.0", default-features = false }
 
 # --- Utility & Misc Libraries ---
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-log = "0.4.20"
-rayon = "1.10"
-num = "0.4"
+serde = { version = "1.0", features = ["derive"], default-features = false }
+serde_json = { version = "1.0", default-features = false }
+log = { version = "0.4.20", default-features = false }
+rayon = { version = "1.10", default-features = false }
+num = { version = "0.4", default-features = false }
 lazy_static = "1.5"
-env_logger = "0.11"
-tokio = { version = "1.32.0", features = ["sync", "time", "rt", "macros"] }
+env_logger = { version = "0.11", default-features = false, features = ["auto-color"] }
+tokio = { version = "1.32.0", features = ["sync", "time", "rt", "macros"], default-features = false }
 thiserror = "1.0.50"
 
 # ──────────────────────────────────────────────────────────────
 # Profiles
 # ──────────────────────────────────────────────────────────────
 [profile.dev]
-opt-level = 1
-codegen-units = 16
+opt-level = 0
 debug = 1
+incremental = true
+codegen-units = 256
+
+[profile.dev.package."*"]
+opt-level = 1
+debug = false

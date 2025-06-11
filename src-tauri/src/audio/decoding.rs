@@ -63,7 +63,12 @@ pub(crate) fn decode_file_to_mono_samples(
             path: path.to_string(),
             source: e,
         })?;
-    let mut samples: Vec<f32> = Vec::with_capacity(DEFAULT_MONO_SAMPLE_CAPACITY);
+    // Estimate capacity based on typical audio file sizes for better memory allocation
+    let estimated_duration_secs = 5.0 * 60.0; // Assume 5 minutes max for initial allocation
+    let estimated_capacity = (estimated_duration_secs * sample_rate) as usize;
+    let initial_capacity = estimated_capacity.min(DEFAULT_MONO_SAMPLE_CAPACITY * 4).max(DEFAULT_MONO_SAMPLE_CAPACITY);
+    
+    let mut samples: Vec<f32> = Vec::with_capacity(initial_capacity);
     let mut sample_buf: Option<SampleBuffer<f32>> = None;
     loop {
         match format.next_packet() {
@@ -82,12 +87,17 @@ pub(crate) fn decode_file_to_mono_samples(
                         if let Some(buf) = sample_buf.as_mut() {
                             buf.copy_interleaved_ref(audio_buf);
                             let raw_samples = buf.samples();
+                            
+                            // Optimized channel conversion with pre-allocation
                             if channels > 1 {
-                                samples.extend(
-                                    raw_samples
-                                        .chunks_exact(channels)
-                                        .map(|chunk| chunk.iter().sum::<f32>() / channels as f32),
-                                );
+                                let mono_samples_count = raw_samples.len() / channels;
+                                samples.reserve(mono_samples_count);
+                                
+                                let channel_div = 1.0 / channels as f32;
+                                for chunk in raw_samples.chunks_exact(channels) {
+                                    let sum: f32 = chunk.iter().sum();
+                                    samples.push(sum * channel_div);
+                                }
                             } else {
                                 samples.extend_from_slice(raw_samples);
                             }

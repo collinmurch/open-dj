@@ -2,6 +2,7 @@ use crate::audio::types::TrackBasicMetadata;
 use crate::audio::errors::AudioProcessorError;
 use rayon::prelude::*;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 // --- New Struct for Basic Metadata ---
 
@@ -28,21 +29,26 @@ fn log_and_convert_to_option<T, E: std::fmt::Display>(
     }
 }
 
-/// Decodes audio and calculates basic metadata (duration, BPM).
-fn get_track_basic_metadata_internal(
+/// Optimized function that decodes once and calculates all metadata
+fn get_track_metadata_and_samples_internal(
     path: &str,
-) -> Result<TrackBasicMetadata, AudioProcessorError> {
+) -> Result<(TrackBasicMetadata, Arc<Vec<f32>>, f32), AudioProcessorError> {
     log::info!(
-        "Metadata Intern: Starting basic metadata analysis for: {}",
+        "Metadata Intern: Starting optimized metadata analysis for: {}",
         path
     );
+    
+    // Decode once and reuse for all analysis
     let (samples, sample_rate) = crate::audio::decoding::decode_file_to_mono_samples(path)
         .map_err(|e| AudioProcessorError::AnalysisDecodingError {
             path: path.to_string(),
             source: e,
         })?;
-    let duration_result = if sample_rate > 0.0 && !samples.is_empty() {
-        Ok(samples.len() as f64 / sample_rate as f64)
+    
+    let samples_arc = Arc::new(samples);
+    
+    let duration_result = if sample_rate > 0.0 && !samples_arc.is_empty() {
+        Ok(samples_arc.len() as f64 / sample_rate as f64)
     } else {
         log::warn!(
             "Metadata Intern: Cannot calculate duration for '{}' due to zero sample rate or empty samples.",
@@ -52,19 +58,32 @@ fn get_track_basic_metadata_internal(
             path: path.to_string(),
         })
     };
-    let (bpm, first_beat_sec) = crate::audio::analysis::bpm_analyzer::analyze_bpm(&samples, sample_rate)
+    
+    let (bpm, first_beat_sec) = crate::audio::analysis::bpm_analyzer::analyze_bpm(&samples_arc, sample_rate)
         .map_err(|e| AudioProcessorError::AnalysisBpmError {
             path: path.to_string(),
             source: e,
         })?;
+    
     let final_duration = log_and_convert_to_option(duration_result, path, "Duration");
     let final_bpm = Some(bpm);
     let final_first_beat_sec = Some(first_beat_sec);
-    Ok(TrackBasicMetadata {
+    
+    let metadata = TrackBasicMetadata {
         duration_seconds: final_duration,
         bpm: final_bpm,
         first_beat_sec: final_first_beat_sec,
-    })
+    };
+    
+    Ok((metadata, samples_arc, sample_rate))
+}
+
+/// Decodes audio and calculates basic metadata (duration, BPM).
+fn get_track_basic_metadata_internal(
+    path: &str,
+) -> Result<TrackBasicMetadata, AudioProcessorError> {
+    let (metadata, _, _) = get_track_metadata_and_samples_internal(path)?;
+    Ok(metadata)
 }
 
 /// Decodes audio and calculates full volume analysis (WaveBin levels).
@@ -86,6 +105,26 @@ fn get_track_volume_analysis_internal(
             levels,
             max_band_energy,
         })
+}
+
+/// Optimized function for when both metadata and volume analysis are needed
+fn get_track_complete_analysis_internal(
+    path: &str,
+) -> Result<(TrackBasicMetadata, crate::audio::types::AudioAnalysis), AudioProcessorError> {
+    log::info!("Complete Intern: Starting complete analysis for: {}", path);
+    let (metadata, samples_arc, sample_rate) = get_track_metadata_and_samples_internal(path)?;
+    
+    let volume_analysis = crate::audio::analysis::volume_analyzer::calculate_rms_intervals(&samples_arc, sample_rate)
+        .map_err(|e| AudioProcessorError::AnalysisVolumeError {
+            path: path.to_string(),
+            source: e,
+        })
+        .map(|(levels, max_band_energy)| crate::audio::types::AudioAnalysis {
+            levels,
+            max_band_energy,
+        })?;
+    
+    Ok((metadata, volume_analysis))
 }
 
 // --- Batch Command (To be modified next) ---
@@ -125,4 +164,44 @@ pub fn get_track_volume_analysis(path: String) -> Result<crate::audio::types::Au
         log::error!("Volume CMD: Error for path '{}': {}", path, e);
         e.to_string()
     })
+}
+
+// --- New Command for Complete Analysis (Optimized) ---
+#[tauri::command(async)]
+pub fn get_track_complete_analysis(
+    path: String,
+) -> Result<(TrackBasicMetadata, crate::audio::types::AudioAnalysis), String> {
+    log::info!("Complete CMD: Request for: {}", path);
+    get_track_complete_analysis_internal(&path).map_err(|e| {
+        log::error!("Complete CMD: Error for path '{}': {}", path, e);
+        e.to_string()
+    })
+}
+
+// --- Batch Analysis with Complete Data ---
+#[tauri::command(async)]
+pub fn analyze_features_and_waveforms_batch(
+    paths: Vec<String>,
+) -> HashMap<String, Result<(TrackBasicMetadata, crate::audio::types::AudioAnalysis), String>> {
+    log::info!(
+        "Complete Batch CMD: Starting batch complete analysis for {} files",
+        paths.len()
+    );
+
+    let results: HashMap<String, Result<(TrackBasicMetadata, crate::audio::types::AudioAnalysis), String>> = paths
+        .par_iter()
+        .map(|path| {
+            let analysis_result = get_track_complete_analysis_internal(path);
+            match analysis_result {
+                Ok((metadata, waveform)) => (path.clone(), Ok((metadata, waveform))),
+                Err(e) => {
+                    log::error!("Complete analysis failed for path '{}': {}", path, e);
+                    (path.clone(), Err(e.to_string()))
+                }
+            }
+        })
+        .collect();
+
+    log::info!("Complete Batch CMD: Finished batch complete analysis.");
+    results
 }
