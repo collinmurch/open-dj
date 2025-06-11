@@ -17,11 +17,23 @@ pub const BPM_MAX: f32 = 200.0;
 // - Added sample rate mismatch correction for accurate playback speed
 // - Pre-computed constants to reduce callback overhead
 // - Improved macOS Core Audio compatibility
-pub const AUDIO_THREAD_TIME_UPDATE_INTERVAL_MS: u64 = 10; // Increased from 25ms to 10ms for better sync accuracy
-pub const AUDIO_BUFFER_CHAN_SIZE: usize = 32;
+pub const AUDIO_THREAD_TIME_UPDATE_INTERVAL_MS: u64 = 20; // 50 FPS for smooth UI while preventing sync oscillations  
+pub const AUDIO_BUFFER_CHAN_SIZE: usize = 64; // Increased buffer size for better batching
 
 // --- Utility Constants --
 pub const DEFAULT_MONO_SAMPLE_CAPACITY: usize = 1024 * 256;
 
 // -- Initial Values --
 pub const INITIAL_TRIM_GAIN: f32 = 1.0;
+
+// -- EQ Performance Constants --
+/// Minimum change in dB before recalculating EQ filter coefficients
+/// This prevents expensive recalculation for tiny inaudible changes
+pub const EQ_RECALC_THRESHOLD_DB: f32 = 0.1;
+
+/// Smoothing factor for EQ parameter changes (higher = faster response)
+pub const EQ_SMOOTHING_FACTOR: f32 = 0.08;
+
+// -- Event Rate Limiting Constants --
+/// Minimum interval between pitch events (to prevent UI flooding)  
+pub const MIN_PITCH_EVENT_INTERVAL_MS: u64 = 16; // ~60 FPS max (smooth for UI)

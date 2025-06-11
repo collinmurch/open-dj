@@ -70,6 +70,10 @@ pub(crate) struct AudioThreadDeckState {
     pub(crate) high_shelf_filter: Arc<Mutex<DirectForm1<f32>>>,
     /// Last EQ parameters used for filter coefficient calculation.
     pub(crate) last_eq_params: Arc<Mutex<EqParams>>,
+    /// Cached EQ coefficients to avoid recalculation
+    pub(crate) cached_low_coeffs: Arc<Mutex<Option<biquad::Coefficients<f32>>>>,
+    pub(crate) cached_mid_coeffs: Arc<Mutex<Option<biquad::Coefficients<f32>>>>,
+    pub(crate) cached_high_coeffs: Arc<Mutex<Option<biquad::Coefficients<f32>>>>,
     // --- Sync Feature Fields ---
     /// Original BPM of the loaded track, if known.
     pub(crate) original_bpm: Option<f32>,
@@ -99,4 +103,8 @@ pub(crate) struct AudioThreadDeckState {
     // --- Seek Fading (Phase 6) ---
     /// State for seek fade in/out. Value is progress from 0.0 (start, muted) to 1.0 (fully faded in).
     pub(crate) seek_fade_state: Arc<Mutex<Option<f32>>>,
+    /// Last time a pitch event was emitted (for rate limiting)  
+    pub(crate) last_pitch_event_time: Arc<Mutex<Option<std::time::Instant>>>,
+    /// Last frame number when a timing event was emitted (for per-deck timing control)
+    pub(crate) last_emit_frame: Arc<Mutex<u64>>,
 } 
