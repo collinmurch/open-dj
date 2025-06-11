@@ -36,16 +36,6 @@ impl Default for EqParams {
     }
 }
 
-impl EqParams {
-    /// Returns true if all bands are approximately equal to another set of EQ params.
-    pub(crate) fn approx_eq(&self, other: &Self) -> bool {
-        const EPSILON: f32 = 1e-5;
-        (self.low_gain_db - other.low_gain_db).abs() < EPSILON
-            && (self.mid_gain_db - other.mid_gain_db).abs() < EPSILON
-            && (self.high_gain_db - other.high_gain_db).abs() < EPSILON
-    }
-}
-
 // --- Audio Analysis Types ---
 /// Audio analysis results for a track, including waveform levels and max energy.
 #[derive(Serialize, Debug, Clone)]

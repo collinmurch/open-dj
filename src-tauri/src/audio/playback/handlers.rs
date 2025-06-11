@@ -10,7 +10,7 @@ use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{Device, StreamConfig, SupportedStreamConfigRange};
 use tauri::{AppHandle, Runtime};
 
-use crate::audio::config::INITIAL_TRIM_GAIN; // Changed from {self, INITIAL_TRIM_GAIN}
+use crate::audio::config::{INITIAL_TRIM_GAIN, EQ_RECALC_THRESHOLD_DB, EQ_SMOOTHING_FACTOR}; // Import new constants
 use crate::audio::decoding;
 use crate::audio::effects; // Import the effects module
 use crate::audio::errors::PlaybackError;
@@ -110,12 +110,19 @@ pub(crate) fn audio_thread_handle_init<R: Runtime>(
         mid_peak_filter,
         high_shelf_filter,
         last_eq_params,
+        // --- EQ Coefficient Cache ---
+        cached_low_coeffs: Arc::new(Mutex::new(None)),
+        cached_mid_coeffs: Arc::new(Mutex::new(None)),
+        cached_high_coeffs: Arc::new(Mutex::new(None)),
         // --- Sync Feature Fields ---
         output_sample_rate: None,
         last_playback_instant: Arc::new(Mutex::new(None)),
         read_head_at_last_playback_instant: Arc::new(Mutex::new(None)),
         seek_fade_state: Arc::new(Mutex::new(None)),
         channel_fader_level: Arc::new(Mutex::new(1.0f32)), // Initialize channel_fader_level
+        // --- Event Rate Limiting ---
+        last_pitch_event_time: Arc::new(Mutex::new(None)),
+        last_emit_frame: Arc::new(Mutex::new(0u64)),
     };
     local_states.insert(deck_id.to_string(), deck_state);
     log::info!("Audio Thread: Initialized deck '{}' for CPAL", deck_id);
@@ -343,6 +350,11 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
             let mid_peak_filter_mut = deck_state.mid_peak_filter.clone(); // Mutex for mid_peak_filter
             let high_shelf_filter_mut = deck_state.high_shelf_filter.clone(); // Mutex for high_shelf_filter
             let track_sample_rate_for_eq = rate; // Actual sample rate of the track for EQ calc
+            
+            // --- EQ Coefficient Cache for Performance ---
+            let cached_low_coeffs_mut = deck_state.cached_low_coeffs.clone();
+            let cached_mid_coeffs_mut = deck_state.cached_mid_coeffs.clone();
+            let cached_high_coeffs_mut = deck_state.cached_high_coeffs.clone();
 
             // --- Precise Timing (Phase 5) ---
             let last_playback_instant_arc = deck_state.last_playback_instant.clone();
@@ -354,7 +366,8 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
             let target_eq_params_arc = deck_state.target_eq_params.clone();
             let current_trim_gain_arc = deck_state.current_trim_gain.clone();
             let target_trim_gain_arc = deck_state.target_trim_gain.clone();
-            const AUDIO_PARAM_SMOOTHING_FACTOR: f32 = 0.15; // Increased for faster parameter response
+            // Use the optimized smoothing factor from config
+            const AUDIO_PARAM_SMOOTHING_FACTOR: f32 = EQ_SMOOTHING_FACTOR;
 
             // --- Pitch Smoothing (Phase 6) ---
             let current_pitch_rate_arc_cb = deck_state.current_pitch_rate.clone();
@@ -364,12 +377,19 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
             let seek_fade_state_arc = deck_state.seek_fade_state.clone();
             const SEEK_FADE_INCREMENT_PER_BUFFER: f32 = 0.08; // Faster fade-in for responsiveness
             let channel_fader_level_arc = deck_state.channel_fader_level.clone(); // Clone for callback
+            
+            // --- Per-deck timing emission (fix for multi-deck conflicts) ---
+            let last_emit_frame_arc = deck_state.last_emit_frame.clone();
 
 
-            // Pre-compute constants for optimization
+            // Pre-compute constants for optimization - PERFORMANCE CRITICAL
             let inv_smoothing_factor = 1.0 - AUDIO_PARAM_SMOOTHING_FACTOR;
             let sample_rate_adjustment = rate / cpal_sample_rate.0 as f32; // Correct for sample rate mismatch
             let track_sample_rate_f64 = rate as f64;
+            
+            // Pre-calculate these to avoid runtime divisions in audio callback
+            let inv_track_sample_rate_f64 = 1.0 / track_sample_rate_f64; // For time calculations
+            let sample_rate_adjustment_f64 = sample_rate_adjustment as f64; // For read head advancement
             
             // Buffer frame counter for accurate timing events
             let buffer_frame_counter = Arc::new(Mutex::new(0u64));
@@ -418,7 +438,7 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
                     return;
                 }
 
-                // --- EQ Parameter Update Check & Smoothing (Phase 3 & 6) ---
+                // --- EQ Parameter Update Check & Smoothing - OPTIMIZED (Phase 3 & 6) ---
                 let mut current_eq_params_guard = current_eq_params_arc.lock().unwrap();
                 let target_eq_params_guard = target_eq_params_arc.lock().unwrap();
 
@@ -434,44 +454,76 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
                     + current_eq_params_guard.high_gain_db * inv_smoothing_factor;
 
                 let mut last_eq_params_guard = last_eq_params_mut.lock().unwrap();
-                if !current_eq_params_guard.approx_eq(&*last_eq_params_guard) {
+                
+                // Check if changes are significant enough to warrant expensive coefficient recalculation
+                let low_diff = (current_eq_params_guard.low_gain_db - last_eq_params_guard.low_gain_db).abs();
+                let mid_diff = (current_eq_params_guard.mid_gain_db - last_eq_params_guard.mid_gain_db).abs();
+                let high_diff = (current_eq_params_guard.high_gain_db - last_eq_params_guard.high_gain_db).abs();
+                
+                if low_diff > EQ_RECALC_THRESHOLD_DB || mid_diff > EQ_RECALC_THRESHOLD_DB || high_diff > EQ_RECALC_THRESHOLD_DB {
                     let mut low_filter = low_shelf_filter_mut.lock().unwrap();
                     let mut mid_filter = mid_peak_filter_mut.lock().unwrap();
                     let mut high_filter = high_shelf_filter_mut.lock().unwrap();
+                    
+                    // Try to use cached coefficients first
+                    let mut low_cached = cached_low_coeffs_mut.lock().unwrap();
+                    let mut mid_cached = cached_mid_coeffs_mut.lock().unwrap();
+                    let mut high_cached = cached_high_coeffs_mut.lock().unwrap();
 
-                    match effects::calculate_low_shelf(
-                        track_sample_rate_for_eq,
-                        current_eq_params_guard.low_gain_db,
-                    ) {
-                        Ok(coeffs) => low_filter.update_coefficients(coeffs),
-                        Err(e) => log::error!(
-                            "Deck {}: Failed to update low_shelf_filter: {}",
-                            deck_id_clone_for_callback,
-                            e
-                        ),
+                    // Update low filter if needed
+                    if low_diff > EQ_RECALC_THRESHOLD_DB {
+                        match effects::calculate_low_shelf(
+                            track_sample_rate_for_eq,
+                            current_eq_params_guard.low_gain_db,
+                        ) {
+                            Ok(coeffs) => {
+                                low_filter.update_coefficients(coeffs);
+                                *low_cached = Some(coeffs); // Cache the coefficients
+                            },
+                            Err(e) => log::error!(
+                                "Deck {}: Failed to update low_shelf_filter: {}",
+                                deck_id_clone_for_callback,
+                                e
+                            ),
+                        }
                     }
-                    match effects::calculate_mid_peak(
-                        track_sample_rate_for_eq,
-                        current_eq_params_guard.mid_gain_db,
-                    ) {
-                        Ok(coeffs) => mid_filter.update_coefficients(coeffs),
-                        Err(e) => log::error!(
-                            "Deck {}: Failed to update mid_peak_filter: {}",
-                            deck_id_clone_for_callback,
-                            e
-                        ),
+                    
+                    // Update mid filter if needed
+                    if mid_diff > EQ_RECALC_THRESHOLD_DB {
+                        match effects::calculate_mid_peak(
+                            track_sample_rate_for_eq,
+                            current_eq_params_guard.mid_gain_db,
+                        ) {
+                            Ok(coeffs) => {
+                                mid_filter.update_coefficients(coeffs);
+                                *mid_cached = Some(coeffs); // Cache the coefficients
+                            },
+                            Err(e) => log::error!(
+                                "Deck {}: Failed to update mid_peak_filter: {}",
+                                deck_id_clone_for_callback,
+                                e
+                            ),
+                        }
                     }
-                    match effects::calculate_high_shelf(
-                        track_sample_rate_for_eq,
-                        current_eq_params_guard.high_gain_db,
-                    ) {
-                        Ok(coeffs) => high_filter.update_coefficients(coeffs),
-                        Err(e) => log::error!(
-                            "Deck {}: Failed to update high_shelf_filter: {}",
-                            deck_id_clone_for_callback,
-                            e
-                        ),
+                    
+                    // Update high filter if needed
+                    if high_diff > EQ_RECALC_THRESHOLD_DB {
+                        match effects::calculate_high_shelf(
+                            track_sample_rate_for_eq,
+                            current_eq_params_guard.high_gain_db,
+                        ) {
+                            Ok(coeffs) => {
+                                high_filter.update_coefficients(coeffs);
+                                *high_cached = Some(coeffs); // Cache the coefficients
+                            },
+                            Err(e) => log::error!(
+                                "Deck {}: Failed to update high_shelf_filter: {}",
+                                deck_id_clone_for_callback,
+                                e
+                            ),
+                        }
                     }
+                    
                     *last_eq_params_guard = current_eq_params_guard.clone();
                 }
                 drop(target_eq_params_guard);
@@ -592,23 +644,23 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
                         frame_out[i] = interpolated_sample;
                     }
 
-                    // Advance read head with active pitch and sample rate adjustment
-                    *current_read_head_guard += (active_pitch_for_callback * sample_rate_adjustment) as f64;
+                    // Advance read head with active pitch and sample rate adjustment - OPTIMIZED
+                    *current_read_head_guard += active_pitch_for_callback as f64 * sample_rate_adjustment_f64;
                 }
                 
-                // Emit accurate timing event from audio buffer
+                // Emit accurate timing event from audio buffer - OPTIMIZED
                 let final_read_head = *current_read_head_guard;
                 // The read head already has sample rate adjustment applied in its advancement
-                let actual_time_secs = final_read_head / track_sample_rate_f64;
+                let actual_time_secs = final_read_head * inv_track_sample_rate_f64; // Use pre-calculated inverse
                 
                 // Only emit timing events periodically to avoid overwhelming the frontend
                 // But ensure they reflect the exact audio buffer state
-                static mut LAST_EMIT_FRAME: u64 = 0;
-                let emit_interval_frames = (track_sample_rate_f64 / 60.0) as u64; // 60 FPS
+                let emit_interval_frames = (track_sample_rate_f64 * (1.0 / 120.0)) as u64; // 120 FPS from audio callback for smooth scrubbing
                 
-                unsafe {
-                    if buffer_start_frame >= LAST_EMIT_FRAME + emit_interval_frames {
-                        LAST_EMIT_FRAME = buffer_start_frame;
+                // Use per-deck last_emit_frame to prevent timing conflicts between multiple decks
+                if let Ok(mut last_emit_frame) = last_emit_frame_arc.try_lock() {
+                    if buffer_start_frame >= *last_emit_frame + emit_interval_frames {
+                        *last_emit_frame = buffer_start_frame;
                         use super::events::emit_tick_event;
                         emit_tick_event(&app_handle_clone_for_callback, &deck_id_clone_for_callback, actual_time_secs);
                     }
@@ -885,7 +937,8 @@ pub(crate) fn audio_thread_handle_seek<R: Runtime>(
         return Ok(());
     }
     let total_samples = state.decoded_samples.len();
-    let target_sample_float = position_seconds * state.sample_rate as f64;
+    let sample_rate_f64 = state.sample_rate as f64; // Cache to avoid multiple casts
+    let target_sample_float = position_seconds * sample_rate_f64;
     let mut target_sample_index = target_sample_float.round() as usize;
     if target_sample_index >= total_samples {
         log::warn!(
@@ -941,8 +994,9 @@ pub(crate) fn audio_thread_handle_seek<R: Runtime>(
             ))
         })? = None;
 
-    // The sample position already accounts for any timing adjustments
-    let current_time_secs = target_sample_index as f64 / state.sample_rate as f64;
+    // The sample position already accounts for any timing adjustments - OPTIMIZED
+    let inv_sample_rate = 1.0 / sample_rate_f64; // Use cached sample rate
+    let current_time_secs = target_sample_index as f64 * inv_sample_rate;
     emit_tick_event(app_handle, deck_id, current_time_secs);
     Ok(())
 }
