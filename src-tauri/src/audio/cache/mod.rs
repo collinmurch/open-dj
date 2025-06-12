@@ -1,4 +1,4 @@
-use crate::audio::types::{AudioAnalysis, TrackBasicMetadata};
+use crate::audio::types::TrackBasicMetadata;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
