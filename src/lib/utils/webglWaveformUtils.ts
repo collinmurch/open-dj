@@ -1,13 +1,27 @@
 export const waveformVertexShaderSource = `#version 300 es
     layout(location = 0) in float a_normalized_time_x; // Song's normalized time [0, 1]
     layout(location = 1) in float a_normalized_y_value;
+    layout(location = 2) in float a_band_type; // 0=low, 1=mid, 2=high
 
     uniform float u_normalized_time_at_playhead;
     uniform float u_zoom_factor;
+    uniform vec3 u_eq_multipliers; // [low, mid, high] linear gain multipliers
 
     void main() {
         float x_ndc = (a_normalized_time_x - u_normalized_time_at_playhead) * u_zoom_factor;
-        gl_Position = vec4(x_ndc, a_normalized_y_value, 0.0, 1.0);
+        
+        // Apply EQ gain based on band type
+        float eq_multiplier;
+        if (a_band_type < 0.5) {
+            eq_multiplier = u_eq_multipliers.x; // low
+        } else if (a_band_type < 1.5) {
+            eq_multiplier = u_eq_multipliers.y; // mid
+        } else {
+            eq_multiplier = u_eq_multipliers.z; // high
+        }
+        
+        float adjusted_y = a_normalized_y_value * eq_multiplier;
+        gl_Position = vec4(x_ndc, adjusted_y, 0.0, 1.0);
     }
 `.trim();
 

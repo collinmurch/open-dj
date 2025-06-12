@@ -292,7 +292,9 @@
             playerStoreB.loadTrack(trackToLoad.path, bpm, firstBeat);
         }
 
+        // Load waveform data on-demand (no longer pre-cached)
         if (trackToLoad.path) {
+            console.log(`[Page] Loading waveform on-demand for Deck ${deckId}: ${trackToLoad.path}`);
             if (deckId === "A") {
                 isDeckAWaveformLoading = true;
                 deckAVolumeAnalysis = null;

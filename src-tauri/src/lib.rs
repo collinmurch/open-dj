@@ -34,9 +34,14 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             audio::processor::analyze_features_batch,
+            audio::processor::analyze_features_batch_with_cache,
             audio::processor::get_track_volume_analysis,
             audio::processor::get_track_complete_analysis,
-            audio::processor::analyze_features_and_waveforms_batch,
+            audio::cache::commands::ensure_cache_directory,
+            audio::cache::commands::get_cache_stats,
+            audio::cache::commands::cleanup_cache,
+            audio::cache::commands::rebuild_cache_index,
+            audio::cache::commands::clear_cache,
             audio::playback::commands::init_player,
             audio::playback::commands::load_track,
             audio::playback::commands::play_track,

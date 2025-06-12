@@ -48,6 +48,13 @@ export type BasicMetadataBatchResult = {
     } | null;
 };
 
+
+// Cache management types
+export interface CacheStats {
+    entryCount: number;
+    sizeBytes: number;
+}
+
 // State for the library store
 export interface LibraryState {
     selectedFolder: string | null;

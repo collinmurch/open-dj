@@ -79,7 +79,7 @@ fn get_track_metadata_and_samples_internal(
 }
 
 /// Decodes audio and calculates basic metadata (duration, BPM).
-fn get_track_basic_metadata_internal(
+pub fn get_track_basic_metadata_internal(
     path: &str,
 ) -> Result<TrackBasicMetadata, AudioProcessorError> {
     let (metadata, _, _) = get_track_metadata_and_samples_internal(path)?;
@@ -108,7 +108,7 @@ fn get_track_volume_analysis_internal(
 }
 
 /// Optimized function for when both metadata and volume analysis are needed
-fn get_track_complete_analysis_internal(
+pub fn get_track_complete_analysis_internal(
     path: &str,
 ) -> Result<(TrackBasicMetadata, crate::audio::types::AudioAnalysis), AudioProcessorError> {
     log::info!("Complete Intern: Starting complete analysis for: {}", path);
@@ -133,26 +133,48 @@ fn get_track_complete_analysis_internal(
 pub fn analyze_features_batch(
     paths: Vec<String>,
 ) -> HashMap<String, Result<TrackBasicMetadata, String>> {
+    analyze_features_batch_with_cache(paths, None)
+}
+
+#[tauri::command(async)]
+pub fn analyze_features_batch_with_cache(
+    paths: Vec<String>,
+    cache_dir: Option<String>,
+) -> HashMap<String, Result<TrackBasicMetadata, String>> {
     log::info!(
-        "Metadata Batch CMD: Starting batch analysis for {} files",
-        paths.len()
+        "Metadata Batch CMD: Starting batch BPM analysis for {} files (cache: {})",
+        paths.len(),
+        cache_dir.is_some()
     );
+
+    let cache_path = cache_dir.map(|dir| std::path::PathBuf::from(dir));
 
     let results: HashMap<String, Result<TrackBasicMetadata, String>> = paths
         .par_iter()
         .map(|path| {
-            let metadata_result = get_track_basic_metadata_internal(path);
-            match metadata_result {
+            let analysis_result = if let Some(ref cache_dir) = cache_path {
+                match crate::audio::cache::analyze_bpm_with_cache(path, Some(cache_dir)) {
+                    Ok(metadata) => Ok(metadata),
+                    Err(e) => {
+                        log::warn!("BPM cache analysis failed for {}: {}. Falling back to direct analysis.", path, e);
+                        get_track_basic_metadata_internal(path)
+                    }
+                }
+            } else {
+                get_track_basic_metadata_internal(path)
+            };
+
+            match analysis_result {
                 Ok(metadata) => (path.clone(), Ok(metadata)),
                 Err(e) => {
-                    log::error!("Basic metadata analysis failed for path '{}': {}", path, e);
+                    log::error!("BPM analysis failed for path '{}': {}", path, e);
                     (path.clone(), Err(e.to_string()))
                 }
             }
         })
         .collect();
 
-    log::info!("Metadata Batch CMD: Finished batch analysis.");
+    log::info!("Metadata Batch CMD: Finished batch BPM analysis.");
     results
 }
 
@@ -179,29 +201,3 @@ pub fn get_track_complete_analysis(
 }
 
 // --- Batch Analysis with Complete Data ---
-#[tauri::command(async)]
-pub fn analyze_features_and_waveforms_batch(
-    paths: Vec<String>,
-) -> HashMap<String, Result<(TrackBasicMetadata, crate::audio::types::AudioAnalysis), String>> {
-    log::info!(
-        "Complete Batch CMD: Starting batch complete analysis for {} files",
-        paths.len()
-    );
-
-    let results: HashMap<String, Result<(TrackBasicMetadata, crate::audio::types::AudioAnalysis), String>> = paths
-        .par_iter()
-        .map(|path| {
-            let analysis_result = get_track_complete_analysis_internal(path);
-            match analysis_result {
-                Ok((metadata, waveform)) => (path.clone(), Ok((metadata, waveform))),
-                Err(e) => {
-                    log::error!("Complete analysis failed for path '{}': {}", path, e);
-                    (path.clone(), Err(e.to_string()))
-                }
-            }
-        })
-        .collect();
-
-    log::info!("Complete Batch CMD: Finished batch complete analysis.");
-    results
-}

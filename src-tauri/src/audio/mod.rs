@@ -1,4 +1,5 @@
 pub mod analysis;
+pub mod cache;
 pub mod config;
 pub mod decoding;
 pub mod effects;

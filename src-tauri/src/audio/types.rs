@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 // --- Track Metadata ---
 /// Basic metadata for an audio track, including duration, BPM, and first beat offset.
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackBasicMetadata {
     /// Duration of the track in seconds, if known.
@@ -38,7 +38,7 @@ impl Default for EqParams {
 
 // --- Audio Analysis Types ---
 /// Audio analysis results for a track, including waveform levels and max energy.
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioAnalysis {
     /// Waveform levels for each band and interval.
@@ -48,7 +48,7 @@ pub struct AudioAnalysis {
 }
 
 /// A single bin of waveform energy for low, mid, and high bands.
-#[derive(Serialize, Debug, Clone, Copy)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 #[serde(rename_all = "camelCase")]
 pub struct WaveBin {
     /// Energy in the low band.
