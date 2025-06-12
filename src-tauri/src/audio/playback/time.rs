@@ -1,4 +1,4 @@
-use super::events::{emit_pitch_tick_event, emit_status_update_event};
+use super::events::emit_status_update_event;
 use super::state::AudioThreadDeckState;
 use super::sync;
 use crate::audio::config;
@@ -88,7 +88,6 @@ pub(crate) fn process_time_slice_updates<R: Runtime>(
             deck_state
                 .target_pitch_rate
                 .store(clamped_pitch, Ordering::Relaxed);
-            emit_pitch_tick_event(app_handle, &deck_id, clamped_pitch);
             deck_state.last_ui_pitch_rate = Some(clamped_pitch);
         }
     }
@@ -125,7 +124,6 @@ pub(crate) fn process_time_slice_updates<R: Runtime>(
                 };
 
                 if should_emit {
-                    emit_pitch_tick_event(app_handle, &deck_id, current_pitch);
                     deck_state.last_ui_pitch_rate = Some(current_pitch);
                     *last_pitch_time = Some(now);
                 }

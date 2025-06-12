@@ -21,6 +21,7 @@
         currentBpm = null as number | null,
         originalBpm = null as number | null | undefined,
         pitchRate = 1.0,
+        onPitchChange,
     }: {
         filePath: string | null;
         deckId: string;
@@ -42,6 +43,7 @@
         currentBpm?: number | null;
         originalBpm?: number | null | undefined;
         pitchRate?: number;
+        onPitchChange: (newRate: number) => void;
     } = $props();
 
     // --- Volume, Trim & EQ State (remains the same) ---
@@ -132,14 +134,8 @@
 
     // Event handler for pitch slider changes from Slider's onchangeValue event
     function handlePitchSliderChange(newPitchValue: number) {
-        if (playerActions && typeof playerActions.setPitchRate === "function") {
-            playerActions.setPitchRate(newPitchValue).catch((err) => {
-                console.error(
-                    `[TrackPlayer ${deckId}] Error invoking setPitchRate prop:`,
-                    err,
-                );
-            });
-        }
+        // Use the new onPitchChange prop for immediate, responsive updates
+        onPitchChange(newPitchValue);
     }
 
     // --- Event Handlers for Buttons (use playerActions props) ---

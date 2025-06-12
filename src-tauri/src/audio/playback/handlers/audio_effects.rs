@@ -151,13 +151,11 @@ pub(crate) fn audio_thread_handle_set_pitch_rate<R: Runtime>(
             clamped_new_target_rate
         );
     } else {
-        emit_pitch_tick_event(app_handle, deck_id, clamped_new_target_rate);
         state.last_ui_pitch_rate = Some(clamped_new_target_rate);
         log::info!(
-            "Audio Thread: Set target_pitch_rate for deck '{}' to {} (User initiated: {}). Smoothing will occur in callback.",
+            "Audio Thread: Set target_pitch_rate for deck '{}' to {} (User initiated).",
             deck_id,
-            clamped_new_target_rate,
-            is_user_initiated_change
+            clamped_new_target_rate
         );
     }
     if let Some(master_new_target_pitch) = master_new_target_pitch_for_slaves {
