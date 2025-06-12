@@ -83,133 +83,49 @@
         }
     });
 
-    // --- SIMPLIFIED One-Way Pitch Rate Handling ---
-    // Backend only sends pitch ticks for system changes (sync), not user changes
-    
-    // Rate limiting for backend calls to reduce IPC overhead
-    let pitchUpdateTimeoutA: number | undefined = undefined;
-    let pitchUpdateTimeoutB: number | undefined = undefined;
-    let lastSentPitchA: number | null = null;
-    let lastSentPitchB: number | null = null;
+    // --- Pitch Rate Handling ---
     
     // --- Deck A Pitch Effects ---
     
-    // Effect 1A: Update UI from backend (only system-initiated changes now)
+    // Update UI from backend (initialization and sync changes only)
     $effect(() => {
         const storeRate = $playerStoreA.pitchRate;
-        const _isSyncActive = $playerStoreA.isSyncActive;
-        const _isMaster = $playerStoreA.isMaster;
         const _path = deckAFilePath;
 
         if (storeRate !== null) {
-            // Backend only sends pitch ticks for system changes, so always update UI
             uiSliderPitchRateA = storeRate;
         } else {
-            // Initialize when track loads
             uiSliderPitchRateA = 1.0;
         }
     });
 
-    // --- Deck B Pitch Effects ---
-    
-    // Effect 1B: Update UI from backend (only system-initiated changes now)
     $effect(() => {
         const storeRate = $playerStoreB.pitchRate;
-        const _isSyncActive = $playerStoreB.isSyncActive;
-        const _isMaster = $playerStoreB.isMaster;
         const _path = deckBFilePath;
 
         if (storeRate !== null) {
-            // Backend only sends pitch ticks for system changes, so always update UI
             uiSliderPitchRateB = storeRate;
         } else {
-            // Initialize when track loads
             uiSliderPitchRateB = 1.0;
         }
     });
 
-    // --- Functions for handling user pitch changes ---
-    
     function handleUserPitchChangeA(newRate: number) {
         const isSlave = $playerStoreA.isSyncActive && !$playerStoreA.isMaster;
-        if (isSlave) return; // Don't allow manual changes on slave decks
+        if (isSlave) return;
         
-        // Update UI immediately for responsiveness
         uiSliderPitchRateA = newRate;
-        
-        // Clear existing timeout
-        if (pitchUpdateTimeoutA !== undefined) {
-            clearTimeout(pitchUpdateTimeoutA);
-        }
-        
-        // Send significant changes immediately, throttle small adjustments
-        const isSignificantChange = lastSentPitchA === null || Math.abs(newRate - lastSentPitchA) > 0.01; // 1% threshold
-        
-        if (isSignificantChange) {
-            // Send immediately for large changes
-            lastSentPitchA = newRate;
-            void playerStoreA.setPitchRate(newRate);
-        } else {
-            // Throttle fine adjustments to reduce IPC overhead
-            pitchUpdateTimeoutA = setTimeout(() => {
-                lastSentPitchA = newRate;
-                void playerStoreA.setPitchRate(newRate);
-                pitchUpdateTimeoutA = undefined;
-            }, 100); // 100ms throttle for fine adjustments
-        }
+        void playerStoreA.setPitchRate(newRate);
     }
     
     function handleUserPitchChangeB(newRate: number) {
         const isSlave = $playerStoreB.isSyncActive && !$playerStoreB.isMaster;
-        if (isSlave) return; // Don't allow manual changes on slave decks
+        if (isSlave) return;
         
-        // Update UI immediately for responsiveness
         uiSliderPitchRateB = newRate;
-        
-        // Clear existing timeout
-        if (pitchUpdateTimeoutB !== undefined) {
-            clearTimeout(pitchUpdateTimeoutB);
-        }
-        
-        // Send significant changes immediately, throttle small adjustments
-        const isSignificantChange = lastSentPitchB === null || Math.abs(newRate - lastSentPitchB) > 0.01; // 1% threshold
-        
-        if (isSignificantChange) {
-            // Send immediately for large changes
-            lastSentPitchB = newRate;
-            void playerStoreB.setPitchRate(newRate);
-        } else {
-            // Throttle fine adjustments to reduce IPC overhead
-            pitchUpdateTimeoutB = setTimeout(() => {
-                lastSentPitchB = newRate;
-                void playerStoreB.setPitchRate(newRate);
-                pitchUpdateTimeoutB = undefined;
-            }, 100); // 100ms throttle for fine adjustments
-        }
+        void playerStoreB.setPitchRate(newRate);
     }
     
-    // Cleanup timeouts when tracks or sync status changes
-    $effect(() => {
-        const _path = deckAFilePath;
-        const _sync = $playerStoreA.isSyncActive;
-        // Clear timeout when deck changes
-        if (pitchUpdateTimeoutA !== undefined) {
-            clearTimeout(pitchUpdateTimeoutA);
-            pitchUpdateTimeoutA = undefined;
-        }
-        lastSentPitchA = null;
-    });
-    
-    $effect(() => {
-        const _path = deckBFilePath;
-        const _sync = $playerStoreB.isSyncActive;
-        // Clear timeout when deck changes
-        if (pitchUpdateTimeoutB !== undefined) {
-            clearTimeout(pitchUpdateTimeoutB);
-            pitchUpdateTimeoutB = undefined;
-        }
-        lastSentPitchB = null;
-    });
 
     // --- NEW Effects for Individual Deck Faders (incorporating crossfader) ---
     $effect(() => {

@@ -151,14 +151,11 @@ pub(crate) fn audio_thread_handle_set_pitch_rate<R: Runtime>(
             clamped_new_target_rate
         );
     } else {
-        // Don't emit pitch tick events for user-initiated changes to avoid feedback loop
-        // The frontend already updated the UI, so we don't need to send it back
         state.last_ui_pitch_rate = Some(clamped_new_target_rate);
         log::info!(
-            "Audio Thread: Set target_pitch_rate for deck '{}' to {} (User initiated: {}). No pitch tick emitted to avoid feedback.",
+            "Audio Thread: Set target_pitch_rate for deck '{}' to {} (User initiated).",
             deck_id,
-            clamped_new_target_rate,
-            is_user_initiated_change
+            clamped_new_target_rate
         );
     }
     if let Some(master_new_target_pitch) = master_new_target_pitch_for_slaves {

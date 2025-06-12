@@ -536,14 +536,16 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
             deck_state.current_pitch_rate.store(1.0, Ordering::Relaxed);
             deck_state.manual_pitch_rate = 1.0;
             deck_state.last_ui_pitch_rate = Some(1.0);
+            
+            // Reset timing event state for new track
+            deck_state.last_emit_frame.store(0, Ordering::Relaxed);
+            
+            // Always reset sync state for the current deck
             deck_state.is_sync_active = false;
             deck_state.is_master = false;
             deck_state.master_deck_id = None;
             deck_state.target_pitch_rate_for_bpm_match = 1.0;
             deck_state.pll_integral_error = 0.0;
-            
-            // Reset timing event state for new track
-            deck_state.last_emit_frame.store(0, Ordering::Relaxed);
 
             log::info!(
                 "Audio Thread: Track '{}' loaded and CPAL stream built for deck '{}' with config: {:?}, {} channels, {} Hz",
@@ -563,6 +565,30 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
             );
             emit_status_update_event(app_handle, &deck_id, false);
             emit_pitch_tick_event(app_handle, &deck_id, 1.0);
+            
+            // Disable sync for ALL decks when any deck loads a new track
+            // This ensures both deck sync buttons reset to normal state
+            let all_deck_ids: Vec<String> = local_states.keys().cloned().collect();
+            for other_deck_id in all_deck_ids {
+                if let Some(other_deck_state) = local_states.get_mut(&other_deck_id) {
+                    if other_deck_state.is_sync_active || other_deck_state.is_master {
+                        // Use the existing disable sync logic to properly handle master/slave relationships
+                        if let Err(e) = super::super::sync::audio_thread_handle_disable_sync(
+                            &other_deck_id,
+                            local_states,
+                            app_handle,
+                        ) {
+                            log::error!(
+                                "Audio Thread: LoadTrack: Failed to disable sync for deck '{}': {:?}",
+                                other_deck_id,
+                                e
+                            );
+                        }
+                        break; // Only need to call disable_sync once as it handles all related decks
+                    }
+                }
+            }
+            
             Ok(())
         }
         Ok(Err(e_decode)) => {
