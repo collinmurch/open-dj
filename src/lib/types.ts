@@ -48,14 +48,6 @@ export type BasicMetadataBatchResult = {
     } | null;
 };
 
-// Structure for the result of the complete analysis batch command
-// Returns both basic metadata and waveform analysis
-export type CompleteAnalysisBatchResult = {
-    [path: string]: {
-        Ok?: [TrackBasicMetadata, VolumeAnalysis];
-        Err?: string;
-    } | null;
-};
 
 // Cache management types
 export interface CacheStats {

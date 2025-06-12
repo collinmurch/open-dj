@@ -92,6 +92,7 @@
             colorLoc: WebGLUniformLocation | null;
             timeAtPlayheadLoc: WebGLUniformLocation | null;
             zoomFactorLoc: WebGLUniformLocation | null;
+            eqMultipliersLoc: WebGLUniformLocation | null;
         };
     }>({
         program: null,
@@ -102,6 +103,7 @@
             colorLoc: null,
             timeAtPlayheadLoc: null,
             zoomFactorLoc: null,
+            eqMultipliersLoc: null,
         },
     });
 
@@ -179,9 +181,6 @@
     let lastProcessedVolumeAnalysis: VolumeAnalysis | null | undefined =
         $state(undefined);
     let lastProcessedAudioDuration: number = $state(NaN);
-    let lastProcessedLowGain: number = $state(NaN);
-    let lastProcessedMidGain: number = $state(NaN);
-    let lastProcessedHighGain: number = $state(NaN);
     let animationFrameId: number | null = $state(null);
 
     // --- Derived values ---
@@ -220,31 +219,19 @@
     $effect(() => {
         const newVolumeAnalysis = volumeAnalysis;
         const newAudioDuration = audioDuration;
-        // Capture EQ gains for dependency tracking by $effect
-        const currentLowGain = eqParams.lowGainDb;
-        const currentMidGain = eqParams.midGainDb;
-        const currentHighGain = eqParams.highGainDb;
 
         const analysisObjectChanged =
             newVolumeAnalysis !== lastProcessedVolumeAnalysis;
         const durationChangedSignificantly =
             newAudioDuration !== lastProcessedAudioDuration &&
             newAudioDuration > 0;
-        const eqGainsChanged =
-            currentLowGain !== lastProcessedLowGain ||
-            currentMidGain !== lastProcessedMidGain ||
-            currentHighGain !== lastProcessedHighGain;
 
         if (
             analysisObjectChanged ||
-            (newVolumeAnalysis && durationChangedSignificantly) ||
-            (newVolumeAnalysis && eqGainsChanged) // Added eqGainsChanged condition
+            (newVolumeAnalysis && durationChangedSignificantly)
         ) {
             lastProcessedVolumeAnalysis = newVolumeAnalysis;
             lastProcessedAudioDuration = newAudioDuration;
-            lastProcessedLowGain = currentLowGain;
-            lastProcessedMidGain = currentMidGain;
-            lastProcessedHighGain = currentHighGain;
 
             if (activeMipLevel() && glContext.ctx && newAudioDuration > 0) {
                 updateWaveformGeometry(); // Uses activeMipLevel() and newAudioDuration implicitly
@@ -369,6 +356,10 @@
         waveformRendering.uniforms.zoomFactorLoc = gl.getUniformLocation(
             waveformRendering.program,
             "u_zoom_factor",
+        );
+        waveformRendering.uniforms.eqMultipliersLoc = gl.getUniformLocation(
+            waveformRendering.program,
+            "u_eq_multipliers",
         );
         waveformRendering.low.vao = gl.createVertexArray();
         waveformRendering.low.vbo = gl.createBuffer();
@@ -542,11 +533,6 @@
             return;
         }
 
-        // Calculate gain multipliers from dB
-        const lowMultiplier = Math.pow(10, eqParams.lowGainDb / 20);
-        const midMultiplier = Math.pow(10, eqParams.midGainDb / 20);
-        const highMultiplier = Math.pow(10, eqParams.highGainDb / 20);
-
         const bins = currentActiveMip;
         if (!bins || bins.length === 0) {
             waveformRendering.low.vertexCount = 0;
@@ -570,35 +556,35 @@
             const normalizedTimeX =
                 currentAudioDuration > 0 ? timeSec / currentAudioDuration : 0;
 
-            // Apply height gain factor here
+            // Apply height gain factor (EQ will be applied in shader)
             const yTopLow = Math.min(
                 1.0,
-                ((bin.low * lowMultiplier) / maxRms) * HEIGHT_GAIN_FACTOR, // Applied lowMultiplier
+                (bin.low / maxRms) * HEIGHT_GAIN_FACTOR,
             );
             const yBottomLow = -yTopLow;
-            vertexDataLow.push(normalizedTimeX, yBottomLow);
-            vertexDataLow.push(normalizedTimeX, yTopLow);
+            vertexDataLow.push(normalizedTimeX, yBottomLow, 0.0); // 0.0 = low band
+            vertexDataLow.push(normalizedTimeX, yTopLow, 0.0);
 
             const yTopMid = Math.min(
                 1.0,
-                ((bin.mid * midMultiplier) / maxRms) * HEIGHT_GAIN_FACTOR, // Applied midMultiplier
+                (bin.mid / maxRms) * HEIGHT_GAIN_FACTOR,
             );
             const yBottomMid = -yTopMid;
-            vertexDataMid.push(normalizedTimeX, yBottomMid);
-            vertexDataMid.push(normalizedTimeX, yTopMid);
+            vertexDataMid.push(normalizedTimeX, yBottomMid, 1.0); // 1.0 = mid band
+            vertexDataMid.push(normalizedTimeX, yTopMid, 1.0);
 
             const yTopHigh = Math.min(
                 1.0,
-                ((bin.high * highMultiplier) / maxRms) * HEIGHT_GAIN_FACTOR, // Applied highMultiplier
+                (bin.high / maxRms) * HEIGHT_GAIN_FACTOR,
             );
             const yBottomHigh = -yTopHigh;
-            vertexDataHigh.push(normalizedTimeX, yBottomHigh);
-            vertexDataHigh.push(normalizedTimeX, yTopHigh);
+            vertexDataHigh.push(normalizedTimeX, yBottomHigh, 2.0); // 2.0 = high band
+            vertexDataHigh.push(normalizedTimeX, yTopHigh, 2.0);
         });
 
-        waveformRendering.low.vertexCount = vertexDataLow.length / 2;
-        waveformRendering.mid.vertexCount = vertexDataMid.length / 2;
-        waveformRendering.high.vertexCount = vertexDataHigh.length / 2;
+        waveformRendering.low.vertexCount = vertexDataLow.length / 3;
+        waveformRendering.mid.vertexCount = vertexDataMid.length / 3;
+        waveformRendering.high.vertexCount = vertexDataHigh.length / 3;
 
         setupBandGeometry(
             gl,
@@ -641,7 +627,7 @@
             1, // Number of elements per attribute (just x)
             ctx.FLOAT,
             false, // Normalized
-            2 * Float32Array.BYTES_PER_ELEMENT, // Stride: 2 floats per vertex (x, y)
+            3 * Float32Array.BYTES_PER_ELEMENT, // Stride: 3 floats per vertex (x, y, band_type)
             0, // Offset
         );
         // Attribute 1: Normalized Y Value (a_normalized_y_value)
@@ -651,8 +637,18 @@
             1, // Number of elements per attribute (just y)
             ctx.FLOAT,
             false, // Normalized
-            2 * Float32Array.BYTES_PER_ELEMENT, // Stride: 2 floats per vertex (x, y)
+            3 * Float32Array.BYTES_PER_ELEMENT, // Stride: 3 floats per vertex (x, y, band_type)
             1 * Float32Array.BYTES_PER_ELEMENT, // Offset: skip x (1 float)
+        );
+        // Attribute 2: Band Type (a_band_type)
+        ctx.enableVertexAttribArray(2);
+        ctx.vertexAttribPointer(
+            2, // Attribute location
+            1, // Number of elements per attribute (just band_type)
+            ctx.FLOAT,
+            false, // Normalized
+            3 * Float32Array.BYTES_PER_ELEMENT, // Stride: 3 floats per vertex (x, y, band_type)
+            2 * Float32Array.BYTES_PER_ELEMENT, // Offset: skip x, y (2 floats)
         );
 
         // Unbind after setup is good practice, though render will rebind
@@ -682,7 +678,8 @@
             waveformRendering.high.vertexCount > 0 &&
             waveformRendering.uniforms.colorLoc &&
             waveformRendering.uniforms.timeAtPlayheadLoc &&
-            waveformRendering.uniforms.zoomFactorLoc
+            waveformRendering.uniforms.zoomFactorLoc &&
+            waveformRendering.uniforms.eqMultipliersLoc
         ) {
             gl.useProgram(waveformRendering.program);
 
@@ -696,6 +693,17 @@
             gl.uniform1f(
                 waveformRendering.uniforms.zoomFactorLoc,
                 effectiveZoomFactor(),
+            );
+
+            // Calculate EQ multipliers from dB and pass to shader
+            const lowMultiplier = Math.pow(10, eqParams.lowGainDb / 20);
+            const midMultiplier = Math.pow(10, eqParams.midGainDb / 20);
+            const highMultiplier = Math.pow(10, eqParams.highGainDb / 20);
+            gl.uniform3f(
+                waveformRendering.uniforms.eqMultipliersLoc,
+                lowMultiplier,
+                midMultiplier,
+                highMultiplier,
             );
 
             const faderAlpha = Math.max(0, Math.min(1, faderLevel)); // Clamp fader level to [0,1]

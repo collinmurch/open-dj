@@ -24,7 +24,6 @@ pub struct AudioFingerprint {
 pub struct CachedTrackData {
     pub fingerprint: AudioFingerprint,
     pub bpm_analysis: TrackBasicMetadata,
-    pub waveform_analysis: Option<AudioAnalysis>,
     pub cached_at: SystemTime,
 }
 
@@ -63,24 +62,23 @@ pub enum CacheError {
     EntryCorrupted(String),
 }
 
-pub fn analyze_with_cache(
+pub fn analyze_bpm_with_cache(
     file_path: &str,
     cache_dir: Option<&PathBuf>,
-    include_waveform: bool,
-) -> Result<(TrackBasicMetadata, Option<AudioAnalysis>), Box<dyn std::error::Error>> {
+) -> Result<TrackBasicMetadata, Box<dyn std::error::Error>> {
     if let Some(cache_dir) = cache_dir {
         // Try cache first
-        match try_cache_lookup(file_path, cache_dir, include_waveform) {
-            Ok(Some((metadata, waveform))) => {
-                log::info!("Cache hit for: {}", file_path);
-                return Ok((metadata, waveform));
+        match try_bpm_cache_lookup(file_path, cache_dir) {
+            Ok(Some(metadata)) => {
+                log::info!("BPM cache hit for: {}", file_path);
+                return Ok(metadata);
             }
             Ok(None) => {
-                log::debug!("Cache miss for: {}", file_path);
+                log::debug!("BPM cache miss for: {}", file_path);
             }
             Err(e) => {
                 log::warn!(
-                    "Cache lookup failed for {}: {}. Proceeding without cache.",
+                    "BPM cache lookup failed for {}: {}. Proceeding without cache.",
                     file_path,
                     e
                 );
@@ -88,34 +86,26 @@ pub fn analyze_with_cache(
         }
     }
 
-    // Fallback to regular analysis
-    let (metadata, waveform) = if include_waveform {
-        match crate::audio::processor::get_track_complete_analysis_internal(file_path) {
-            Ok((meta, wave)) => (meta, Some(wave)),
-            Err(e) => return Err(Box::new(e)),
-        }
-    } else {
-        match crate::audio::processor::get_track_basic_metadata_internal(file_path) {
-            Ok(meta) => (meta, None),
-            Err(e) => return Err(Box::new(e)),
-        }
+    // Fallback to regular BPM analysis
+    let metadata = match crate::audio::processor::get_track_basic_metadata_internal(file_path) {
+        Ok(meta) => meta,
+        Err(e) => return Err(Box::new(e)),
     };
 
-    // Cache the result if caching is enabled
+    // Cache the BPM result if caching is enabled
     if let Some(cache_dir) = cache_dir {
-        if let Err(e) = cache_analysis_result(file_path, cache_dir, &metadata, waveform.as_ref()) {
-            log::warn!("Failed to cache result for {}: {}", file_path, e);
+        if let Err(e) = cache_bpm_result(file_path, cache_dir, &metadata) {
+            log::warn!("Failed to cache BPM result for {}: {}", file_path, e);
         }
     }
 
-    Ok((metadata, waveform))
+    Ok(metadata)
 }
 
-fn try_cache_lookup(
+fn try_bpm_cache_lookup(
     file_path: &str,
     cache_dir: &PathBuf,
-    include_waveform: bool,
-) -> CacheResult<Option<(TrackBasicMetadata, Option<AudioAnalysis>)>> {
+) -> CacheResult<Option<TrackBasicMetadata>> {
     // Load index
     let index = index::load_index(cache_dir)?;
 
@@ -126,17 +116,9 @@ fn try_cache_lookup(
         if let Ok(cached_data) = storage::load_cached_data(cache_dir, cached_hash) {
             // Validate cache entry
             if fingerprint::validate_cache_entry(file_path, &cached_data.fingerprint)? {
-                // Check if we have the required data
-                if !include_waveform || cached_data.waveform_analysis.is_some() {
-                    let waveform = if include_waveform {
-                        cached_data.waveform_analysis.clone()
-                    } else {
-                        None
-                    };
-                    return Ok(Some((cached_data.bpm_analysis, waveform)));
-                }
+                return Ok(Some(cached_data.bpm_analysis));
             } else {
-                log::debug!("Cache entry invalid for: {}", file_path);
+                log::debug!("BPM cache entry invalid for: {}", file_path);
             }
         }
     }
@@ -144,11 +126,10 @@ fn try_cache_lookup(
     Ok(None)
 }
 
-fn cache_analysis_result(
+fn cache_bpm_result(
     file_path: &str,
     cache_dir: &PathBuf,
     metadata: &TrackBasicMetadata,
-    waveform: Option<&AudioAnalysis>,
 ) -> CacheResult<()> {
     // Create fingerprint
     let fingerprint = fingerprint::create_fingerprint(file_path)?;
@@ -157,7 +138,6 @@ fn cache_analysis_result(
     let cached_data = CachedTrackData {
         fingerprint: fingerprint.clone(),
         bpm_analysis: metadata.clone(),
-        waveform_analysis: waveform.cloned(),
         cached_at: SystemTime::now(),
     };
 

@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store';
-import type { TrackInfo, LibraryState, CompleteAnalysisBatchResult, TrackBasicMetadata, VolumeAnalysis } from '$lib/types';
+import type { TrackInfo, LibraryState, BasicMetadataBatchResult, TrackBasicMetadata } from '$lib/types';
 import { open } from '@tauri-apps/plugin-dialog';
 import { readDir } from '@tauri-apps/plugin-fs';
 import { join } from '@tauri-apps/api/path';
@@ -86,44 +86,38 @@ function createLibraryStore() {
                         console.warn("[LibraryStore] Failed to create cache directory, proceeding without cache:", cacheError);
                     }
 
-                    console.log("[LibraryStore] Invoking complete analysis with cache for metadata and waveforms...");
-                    const results = await invoke<CompleteAnalysisBatchResult>(
-                        'analyze_features_and_waveforms_batch_with_cache', 
+                    console.log("[LibraryStore] Invoking BPM analysis with cache...");
+                    const results = await invoke<BasicMetadataBatchResult>(
+                        'analyze_features_batch_with_cache', 
                         { 
                             paths: filePaths,
                             cacheDir: cacheDir 
                         }
                     );
-                    console.log("[LibraryStore] Batch complete analysis finished.");
+                    console.log("[LibraryStore] Batch BPM analysis finished.");
 
                     update(state => {
                         const updatedFiles = state.audioFiles.map((file) => {
                             const result = results[file.path];
                             let trackMetadata: TrackBasicMetadata | null | undefined = undefined;
-                            let volumeAnalysis: VolumeAnalysis | null | undefined = undefined;
 
                             if (result === undefined) {
-                                console.warn(`[LibraryStore] No analysis result found for ${file.path}`);
+                                console.warn(`[LibraryStore] No BPM analysis result found for ${file.path}`);
                                 trackMetadata = null;
-                                volumeAnalysis = null;
                             } else if (result?.Err) {
-                                console.error(`[LibraryStore] Analysis error for ${file.path}:`, result.Err);
+                                console.error(`[LibraryStore] BPM analysis error for ${file.path}:`, result.Err);
                                 trackMetadata = null;
-                                volumeAnalysis = null;
                             } else if (result?.Ok) {
-                                const [metadata, waveform] = result.Ok;
-                                trackMetadata = metadata;
-                                volumeAnalysis = waveform;
+                                trackMetadata = result.Ok;
                             } else {
-                                console.warn(`[LibraryStore] Unexpected result structure for ${file.path}:`, result);
+                                console.warn(`[LibraryStore] Unexpected BPM result structure for ${file.path}:`, result);
                                 trackMetadata = null;
-                                volumeAnalysis = null;
                             }
 
                             return { 
                                 ...file, 
                                 metadata: trackMetadata,
-                                volumeAnalysisData: volumeAnalysis
+                                volumeAnalysisData: undefined // Will be loaded on-demand when track is loaded to deck
                             };
                         });
                         return { ...state, audioFiles: updatedFiles };
@@ -140,18 +134,18 @@ function createLibraryStore() {
                     }
 
                 } catch (batchError) {
-                    console.error("[LibraryStore] CRITICAL ERROR during complete analysis:", batchError);
+                    console.error("[LibraryStore] CRITICAL ERROR during BPM analysis:", batchError);
                     const message = batchError instanceof Error ? batchError.message : String(batchError);
                     update(state => {
                         const updatedFiles = state.audioFiles.map(file => ({
                             ...file,
                             metadata: file.metadata === undefined ? null : file.metadata,
-                            volumeAnalysisData: file.volumeAnalysisData === undefined ? null : file.volumeAnalysisData
+                            volumeAnalysisData: undefined
                         }));
-                        return { ...state, audioFiles: updatedFiles, error: `Analysis failed: ${message}` };
+                        return { ...state, audioFiles: updatedFiles, error: `BPM analysis failed: ${message}` };
                     });
                 } finally {
-                    console.log("[LibraryStore] Background analysis process finished.");
+                    console.log("[LibraryStore] Background BPM analysis process finished.");
                     update(state => ({ ...state, isAnalyzing: false }));
                 }
             };
