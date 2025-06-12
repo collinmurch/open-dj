@@ -292,40 +292,55 @@
             playerStoreB.loadTrack(trackToLoad.path, bpm, firstBeat);
         }
 
+        // Use pre-analyzed waveform data if available, otherwise load on-demand
         if (trackToLoad.path) {
-            if (deckId === "A") {
-                isDeckAWaveformLoading = true;
-                deckAVolumeAnalysis = null;
-            } else {
-                isDeckBWaveformLoading = true;
-                deckBVolumeAnalysis = null;
-            }
-
-            try {
-                const result = await invoke<VolumeAnalysis>(
-                    "get_track_volume_analysis",
-                    { path: trackToLoad.path },
-                );
+            if (trackToLoad.volumeAnalysisData) {
+                // Use pre-analyzed waveform data from library loading
+                console.log(`[Page] Using pre-analyzed waveform data for Deck ${deckId}: ${trackToLoad.path}`);
                 if (deckId === "A") {
-                    deckAVolumeAnalysis = result;
-                } else {
-                    deckBVolumeAnalysis = result;
-                }
-            } catch (error) {
-                console.error(
-                    `[Page] Error loading volume analysis for Deck ${deckId}: ${trackToLoad.path}`,
-                    error,
-                );
-                if (deckId === "A") {
-                    deckAVolumeAnalysis = null;
-                } else {
-                    deckBVolumeAnalysis = null;
-                }
-            } finally {
-                if (deckId === "A") {
+                    deckAVolumeAnalysis = trackToLoad.volumeAnalysisData;
                     isDeckAWaveformLoading = false;
                 } else {
+                    deckBVolumeAnalysis = trackToLoad.volumeAnalysisData;
                     isDeckBWaveformLoading = false;
+                }
+            } else {
+                // Fallback to on-demand loading if waveform data not available
+                console.log(`[Page] Loading waveform on-demand for Deck ${deckId}: ${trackToLoad.path}`);
+                if (deckId === "A") {
+                    isDeckAWaveformLoading = true;
+                    deckAVolumeAnalysis = null;
+                } else {
+                    isDeckBWaveformLoading = true;
+                    deckBVolumeAnalysis = null;
+                }
+
+                try {
+                    const result = await invoke<VolumeAnalysis>(
+                        "get_track_volume_analysis",
+                        { path: trackToLoad.path },
+                    );
+                    if (deckId === "A") {
+                        deckAVolumeAnalysis = result;
+                    } else {
+                        deckBVolumeAnalysis = result;
+                    }
+                } catch (error) {
+                    console.error(
+                        `[Page] Error loading volume analysis for Deck ${deckId}: ${trackToLoad.path}`,
+                        error,
+                    );
+                    if (deckId === "A") {
+                        deckAVolumeAnalysis = null;
+                    } else {
+                        deckBVolumeAnalysis = null;
+                    }
+                } finally {
+                    if (deckId === "A") {
+                        isDeckAWaveformLoading = false;
+                    } else {
+                        isDeckBWaveformLoading = false;
+                    }
                 }
             }
         }

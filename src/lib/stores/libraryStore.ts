@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store';
-import type { TrackInfo, LibraryState, BasicMetadataBatchResult, TrackBasicMetadata } from '$lib/types';
+import type { TrackInfo, LibraryState, CompleteAnalysisBatchResult, TrackBasicMetadata, VolumeAnalysis } from '$lib/types';
 import { open } from '@tauri-apps/plugin-dialog';
 import { readDir } from '@tauri-apps/plugin-fs';
 import { join } from '@tauri-apps/api/path';
@@ -77,40 +77,77 @@ function createLibraryStore() {
 
             const runBackgroundAnalysis = async () => {
                 try {
-                    console.log("[LibraryStore] Invoking analyze_features_batch for basic metadata...");
-                    const results = await invoke<BasicMetadataBatchResult>('analyze_features_batch', { paths: filePaths });
-                    console.log("[LibraryStore] Batch basic metadata analysis complete.");
+                    // First, ensure cache directory exists
+                    let cacheDir: string | null = null;
+                    try {
+                        cacheDir = await invoke<string>('ensure_cache_directory', { musicDir: folderPath });
+                        console.log(`[LibraryStore] Cache directory: ${cacheDir}`);
+                    } catch (cacheError) {
+                        console.warn("[LibraryStore] Failed to create cache directory, proceeding without cache:", cacheError);
+                    }
+
+                    console.log("[LibraryStore] Invoking complete analysis with cache for metadata and waveforms...");
+                    const results = await invoke<CompleteAnalysisBatchResult>(
+                        'analyze_features_and_waveforms_batch_with_cache', 
+                        { 
+                            paths: filePaths,
+                            cacheDir: cacheDir 
+                        }
+                    );
+                    console.log("[LibraryStore] Batch complete analysis finished.");
 
                     update(state => {
                         const updatedFiles = state.audioFiles.map((file) => {
                             const result = results[file.path];
                             let trackMetadata: TrackBasicMetadata | null | undefined = undefined;
+                            let volumeAnalysis: VolumeAnalysis | null | undefined = undefined;
 
                             if (result === undefined) {
                                 console.warn(`[LibraryStore] No analysis result found for ${file.path}`);
                                 trackMetadata = null;
+                                volumeAnalysis = null;
                             } else if (result?.Err) {
                                 console.error(`[LibraryStore] Analysis error for ${file.path}:`, result.Err);
                                 trackMetadata = null;
+                                volumeAnalysis = null;
                             } else if (result?.Ok) {
-                                trackMetadata = result.Ok;
+                                const [metadata, waveform] = result.Ok;
+                                trackMetadata = metadata;
+                                volumeAnalysis = waveform;
                             } else {
                                 console.warn(`[LibraryStore] Unexpected result structure for ${file.path}:`, result);
                                 trackMetadata = null;
+                                volumeAnalysis = null;
                             }
 
-                            return { ...file, metadata: trackMetadata };
+                            return { 
+                                ...file, 
+                                metadata: trackMetadata,
+                                volumeAnalysisData: volumeAnalysis
+                            };
                         });
                         return { ...state, audioFiles: updatedFiles };
                     });
 
+                    // Log cache stats after analysis
+                    if (cacheDir) {
+                        try {
+                            const [entryCount, sizeBytes] = await invoke<[number, number]>('get_cache_stats', { cacheDir });
+                            console.log(`[LibraryStore] Cache stats: ${entryCount} entries, ${(sizeBytes / 1024 / 1024).toFixed(2)} MB`);
+                        } catch (statsError) {
+                            console.warn("[LibraryStore] Failed to get cache stats:", statsError);
+                        }
+                    }
+
                 } catch (batchError) {
-                    console.error("[LibraryStore] CRITICAL ERROR during invoke or processing of analyze_features_batch:", batchError);
+                    console.error("[LibraryStore] CRITICAL ERROR during complete analysis:", batchError);
                     const message = batchError instanceof Error ? batchError.message : String(batchError);
                     update(state => {
-                        const updatedFiles = state.audioFiles.map(file =>
-                            file.metadata === undefined ? { ...file, metadata: null } : file
-                        );
+                        const updatedFiles = state.audioFiles.map(file => ({
+                            ...file,
+                            metadata: file.metadata === undefined ? null : file.metadata,
+                            volumeAnalysisData: file.volumeAnalysisData === undefined ? null : file.volumeAnalysisData
+                        }));
                         return { ...state, audioFiles: updatedFiles, error: `Analysis failed: ${message}` };
                     });
                 } finally {
