@@ -26,10 +26,10 @@ cd src-tauri && cargo check
 ### Development
 ```bash
 # Start development server
-bun run dev
+bun run tauri dev
 
 # Build for production
-bun run build
+bun run tauri build
 ```
 
 ## Screenshot
