@@ -12,7 +12,7 @@ pub mod state;
 use state::AudioThreadDeckState;
 pub mod commands;
 mod events;
-mod handlers;
+pub mod handlers;
 pub mod sync;
 pub mod time;
 
@@ -89,8 +89,8 @@ pub fn run_audio_thread<R: Runtime>(app_handle: AppHandle<R>, mut receiver: mpsc
                             AudioThreadCommand::InitDeck(deck_id) => {
                                 handlers::audio_thread_handle_init(&deck_id, &mut local_deck_states, &app_handle)
                             }
-                            AudioThreadCommand::LoadTrack { deck_id, path, original_bpm, first_beat_sec } => {
-                                handlers::audio_thread_handle_load(deck_id, path, original_bpm, first_beat_sec, &mut local_deck_states, &cpal_device, &app_handle).await
+                            AudioThreadCommand::LoadTrack { deck_id, path, original_bpm, first_beat_sec, output_device_name } => {
+                                handlers::audio_thread_handle_load(deck_id, path, original_bpm, first_beat_sec, output_device_name, &mut local_deck_states, &cpal_device, &app_handle).await
                             }
                             AudioThreadCommand::Play(deck_id) => {
                                 handlers::audio_thread_handle_play(&deck_id, &mut local_deck_states, &app_handle)

@@ -37,6 +37,18 @@ bun run build        # Build for production
 
 **This project uses Svelte 5 with runes.** Never use Svelte 4 syntax. Refer to `src/CLAUDE.md` for detailed Svelte 5 guidelines.
 
+## Audio System
+
+### Cue Audio (Headphone Monitoring)
+- **Device Selection**: Audio output devices listed in library section
+- **Per-Deck Control**: Each deck has a headphone button (🎧) for cue audio routing
+- **Mutual Exclusion**: Only one deck can output to cue at a time
+- **Platform Support**: Currently macOS only (CoreAudio), with cross-platform fallback stubs
+
+### Audio Routing
+- Main output: Both decks mixed through crossfader to main speakers
+- Cue output: Selected deck's post-processed audio to chosen headphone device
+
 ## Inter-Process Communication
 
 Communication between frontend and backend uses Tauri's IPC system:

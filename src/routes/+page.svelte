@@ -3,6 +3,7 @@
     import MusicLibrary from "$lib/components/MusicLibrary.svelte";
     import Slider from "$lib/components/Slider.svelte";
     import WaveFormDisplay from "$lib/components/WaveformDisplay.svelte";
+    import AudioDeviceSelector from "$lib/components/AudioDeviceSelector.svelte";
     import { libraryStore } from "$lib/stores/libraryStore";
     import {
         createPlayerStore,
@@ -43,6 +44,9 @@
         highGainDb: 0.0,
     });
     let uiSliderPitchRateB = $state(1.0);
+
+    // --- Cue Audio Control ---
+    let cueAudioDeck = $state<"A" | "B" | null>(null);
 
     // --- Global Mixer Controls ---
     let crossfaderSliderValue = $state($syncStore.crossfaderValue);
@@ -125,7 +129,23 @@
         uiSliderPitchRateB = newRate;
         void playerStoreB.setPitchRate(newRate);
     }
-    
+
+    // --- Cue Audio Control Functions ---
+    async function toggleCueAudio(deckId: "A" | "B") {
+        try {
+            if (cueAudioDeck === deckId) {
+                // Turn off cue audio for this deck
+                cueAudioDeck = null;
+                await invoke("set_cue_deck", { deckId: null });
+            } else {
+                // Turn on cue audio for this deck (turns off the other)
+                cueAudioDeck = deckId;
+                await invoke("set_cue_deck", { deckId });
+            }
+        } catch (error) {
+            console.error("Failed to toggle cue audio:", error);
+        }
+    }
 
     // --- NEW Effects for Individual Deck Faders (incorporating crossfader) ---
     $effect(() => {
@@ -369,6 +389,8 @@
                     onPitchChange={handleUserPitchChangeA}
                     currentBpm={currentBpmA()}
                     originalBpm={trackInfoA?.metadata?.bpm}
+                    isCueAudioActive={cueAudioDeck === "A"}
+                    onToggleCueAudio={() => toggleCueAudio("A")}
                 />
             </div>
             <div class="deck-stacked deck-b-style">
@@ -383,25 +405,34 @@
                     onPitchChange={handleUserPitchChangeB}
                     currentBpm={currentBpmB()}
                     originalBpm={trackInfoB?.metadata?.bpm}
+                    isCueAudioActive={cueAudioDeck === "B"}
+                    onToggleCueAudio={() => toggleCueAudio("B")}
                 />
             </div>
         </section>
 
         <section class="library-section library-section-expanded">
             <h2>Music Library</h2>
-            <div class="load-controls">
-                <button
-                    class="load-deck-a-button"
-                    onclick={() => loadTrackToDeck("A")}
-                    disabled={!selectedTrack}>Load Selected to Deck A</button
-                >
-                <button
-                    class="load-deck-b-button"
-                    onclick={() => loadTrackToDeck("B")}
-                    disabled={!selectedTrack}>Load Selected to Deck B</button
-                >
+            <div class="library-content">
+                <div class="music-library-column">
+                    <div class="load-controls">
+                        <button
+                            class="load-deck-a-button"
+                            onclick={() => loadTrackToDeck("A")}
+                            disabled={!selectedTrack}>Load Selected to Deck A</button
+                        >
+                        <button
+                            class="load-deck-b-button"
+                            onclick={() => loadTrackToDeck("B")}
+                            disabled={!selectedTrack}>Load Selected to Deck B</button
+                        >
+                    </div>
+                    <MusicLibrary />
+                </div>
+                <div class="audio-device-column">
+                    <AudioDeviceSelector title="Cue Output" />
+                </div>
             </div>
-            <MusicLibrary />
         </section>
     {/if}
 </main>
@@ -451,7 +482,7 @@
         gap: 1.5rem;
         min-height: 95vh;
         width: 100%;
-        max-width: 1200px;
+        max-width: 1800px;
     }
 
     .mixer-section {
@@ -530,8 +561,27 @@
     }
 
     .library-section-expanded {
-        max-height: 40vh;
-        overflow-y: auto;
+        max-height: none;
+        overflow: visible;
+    }
+    
+    .library-content {
+        display: grid;
+        grid-template-columns: 1fr 240px;
+        gap: 1.5rem;
+        align-items: start;
+        width: 100%;
+    }
+    
+    .audio-device-column {
+        /* Grid item - no flex properties needed */
+    }
+    
+    .music-library-column {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        min-width: 0; /* Allows content to shrink properly in grid */
     }
 
     h2 {

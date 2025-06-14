@@ -39,7 +39,8 @@ src/
 ├── app.html                    # Application entry point
 ├── lib/
 │   ├── components/            # Svelte components
-│   │   ├── DeckControls.svelte
+│   │   ├── AudioDeviceSelector.svelte  # Cue output device selection
+│   │   ├── DeckControls.svelte         # Includes cue audio button (🎧)
 │   │   ├── MusicLibrary.svelte
 │   │   ├── Slider.svelte
 │   │   └── WaveformDisplay.svelte

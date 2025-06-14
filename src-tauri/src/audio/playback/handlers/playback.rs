@@ -56,6 +56,14 @@ pub(crate) fn audio_thread_handle_play<R: Runtime>(
             ))
         })? = None;
     log::info!("Audio Thread: Playing deck '{}' via CPAL", deck_id);
+    
+    // If this is deck B, start cue output
+    if deck_id == "B" {
+        if let Err(e) = start_deck_b_cue_output(local_states) {
+            log::error!("Audio Thread: Failed to start cue output for deck B: {}", e);
+        }
+    }
+    
     emit_status_update_event(app_handle, deck_id, true);
     Ok(())
 }
@@ -92,6 +100,14 @@ pub(crate) fn audio_thread_handle_pause<R: Runtime>(
         deck_id,
         current_idx
     );
+    
+    // If this is deck B, stop cue output
+    if deck_id == "B" {
+        if let Err(e) = stop_cue_output() {
+            log::error!("Audio Thread: Failed to stop cue output for deck B: {}", e);
+        }
+    }
+    
     emit_status_update_event(app_handle, deck_id, false);
 
     let any_deck_synced_or_master = local_states

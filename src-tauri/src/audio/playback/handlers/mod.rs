@@ -2,11 +2,13 @@ pub mod init;
 pub mod track;
 pub mod playback;
 pub mod audio_effects;
+pub mod cue_output;
 
 pub(crate) use init::*;
 pub(crate) use track::*;
 pub(crate) use playback::*;
 pub(crate) use audio_effects::*;
+pub(crate) use cue_output::*;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

@@ -5,6 +5,7 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
     path: String,
     original_bpm: Option<f32>,
     first_beat_sec: Option<f32>,
+    output_device_name: Option<String>,
     local_states: &mut HashMap<String, AudioThreadDeckState>,
     cpal_device: &Device,
     app_handle: &AppHandle<R>,
@@ -39,7 +40,29 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
                 rate,
                 samples.len()
             );
-            let supported_configs = match cpal_device.supported_output_configs() {
+            
+            // Find the appropriate CPAL device for output
+            let actual_cpal_device = if let Some(ref device_name) = output_device_name {
+                log::info!("Audio Thread: Looking for selected device '{}' for deck '{}'", device_name, deck_id);
+                match crate::audio::devices::find_cpal_output_device(Some(device_name)) {
+                    Ok(Some(device)) => {
+                        log::info!("Audio Thread: Using selected device '{}' for deck '{}'", device_name, deck_id);
+                        device
+                    },
+                    Ok(None) => {
+                        log::warn!("Audio Thread: Selected device '{}' not found for deck '{}', using default", device_name, deck_id);
+                        cpal_device.clone()
+                    },
+                    Err(e) => {
+                        log::error!("Audio Thread: Error finding device '{}' for deck '{}': {}. Using default.", device_name, deck_id, e);
+                        cpal_device.clone()
+                    }
+                }
+            } else {
+                log::info!("Audio Thread: No device selected for deck '{}', using default", deck_id);
+                cpal_device.clone()
+            };
+            let supported_configs = match actual_cpal_device.supported_output_configs() {
                 Ok(configs) => configs.collect::<Vec<_>>(),
                 Err(e) => {
                     log::warn!(
@@ -129,7 +152,7 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
             let chosen_supported_config_range = match best_config {
                 Some(conf) => conf,
                 None => {
-                    match cpal_device.default_output_config() {
+                    match actual_cpal_device.default_output_config() {
                         Ok(default_config) => {
                             log::warn!(
                                 "Audio Thread: Using default output config as fallback for deck '{}': {:?}",
@@ -477,6 +500,26 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
 
                     interpolated_sample *= seek_fade_gain;
 
+                    // Check if this deck should send audio to cue output
+                    {
+                        use crate::audio::playback::handlers::cue_output::{push_cue_sample, should_deck_output_to_cue};
+                        
+                        if should_deck_output_to_cue(&deck_id_clone_for_callback) {
+                            // Minimal sample tracking for debugging
+                            #[cfg(debug_assertions)]
+                            {
+                                use std::sync::atomic::{AtomicU64, Ordering};
+                                static CUE_SAMPLE_COUNT: AtomicU64 = AtomicU64::new(0);
+                                let count = CUE_SAMPLE_COUNT.fetch_add(1, Ordering::Relaxed);
+                                if count % 441000 == 0 { // Log every 10 seconds in debug builds only
+                                    log::trace!("[Track{}] Cue samples: {}", deck_id_clone_for_callback, count);
+                                }
+                            }
+                            
+                            push_cue_sample(interpolated_sample);
+                        }
+                    }
+
                     for i in 0..stream_output_channels as usize {
                         frame_out[i] = interpolated_sample;
                     }
@@ -502,7 +545,7 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
                 );
             };
 
-            let stream = match cpal_device.build_output_stream(
+            let stream = match actual_cpal_device.build_output_stream(
                 &stream_config,
                 data_callback,
                 error_callback,
@@ -528,6 +571,14 @@ pub(crate) async fn audio_thread_handle_load<R: Runtime>(
             deck_state.cue_point = None;
             deck_state.original_bpm = original_bpm;
             deck_state.first_beat_sec = first_beat_sec;
+
+            // Update the cue output sample rate for any deck that might use cue
+            {
+                use crate::audio::playback::handlers::cue_output::set_cue_sample_rate;
+                if let Err(e) = set_cue_sample_rate(rate as f64) {
+                    log::debug!("Failed to set cue sample rate for deck {}: {}", deck_id, e);
+                }
+            }
 
             deck_state.is_playing.store(false, Ordering::Relaxed);
             deck_state.current_sample_read_head.store(0.0, Ordering::Relaxed);
