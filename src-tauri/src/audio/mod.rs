@@ -2,6 +2,7 @@ pub mod analysis;
 pub mod cache;
 pub mod config;
 pub mod decoding;
+pub mod devices;
 pub mod effects;
 pub mod errors;
 pub mod playback;

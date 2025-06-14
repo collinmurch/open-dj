@@ -105,4 +105,33 @@ export interface PlayerComponent {
     seekBySeconds: (seconds: number) => void;
     element: HTMLDivElement | null;
     store: PlayerStore;
+}
+
+// --- Audio Device Types ---
+
+export enum AudioDeviceType {
+    Input = "input",
+    Output = "output",
+}
+
+export interface AudioDevice {
+    name: string;
+    isDefault: boolean;
+    deviceType: AudioDeviceType;
+}
+
+export interface AudioDeviceList {
+    outputDevices: AudioDevice[];
+    inputDevices: AudioDevice[];
+    defaultOutput: string | null;
+    defaultInput: string | null;
+}
+
+export interface AudioDeviceSelection {
+    cueOutput: string | null;
+}
+
+export interface AudioDeviceState {
+    devices: AudioDeviceList;
+    selection: AudioDeviceSelection;
 } 

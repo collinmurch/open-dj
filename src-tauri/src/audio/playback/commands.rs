@@ -1,6 +1,7 @@
 use tokio::sync::oneshot;
 use crate::audio::types::EqParams; // EqParams is still in audio::types
 use super::state::AppState;      // AppState is in the parent's state module
+use crate::audio::devices::store::AudioDeviceStore;
 use tauri::State;
 
 // --- Audio Thread Commands ---
@@ -12,6 +13,7 @@ pub enum AudioThreadCommand {
         path: String,
         original_bpm: Option<f32>,
         first_beat_sec: Option<f32>,
+        output_device_name: Option<String>,
     },
     Play(String),
     Pause(String),
@@ -75,6 +77,7 @@ pub async fn load_track(
     original_bpm: Option<f32>,
     first_beat_sec: Option<f32>,
     app_state: State<'_, AppState>,
+    _device_store: State<'_, AudioDeviceStore>,
 ) -> Result<(), String> {
     log::info!(
         "CMD: Load track '{}' for deck: {}. BPM: {:?}, First Beat: {:?}",
@@ -84,6 +87,15 @@ pub async fn load_track(
         first_beat_sec
     );
 
+    // Master output always uses the default device
+    let output_device_name = if deck_id == "A" || deck_id == "B" {
+        // Master output will always use the default system output device
+        log::info!("CMD: Using default system output device for deck {}", deck_id);
+        None // None means use default device
+    } else {
+        None
+    };
+
     app_state
         .get_command_sender()
         .send(AudioThreadCommand::LoadTrack {
@@ -91,6 +103,7 @@ pub async fn load_track(
             path,
             original_bpm,
             first_beat_sec,
+            output_device_name,
         })
         .await
         .map_err(|e| e.to_string())

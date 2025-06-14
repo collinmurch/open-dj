@@ -14,7 +14,13 @@ The Rust backend is organized around audio processing and system integration:
 src/
 ├── audio/              # Core audio processing
 │   ├── analysis/       # BPM and volume analysis
+│   ├── devices/        # Audio device management and cue output
+│   │   ├── commands.rs # Tauri commands (get_audio_devices, set_cue_deck)
+│   │   ├── macos.rs    # CoreAudio device detection (macOS)
+│   │   └── store.rs    # Device state management
 │   ├── playback/       # Audio playback with commands, events, handlers
+│   │   └── handlers/
+│   │       └── cue_output.rs  # Cue audio routing and management
 │   ├── config.rs       # Audio configuration
 │   ├── decoding.rs     # Audio file decoding
 │   ├── effects.rs      # Audio effects processing
@@ -23,6 +29,14 @@ src/
 ├── lib.rs              # Library entry point
 └── main.rs             # Application entry point
 ```
+
+## Audio Device System
+
+### Cue Audio Implementation
+- **Platform Support**: macOS (CoreAudio) with cross-platform fallback stubs
+- **Device Detection**: `audio/devices/macos.rs` handles CoreAudio device enumeration
+- **Audio Routing**: `audio/playback/handlers/cue_output.rs` manages per-deck cue output
+- **Commands**: `set_cue_deck(deck_id)` switches which deck outputs to cue
 
 ## Tauri Command Patterns
 

@@ -11,6 +11,9 @@ use tokio::sync::oneshot;
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
+    // Detect and log available audio devices on startup
+    audio::devices::log_audio_devices();
+
     let (audio_cmd_tx, audio_cmd_rx) =
         tokio::sync::mpsc::channel::<AudioThreadCommand>(AUDIO_BUFFER_CHAN_SIZE);
     let audio_cmd_tx_for_event_handler = audio_cmd_tx.clone();
@@ -19,6 +22,31 @@ pub fn run() {
         .setup(move |app| {
             let app_handle = app.handle().clone();
             app.manage(AppState::new(audio_cmd_tx.clone()));
+
+            // Initialize and manage audio device store
+            match audio::devices::store::AudioDeviceStore::new() {
+                Ok(device_store) => {
+                    // Log device store contents for debugging
+                    if let Ok(state) = device_store.get_state() {
+                        log::info!("Audio device store initialized with {} output devices, {} input devices", 
+                            state.devices.output_devices.len(), 
+                            state.devices.input_devices.len());
+                        for device in &state.devices.output_devices {
+                            log::info!("  Available output device: {}", device.name);
+                        }
+                    }
+                    app.manage(device_store);
+                    log::info!("Audio device store initialized successfully");
+                }
+                Err(e) => {
+                    log::error!("Failed to initialize audio device store: {}", e);
+                }
+            }
+
+            // Initialize cue output manager
+            if let Err(e) = audio::playback::handlers::cue_output::init_cue_output_manager() {
+                log::error!("Failed to initialize cue output manager: {}", e);
+            }
 
             // Spawn the dedicated audio thread
             let app_handle_for_thread = app_handle.clone();
@@ -54,7 +82,11 @@ pub fn run() {
             audio::playback::commands::cleanup_player,
             audio::playback::commands::set_pitch_rate,
             audio::playback::commands::enable_sync,
-            audio::playback::commands::disable_sync
+            audio::playback::commands::disable_sync,
+            audio::devices::commands::get_audio_devices,
+            audio::devices::commands::set_cue_output_device,
+            audio::devices::commands::refresh_audio_devices,
+            audio::devices::commands::set_cue_deck
         ])
         .on_window_event(move |window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {

@@ -1,13 +1,12 @@
 <script lang="ts">
     import type { PlayerStore } from "$lib/stores/playerStore";
-    import type { PlayerState, EqParams } from "$lib/types";
+    import { syncStore, type SyncStatus } from "$lib/stores/syncStore";
+    import type { EqParams, PlayerState } from "$lib/types";
     import { formatTime } from "$lib/utils/timeUtils";
     import { invoke } from "@tauri-apps/api/core";
     import Slider from "./Slider.svelte";
-    import { syncStore, type SyncStatus } from "$lib/stores/syncStore";
 
     let {
-        filePath = null,
         deckId,
         playerStoreState,
         playerActions,
@@ -22,6 +21,8 @@
         originalBpm = null as number | null | undefined,
         pitchRate = 1.0,
         onPitchChange,
+        isCueAudioActive = false,
+        onToggleCueAudio,
     }: {
         filePath: string | null;
         deckId: string;
@@ -44,15 +45,14 @@
         originalBpm?: number | null | undefined;
         pitchRate?: number;
         onPitchChange: (newRate: number) => void;
+        isCueAudioActive?: boolean;
+        onToggleCueAudio: () => void;
     } = $props();
 
     // --- Volume, Trim & EQ State (remains the same) ---
     let trimDebounceTimeout: number | undefined = undefined;
     let faderDebounceTimeout: number | undefined = undefined;
     let eqDebounceTimeout: number | undefined = undefined;
-    const TRIM_DEBOUNCE_MS = 50;
-    const FADER_DEBOUNCE_MS = 50;
-    const EQ_DEBOUNCE_MS = 50;
 
     // --- CUE State ---
     let isCueHeld = $state(false); // Track if cue button is currently held down
@@ -350,6 +350,19 @@
                   : "SYNC"}
         </button>
         <button
+            class="cue-audio-button"
+            class:active={isCueAudioActive}
+            onclick={onToggleCueAudio}
+            disabled={playerStoreState.isLoading ||
+                playerStoreState.duration <= 0 ||
+                !!playerStoreState.error}
+            aria-label={isCueAudioActive
+                ? "Disable cue audio for this deck"
+                : "Enable cue audio for this deck"}
+        >
+            🎧
+        </button>
+        <button
             class="seek-button"
             onclick={handleSeekBackward}
             disabled={playerStoreState.isLoading ||
@@ -522,7 +535,8 @@
         background-color: var(--sync-button-off-bg, #777);
         color: var(--sync-button-off-text, #eee);
         border-color: var(--sync-button-off-border, #666);
-        min-width: 60px; /* Slightly wider for MASTER text */
+        width: 130px !important;
+        padding: 0.5em 0.8em !important;
         transition:
             background-color 0.2s ease,
             border-color 0.2s ease;
@@ -536,6 +550,28 @@
         background-color: var(--sync-button-master-bg, #337ab7);
         color: var(--sync-button-master-text, #fff);
         border-color: var(--sync-button-master-border, #2e6da4);
+    }
+
+    .cue-audio-button {
+        background-color: var(--cue-audio-button-bg, #6c757d);
+        color: var(--cue-audio-button-text, #fff);
+        border-color: var(--cue-audio-button-border, #5a6268);
+        min-width: 45px;
+        font-size: 1.2em;
+        transition:
+            background-color 0.2s ease,
+            border-color 0.2s ease,
+            transform 0.1s ease;
+    }
+    .cue-audio-button:hover:not(:disabled) {
+        background-color: var(--cue-audio-button-hover-bg, #5a6268);
+        transform: scale(1.05);
+    }
+    .cue-audio-button.active {
+        background-color: var(--cue-audio-button-active-bg, #6c757d);
+        color: var(--cue-audio-button-active-text, #fff);
+        border-color: var(--cue-audio-button-active-border, #495057);
+        box-shadow: 0 0 4px rgba(108, 117, 125, 0.3);
     }
 
     @media (prefers-color-scheme: dark) {
@@ -601,6 +637,20 @@
             background-color: var(--sync-button-master-bg-dark, #286090);
             color: var(--sync-button-master-text-dark, #fff);
             border-color: var(--sync-button-master-border-dark, #204d74);
+        }
+        .cue-audio-button {
+            background-color: var(--cue-audio-button-bg-dark, #495057);
+            color: var(--cue-audio-button-text-dark, #ccc);
+            border-color: var(--cue-audio-button-border-dark, #3a3f44);
+        }
+        .cue-audio-button:hover:not(:disabled) {
+            background-color: var(--cue-audio-button-hover-bg-dark, #3a3f44);
+        }
+        .cue-audio-button.active {
+            background-color: var(--cue-audio-button-active-bg-dark, #6c757d);
+            color: var(--cue-audio-button-active-text-dark, #fff);
+            border-color: var(--cue-audio-button-active-border-dark, #5a6268);
+            box-shadow: 0 0 4px rgba(108, 117, 125, 0.4);
         }
     }
 </style>
