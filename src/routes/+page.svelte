@@ -1,314 +1,96 @@
 <script lang="ts">
-    import DeckControls from "$lib/components/DeckControls.svelte";
-    import MusicLibrary from "$lib/components/MusicLibrary.svelte";
-    import Slider from "$lib/components/Slider.svelte";
-    import WaveFormDisplay from "$lib/components/WaveformDisplay.svelte";
     import AudioDeviceSelector from "$lib/components/AudioDeviceSelector.svelte";
+    import Crossfader from "$lib/components/Crossfader.svelte";
+    import DeckController from "$lib/components/DeckController.svelte";
+    import MusicLibrary from "$lib/components/MusicLibrary.svelte";
+    import WaveformDisplay from "$lib/components/WaveformDisplay.svelte";
+    import { deckAStore, deckBStore } from "$lib/stores/deckStore";
     import { libraryStore } from "$lib/stores/libraryStore";
-    import {
-        createPlayerStore,
-        type PlayerStore,
-    } from "$lib/stores/playerStore";
+    import { createPlayerStore } from "$lib/stores/playerStore";
     import { syncStore } from "$lib/stores/syncStore";
-    import type { VolumeAnalysis, EqParams } from "$lib/types";
-    import { invoke } from "@tauri-apps/api/core";
 
-    // --- Library and Track Selection ---
+    // --- Library State ---
     const selectedTrack = $derived($libraryStore.selectedTrack);
     const isFolderSelected = $derived(!!$libraryStore.selectedFolder);
 
     // --- Player Store Instances ---
-    const playerStoreA: PlayerStore = createPlayerStore("A");
-    const playerStoreB: PlayerStore = createPlayerStore("B");
+    const playerStoreA = createPlayerStore("A");
+    const playerStoreB = createPlayerStore("B");
 
-    // --- Deck A: File Path, Analysis, EQ, Fader ---
-    let deckAFilePath = $state<string | null>(null);
-    let deckAVolumeAnalysis = $state<VolumeAnalysis | null>(null);
-    let isDeckAWaveformLoading = $state(false);
-    let deckAFaderLevel = $state(1.0);
-    let deckAEqParams = $state<EqParams>({
-        lowGainDb: 0.0,
-        midGainDb: 0.0,
-        highGainDb: 0.0,
-    });
-    let uiSliderPitchRateA = $state(1.0);
-
-    // --- Deck B: File Path, Analysis, EQ, Fader ---
-    let deckBFilePath = $state<string | null>(null);
-    let deckBVolumeAnalysis = $state<VolumeAnalysis | null>(null);
-    let isDeckBWaveformLoading = $state(false);
-    let deckBFaderLevel = $state(1.0);
-    let deckBEqParams = $state<EqParams>({
-        lowGainDb: 0.0,
-        midGainDb: 0.0,
-        highGainDb: 0.0,
-    });
-    let uiSliderPitchRateB = $state(1.0);
+    // --- Deck State ---
+    const deckAState = $derived($deckAStore);
+    const deckBState = $derived($deckBStore);
+    const deckAPlayerState = $derived($playerStoreA);
+    const deckBPlayerState = $derived($playerStoreB);
 
     // --- Cue Audio Control ---
     let cueAudioDeck = $state<"A" | "B" | null>(null);
 
-    // --- Global Mixer Controls ---
-    let crossfaderSliderValue = $state($syncStore.crossfaderValue);
+    // --- Crossfader State ---
+    let crossfaderValue = $state($syncStore.crossfaderValue);
 
     // --- Waveform Colors ---
-    const deckALowBandColor: [number, number, number] = [0.3, 0.2, 0.6];
-    const deckAMidBandColor: [number, number, number] = [0.48, 0.38, 0.72];
-    const deckAHighBandColor: [number, number, number] = [0.55, 0.55, 0.85];
-    const deckBLowBandColor: [number, number, number] = [0.475, 0.5, 0.525];
-    const deckBMidBandColor: [number, number, number] = [0.66, 0.7, 0.74];
-    const deckBHighBandColor: [number, number, number] = [0.88, 0.9, 0.92];
+    const deckAColors = {
+        low: [0.3, 0.2, 0.6] as [number, number, number],
+        mid: [0.48, 0.38, 0.72] as [number, number, number],
+        high: [0.55, 0.55, 0.85] as [number, number, number],
+    };
 
-    // --- Effects to apply derived volumes to player stores ---
-    // Remove these effects as individual faders will now control volume
-    // $effect(() => {
-    //     void (async () => {
-    //         await playerStoreA.setVolume(deckAVolume());
-    //     })();
-    // });
-    // $effect(() => {
-    //     void (async () => {
-    //         await playerStoreB.setVolume(deckBVolume());
-    //     })();
-    // });
+    const deckBColors = {
+        low: [0.475, 0.5, 0.525] as [number, number, number],
+        mid: [0.66, 0.7, 0.74] as [number, number, number],
+        high: [0.88, 0.9, 0.92] as [number, number, number],
+    };
 
-    // --- SIMPLIFIED Effect to update syncStore from local slider state ---
-    const CROSSFADER_TOLERANCE = 1e-5;
-
-    // Effect to update STORE state from LOCAL state
-    $effect(() => {
-        const localValue = crossfaderSliderValue;
-        // Check against the *current* store value before updating
-        if (
-            Math.abs($syncStore.crossfaderValue - localValue) >
-            CROSSFADER_TOLERANCE
-        ) {
-            syncStore.setCrossfader(localValue); // Update store if local UI changed significantly
-        }
+    // Track info lookup using Svelte 5 runes
+    const trackInfoA = $derived.by(() => {
+        const deckState = $deckAStore;
+        const libraryState = $libraryStore;
+        if (!deckState.filePath) return undefined;
+        return libraryState.audioFiles.find(track => track.path === deckState.filePath);
     });
 
-    // --- Pitch Rate Handling ---
-    
-    // --- Deck A Pitch Effects ---
-    
-    // Update UI from backend (initialization and sync changes only)
-    $effect(() => {
-        const storeRate = $playerStoreA.pitchRate;
-        const _path = deckAFilePath;
-
-        if (storeRate !== null) {
-            uiSliderPitchRateA = storeRate;
-        } else {
-            uiSliderPitchRateA = 1.0;
-        }
+    const trackInfoB = $derived.by(() => {
+        const deckState = $deckBStore;
+        const libraryState = $libraryStore;
+        if (!deckState.filePath) return undefined;
+        return libraryState.audioFiles.find(track => track.path === deckState.filePath);
     });
 
-    $effect(() => {
-        const storeRate = $playerStoreB.pitchRate;
-        const _path = deckBFilePath;
 
-        if (storeRate !== null) {
-            uiSliderPitchRateB = storeRate;
-        } else {
-            uiSliderPitchRateB = 1.0;
-        }
-    });
 
-    function handleUserPitchChangeA(newRate: number) {
-        const isSlave = $playerStoreA.isSyncActive && !$playerStoreA.isMaster;
-        if (isSlave) return;
-        
-        uiSliderPitchRateA = newRate;
-        void playerStoreA.setPitchRate(newRate);
-    }
-    
-    function handleUserPitchChangeB(newRate: number) {
-        const isSlave = $playerStoreB.isSyncActive && !$playerStoreB.isMaster;
-        if (isSlave) return;
-        
-        uiSliderPitchRateB = newRate;
-        void playerStoreB.setPitchRate(newRate);
-    }
 
-    // --- Cue Audio Control Functions ---
-    async function toggleCueAudio(deckId: "A" | "B") {
-        try {
-            if (cueAudioDeck === deckId) {
-                // Turn off cue audio for this deck
-                cueAudioDeck = null;
-                await invoke("set_cue_deck", { deckId: null });
-            } else {
-                // Turn on cue audio for this deck (turns off the other)
-                cueAudioDeck = deckId;
-                await invoke("set_cue_deck", { deckId });
-            }
-        } catch (error) {
-            console.error("Failed to toggle cue audio:", error);
-        }
-    }
 
-    // --- NEW Effects for Individual Deck Faders (incorporating crossfader) ---
-    $effect(() => {
-        const individual_level_A = deckAFaderLevel; // User's direct setting for Deck A's fader
-        const crossfade_effect_on_A = 1.0 - crossfaderSliderValue; // 1.0 when left, 0.0 when right
-        let calculated_level_A = individual_level_A * crossfade_effect_on_A;
-        const final_level_A = Math.max(0.0, Math.min(1.0, calculated_level_A));
 
-        // console.log(`[Fader A Effect] Indiv: ${individual_level_A.toFixed(2)}, XFadeVal: ${crossfaderSliderValue.toFixed(2)}, XFadeEffect: ${crossfade_effect_on_A.toFixed(2)}, Final: ${final_level_A.toFixed(2)}`);
+    // --- BPM Calculations (removed - now handled in DeckController) ---
+    // BPM calculation moved to DeckController to avoid duplication and circular dependencies
 
-        if ($playerStoreA.duration > 0) {
-            invoke("set_fader_level", {
-                deckId: "A",
-                level: final_level_A,
-            }).catch((err) =>
-                console.error("[Page] Error setting fader A level:", err),
-            );
-        }
-    });
-
-    $effect(() => {
-        const individual_level_B = deckBFaderLevel; // User's direct setting for Deck B's fader
-        const crossfade_effect_on_B = crossfaderSliderValue; // 0.0 when left, 1.0 when right
-        let calculated_level_B = individual_level_B * crossfade_effect_on_B;
-        const final_level_B = Math.max(0.0, Math.min(1.0, calculated_level_B));
-
-        // console.log(`[Fader B Effect] Indiv: ${individual_level_B.toFixed(2)}, XFadeVal: ${crossfaderSliderValue.toFixed(2)}, XFadeEffect: ${crossfade_effect_on_B.toFixed(2)}, Final: ${final_level_B.toFixed(2)}`);
-
-        if ($playerStoreB.duration > 0) {
-            invoke("set_fader_level", {
-                deckId: "B",
-                level: final_level_B,
-            }).catch((err) =>
-                console.error("[Page] Error setting fader B level:", err),
-            );
-        }
-    });
-
-    // --- REVISED Crossfader Logic: Effect for crossfaderSliderValue (now only updates syncStore) ---
-    $effect(() => {
-        const localCrossfaderValue = crossfaderSliderValue;
-        // This effect now PRIMARILY exists to update the syncStore if other components observe it.
-        // The actual application of the crossfader to audio levels happens in the individual deck fader effects above.
-        if (
-            Math.abs($syncStore.crossfaderValue - localCrossfaderValue) >
-            CROSSFADER_TOLERANCE
-        ) {
-            syncStore.setCrossfader(localCrossfaderValue);
-        }
-        // IMPORTANT: We do NOT want deckAFaderLevel = 1 - crossfaderValue here anymore,
-        // as that would create a loop and prevent independent fader control.
-        // The individual faders (deckAFaderLevel, deckBFaderLevel) are the source of truth for their max level.
-        // The crossfaderSliderValue is now a modulator used in their respective effects.
-    });
-
-    // --- Effects to bridge PlayerStore sync flags to SyncStore ---
-    $effect(() => {
-        const deckId = "A";
-        const isSync = $playerStoreA.isSyncActive;
-        const isMaster = $playerStoreA.isMaster;
-        syncStore.updateDeckSyncFlags(deckId, isSync, isMaster);
-    });
-
-    $effect(() => {
-        const deckId = "B";
-        const isSync = $playerStoreB.isSyncActive;
-        const isMaster = $playerStoreB.isMaster;
-        syncStore.updateDeckSyncFlags(deckId, isSync, isMaster);
-    });
-
-    // --- Deck A Data Derivations ---
-    const trackInfoA = $derived(
-        $libraryStore.audioFiles.find((track) => track.path === deckAFilePath),
-    );
-
-    const isTrackLoadedA = $derived(!!deckAFilePath);
-
-    // --- Deck B Data Derivations ---
-    const trackInfoB = $derived(
-        $libraryStore.audioFiles.find((track) => track.path === deckBFilePath),
-    );
-
-    const isTrackLoadedB = $derived(!!deckBFilePath);
-
-    const currentBpmA = $derived(() => {
-        const bpm = trackInfoA?.metadata?.bpm;
-        const rate = $playerStoreA.pitchRate ?? 1.0;
-        return bpm && rate ? bpm * rate : null;
-    });
-    const currentBpmB = $derived(() => {
-        const bpm = trackInfoB?.metadata?.bpm;
-        const rate = $playerStoreB.pitchRate ?? 1.0;
-        return bpm && rate ? bpm * rate : null;
-    });
-
+    // --- Track Loading Functions ---
     async function loadTrackToDeck(deckId: "A" | "B") {
         if (!selectedTrack) return;
 
-        const currentFilePath = deckId === "A" ? deckAFilePath : deckBFilePath;
-        if (currentFilePath === selectedTrack.path) {
-            console.log(
-                `[Page] Track ${selectedTrack.path} is already loaded on Deck ${deckId}. Skipping reload.`,
-            );
+        const deckStore = deckId === "A" ? deckAStore : deckBStore;
+        const playerStore = deckId === "A" ? playerStoreA : playerStoreB;
+
+        // Skip if same track is already loaded
+        if (deckStore.get().filePath === selectedTrack.path) {
+            console.log(`[Page] Track ${selectedTrack.path} is already loaded on Deck ${deckId}. Skipping reload.`);
             return;
         }
 
-        const trackToLoad = selectedTrack;
+        const bpm = selectedTrack.metadata?.bpm ?? null;
+        const firstBeat = selectedTrack.metadata?.firstBeatSec ?? null;
 
-        const bpm = trackToLoad.metadata?.bpm ?? null;
-        const firstBeat = trackToLoad.metadata?.firstBeatSec ?? null;
-
-        if (deckId === "A") {
-            deckAFilePath = trackToLoad.path;
-            playerStoreA.loadTrack(trackToLoad.path, bpm, firstBeat);
-        } else {
-            deckBFilePath = trackToLoad.path;
-            playerStoreB.loadTrack(trackToLoad.path, bpm, firstBeat);
-        }
-
-        // Load waveform data on-demand (no longer pre-cached)
-        if (trackToLoad.path) {
-            console.log(`[Page] Loading waveform on-demand for Deck ${deckId}: ${trackToLoad.path}`);
-            if (deckId === "A") {
-                isDeckAWaveformLoading = true;
-                deckAVolumeAnalysis = null;
-            } else {
-                isDeckBWaveformLoading = true;
-                deckBVolumeAnalysis = null;
-            }
-
-            try {
-                const result = await invoke<VolumeAnalysis>(
-                    "get_track_volume_analysis",
-                    { path: trackToLoad.path },
-                );
-                if (deckId === "A") {
-                    deckAVolumeAnalysis = result;
-                } else {
-                    deckBVolumeAnalysis = result;
-                }
-            } catch (error) {
-                console.error(
-                    `[Page] Error loading volume analysis for Deck ${deckId}: ${trackToLoad.path}`,
-                    error,
-                );
-                if (deckId === "A") {
-                    deckAVolumeAnalysis = null;
-                } else {
-                    deckBVolumeAnalysis = null;
-                }
-            } finally {
-                if (deckId === "A") {
-                    isDeckAWaveformLoading = false;
-                } else {
-                    isDeckBWaveformLoading = false;
-                }
-            }
-        }
+        // Load track in both stores
+        await deckStore.loadTrackFromLibrary(selectedTrack);
+        playerStore.loadTrack(selectedTrack.path, bpm, firstBeat);
     }
 
+    // --- Seek Functions ---
     function seekDeckA(time: number) {
         playerStoreA.seek(time);
     }
+
     function seekDeckB(time: number) {
         playerStoreB.seek(time);
     }
@@ -321,96 +103,75 @@
             <MusicLibrary />
         </section>
     {:else}
+        <!-- Mixer Section with Waveforms and Crossfader -->
         <section class="mixer-section">
+            <!-- Deck A Waveform -->
             <div class="waveform-container deck-a-style">
-                <WaveFormDisplay
-                    volumeAnalysis={deckAVolumeAnalysis}
-                    isAnalysisPending={isDeckAWaveformLoading}
-                    isTrackLoaded={isTrackLoadedA}
-                    audioDuration={$playerStoreA.duration}
-                    currentTime={$playerStoreA.currentTime}
-                    isPlaying={$playerStoreA.isPlaying}
+                <WaveformDisplay
+                    volumeAnalysis={deckAState.volumeAnalysis}
+                    isAnalysisPending={deckAState.isWaveformLoading}
+                    isTrackLoaded={!!deckAState.filePath}
+                    audioDuration={deckAPlayerState.duration}
+                    currentTime={deckAPlayerState.currentTime}
+                    isPlaying={deckAPlayerState.isPlaying}
                     seekAudio={seekDeckA}
-                    cuePointTime={$playerStoreA.cuePointTime}
-                    lowBandColor={deckALowBandColor}
-                    midBandColor={deckAMidBandColor}
-                    highBandColor={deckAHighBandColor}
-                    eqParams={deckAEqParams}
-                    faderLevel={deckAFaderLevel}
-                    pitchRate={$playerStoreA.pitchRate ?? 1.0}
+                    cuePointTime={deckAPlayerState.cuePointTime}
+                    lowBandColor={deckAColors.low}
+                    midBandColor={deckAColors.mid}
+                    highBandColor={deckAColors.high}
+                    eqParams={deckAState.eqParams}
+                    faderLevel={deckAState.faderLevel}
+                    pitchRate={deckAPlayerState.pitchRate ?? 1.0}
                     firstBeatSec={trackInfoA?.metadata?.firstBeatSec}
                     bpm={trackInfoA?.metadata?.bpm}
                 />
             </div>
+
+            <!-- Deck B Waveform -->
             <div class="waveform-container deck-b-style">
-                <WaveFormDisplay
-                    volumeAnalysis={deckBVolumeAnalysis}
-                    isAnalysisPending={isDeckBWaveformLoading}
-                    isTrackLoaded={isTrackLoadedB}
-                    audioDuration={$playerStoreB.duration}
-                    currentTime={$playerStoreB.currentTime}
-                    isPlaying={$playerStoreB.isPlaying}
+                <WaveformDisplay
+                    volumeAnalysis={deckBState.volumeAnalysis}
+                    isAnalysisPending={deckBState.isWaveformLoading}
+                    isTrackLoaded={!!deckBState.filePath}
+                    audioDuration={deckBPlayerState.duration}
+                    currentTime={deckBPlayerState.currentTime}
+                    isPlaying={deckBPlayerState.isPlaying}
                     seekAudio={seekDeckB}
-                    cuePointTime={$playerStoreB.cuePointTime}
-                    lowBandColor={deckBLowBandColor}
-                    midBandColor={deckBMidBandColor}
-                    highBandColor={deckBHighBandColor}
-                    eqParams={deckBEqParams}
-                    faderLevel={deckBFaderLevel}
-                    pitchRate={$playerStoreB.pitchRate ?? 1.0}
+                    cuePointTime={deckBPlayerState.cuePointTime}
+                    lowBandColor={deckBColors.low}
+                    midBandColor={deckBColors.mid}
+                    highBandColor={deckBColors.high}
+                    eqParams={deckBState.eqParams}
+                    faderLevel={deckBState.faderLevel}
+                    pitchRate={deckBPlayerState.pitchRate ?? 1.0}
                     firstBeatSec={trackInfoB?.metadata?.firstBeatSec}
                     bpm={trackInfoB?.metadata?.bpm}
                 />
             </div>
-            <div class="crossfader-container">
-                <Slider
-                    id="crossfader"
-                    label="Crossfader"
-                    orientation="horizontal"
-                    outputMin={0}
-                    outputMax={1}
-                    centerValue={0.5}
-                    step={0.01}
-                    bind:value={crossfaderSliderValue}
-                />
-            </div>
+
+            <!-- Crossfader -->
+            <Crossfader bind:value={crossfaderValue} />
         </section>
 
+        <!-- Deck Controls Section -->
         <section class="decks-section-horizontal">
-            <div class="deck-stacked deck-a-style">
-                <DeckControls
-                    deckId="A"
-                    filePath={deckAFilePath}
-                    playerStoreState={$playerStoreA}
-                    playerActions={playerStoreA}
-                    bind:eqParams={deckAEqParams}
-                    bind:faderLevel={deckAFaderLevel}
-                    pitchRate={uiSliderPitchRateA}
-                    onPitchChange={handleUserPitchChangeA}
-                    currentBpm={currentBpmA()}
-                    originalBpm={trackInfoA?.metadata?.bpm}
-                    isCueAudioActive={cueAudioDeck === "A"}
-                    onToggleCueAudio={() => toggleCueAudio("A")}
-                />
-            </div>
-            <div class="deck-stacked deck-b-style">
-                <DeckControls
-                    deckId="B"
-                    filePath={deckBFilePath}
-                    playerStoreState={$playerStoreB}
-                    playerActions={playerStoreB}
-                    bind:eqParams={deckBEqParams}
-                    bind:faderLevel={deckBFaderLevel}
-                    pitchRate={uiSliderPitchRateB}
-                    onPitchChange={handleUserPitchChangeB}
-                    currentBpm={currentBpmB()}
-                    originalBpm={trackInfoB?.metadata?.bpm}
-                    isCueAudioActive={cueAudioDeck === "B"}
-                    onToggleCueAudio={() => toggleCueAudio("B")}
-                />
-            </div>
+            <DeckController
+                deckId="A"
+                bind:cueAudioDeck
+                {crossfaderValue}
+                playerStore={playerStoreA}
+                onLoadTrack={loadTrackToDeck}
+            />
+            <DeckController
+                deckId="B"
+                bind:cueAudioDeck
+                {crossfaderValue}
+                playerStore={playerStoreB}
+                onLoadTrack={loadTrackToDeck}
+            />
         </section>
 
+        <!-- Library Section -->
         <section class="library-section library-section-expanded">
             <h2>Music Library</h2>
             <div class="library-content">
@@ -419,13 +180,17 @@
                         <button
                             class="load-deck-a-button"
                             onclick={() => loadTrackToDeck("A")}
-                            disabled={!selectedTrack}>Load Selected to Deck A</button
+                            disabled={!selectedTrack}
                         >
+                            Load Selected to Deck A
+                        </button>
                         <button
                             class="load-deck-b-button"
                             onclick={() => loadTrackToDeck("B")}
-                            disabled={!selectedTrack}>Load Selected to Deck B</button
+                            disabled={!selectedTrack}
                         >
+                            Load Selected to Deck B
+                        </button>
                     </div>
                     <MusicLibrary />
                 </div>
@@ -495,6 +260,7 @@
         border-radius: 8px;
         background-color: var(--section-bg);
     }
+
     .waveform-container {
         width: 100%;
         height: 80px;
@@ -504,48 +270,24 @@
         transition: background-color 0.3s ease;
         margin-bottom: 0.1rem;
     }
+
     .waveform-container.deck-a-style {
         background-color: var(--deck-a-waveform-bg-light);
     }
+
     .waveform-container.deck-b-style {
         background-color: var(--deck-b-waveform-bg-light);
-    }
-
-    :global(.mixer-waveform .waveform-scroll-container) {
-        border-radius: 4px;
     }
 
     .decks-section-horizontal {
         display: flex;
         flex-direction: row;
-        justify-content: space-between;
+        justify-content: center;
         align-items: flex-start;
         gap: 1.5rem;
         width: 100%;
     }
 
-    .deck-stacked {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        background-color: var(--deck-bg);
-        flex: 1;
-        min-width: 0;
-        border: 3px solid transparent;
-        border-radius: 8px;
-        padding: 0.25rem;
-        transition:
-            border-color 0.3s ease,
-            background-color 0.3s ease;
-    }
-    .deck-stacked.deck-a-style {
-        border-color: var(--deck-a-border-light);
-        background-color: var(--deck-a-deck-bg-light);
-    }
-    .deck-stacked.deck-b-style {
-        border-color: var(--deck-b-border-light);
-        background-color: var(--deck-b-deck-bg-light);
-    }
 
     .library-section {
         flex-grow: 0;
@@ -564,7 +306,7 @@
         max-height: none;
         overflow: visible;
     }
-    
+
     .library-content {
         display: grid;
         grid-template-columns: 1fr 240px;
@@ -572,16 +314,12 @@
         align-items: start;
         width: 100%;
     }
-    
-    .audio-device-column {
-        /* Grid item - no flex properties needed */
-    }
-    
+
     .music-library-column {
         display: flex;
         flex-direction: column;
         gap: 1rem;
-        min-width: 0; /* Allows content to shrink properly in grid */
+        min-width: 0;
     }
 
     h2 {
@@ -600,6 +338,7 @@
         gap: 1rem;
         margin-bottom: 1rem;
     }
+
     .load-controls button {
         padding: 0.5em 1em;
         font-size: 0.9em;
@@ -610,6 +349,7 @@
         cursor: pointer;
         transition: background-color 0.2s;
     }
+
     .load-controls button:disabled {
         opacity: 0.5;
         cursor: not-allowed;
@@ -620,6 +360,7 @@
         color: var(--deck-a-button-text-light);
         border-color: var(--deck-a-border-light);
     }
+
     .load-controls .load-deck-a-button:hover:not(:disabled) {
         background-color: limegreen;
     }
@@ -629,6 +370,7 @@
         color: var(--deck-b-button-text-light);
         border-color: var(--deck-b-border-light);
     }
+
     .load-controls .load-deck-b-button:hover:not(:disabled) {
         background-color: var(--deck-b-button-hover-bg-light);
     }
@@ -665,14 +407,17 @@
             border-color: #777;
             color: #eee;
         }
+
         .load-controls button:hover:not(:disabled) {
             background-color: #666;
         }
+
         .load-controls .load-deck-a-button {
             background-color: var(--deck-a-button-bg-dark);
             color: var(--deck-a-button-text-dark);
             border-color: var(--deck-a-border-dark);
         }
+
         .load-controls .load-deck-a-button:hover:not(:disabled) {
             background-color: var(--deck-a-button-hover-bg-light);
         }
@@ -682,6 +427,7 @@
             color: var(--deck-b-button-text-dark);
             border-color: var(--deck-b-border-dark);
         }
+
         .load-controls .load-deck-b-button:hover:not(:disabled) {
             background-color: var(--deck-b-button-hover-bg-light);
         }
@@ -689,16 +435,9 @@
         .waveform-container.deck-a-style {
             background-color: var(--deck-a-waveform-bg-dark);
         }
-        .deck-stacked.deck-a-style {
-            border-color: var(--deck-a-border-dark);
-            background-color: var(--deck-a-deck-bg-dark);
-        }
+
         .waveform-container.deck-b-style {
             background-color: var(--deck-b-waveform-bg-dark);
-        }
-        .deck-stacked.deck-b-style {
-            border-color: var(--deck-b-border-dark);
-            background-color: var(--deck-b-deck-bg-dark);
         }
     }
 
@@ -723,19 +462,11 @@
         --text-color: #0f0f0f;
         --bg-color: #f6f6f6;
     }
+
     @media (prefers-color-scheme: dark) {
         :root {
             --text-color: #f6f6f6;
             --bg-color: #2f2f2f;
         }
-    }
-
-    .crossfader-container {
-        width: 100%;
-        max-width: 50%;
-        margin-left: auto;
-        margin-right: auto;
-        padding: 0;
-        margin-top: 0;
     }
 </style>

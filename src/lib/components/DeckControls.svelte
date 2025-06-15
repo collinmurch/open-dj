@@ -10,17 +10,18 @@
         deckId,
         playerStoreState,
         playerActions,
-        trimDb = $bindable(0.0),
-        faderLevel = $bindable(1.0),
-        eqParams = $bindable({
+        trimDb = 0.0,
+        faderLevel = 1.0,
+        eqParams = {
             lowGainDb: 0.0,
             midGainDb: 0.0,
             highGainDb: 0.0,
-        } as EqParams),
+        } as EqParams,
         currentBpm = null as number | null,
-        originalBpm = null as number | null | undefined,
         pitchRate = 1.0,
         onPitchChange,
+        onEqChange,
+        onFaderChange,
         isCueAudioActive = false,
         onToggleCueAudio,
     }: {
@@ -42,9 +43,10 @@
         faderLevel?: number;
         eqParams?: EqParams;
         currentBpm?: number | null;
-        originalBpm?: number | null | undefined;
         pitchRate?: number;
         onPitchChange: (newRate: number) => void;
+        onEqChange?: (params: EqParams) => void;
+        onFaderChange?: (level: number) => void;
         isCueAudioActive?: boolean;
         onToggleCueAudio: () => void;
     } = $props();
@@ -59,7 +61,7 @@
     let wasPausedAtCueWhenCuePressed = $state(false); // Flag for cue play logic
 
     // Derived state to check if playback is currently at the cue point
-    const isAtCuePoint = $derived(() => {
+    const isAtCuePoint = $derived.by(() => {
         const cueTime = playerStoreState.cuePointTime;
         const currentTime = playerStoreState.currentTime;
         return cueTime !== null && Math.abs(currentTime - cueTime) < 0.1; // Tolerance of 100ms
@@ -86,20 +88,6 @@
         };
     });
 
-    // Effect to update Fader Level in Rust
-    $effect(() => {
-        const currentFaderLevel = faderLevel;
-        invoke("set_fader_level", {
-            deckId,
-            level: currentFaderLevel,
-        }).catch((err) => {
-            console.error(
-                `[TrackPlayer ${deckId}] Error invoking set_fader_level:`,
-                err,
-            );
-        });
-    });
-
     // Effect to update Trim Gain in Rust
     $effect(() => {
         const currentTrimDb = trimDb;
@@ -111,22 +99,6 @@
                 `[TrackPlayer ${deckId}] Error invoking set_trim_gain:`,
                 err,
             );
-        });
-    });
-
-    // Effect to update EQ parameters in Rust
-    $effect(() => {
-        // Only send EQ if deck is loaded and ready
-        const isDeckReady =
-            playerStoreState.duration > 0 && !playerStoreState.isLoading;
-        if (!isDeckReady) return;
-
-        const paramsToSend = eqParams;
-        invoke("set_eq_params", {
-            deckId: deckId,
-            params: paramsToSend,
-        }).catch((err) => {
-            console.error(`Failed to set EQ for ${deckId}:`, err);
         });
     });
 
@@ -207,7 +179,7 @@
 
     function handleCuePointerDown() {
         isCueHeld = true;
-        if (!playerStoreState.isPlaying && isAtCuePoint()) {
+        if (!playerStoreState.isPlaying && isAtCuePoint) {
             wasPausedAtCueWhenCuePressed = true;
             playerActions.play();
         } else {
@@ -263,7 +235,8 @@
             outputMin={0}
             outputMax={1}
             step={0.01}
-            bind:value={faderLevel}
+            value={faderLevel}
+            onchangeValue={onFaderChange}
         />
         <div class="control-group pitch-controls">
             <Slider
@@ -288,7 +261,8 @@
             outputMax={6}
             centerValue={0}
             step={1}
-            bind:value={eqParams.lowGainDb}
+            value={eqParams.lowGainDb}
+            onchangeValue={(value) => onEqChange?.({ ...eqParams, lowGainDb: value })}
         />
         <Slider
             id="mid-eq-slider-{deckId}"
@@ -298,7 +272,8 @@
             outputMax={6}
             centerValue={0}
             step={1}
-            bind:value={eqParams.midGainDb}
+            value={eqParams.midGainDb}
+            onchangeValue={(value) => onEqChange?.({ ...eqParams, midGainDb: value })}
         />
         <Slider
             id="high-eq-slider-{deckId}"
@@ -308,7 +283,8 @@
             outputMax={6}
             centerValue={0}
             step={1}
-            bind:value={eqParams.highGainDb}
+            value={eqParams.highGainDb}
+            onchangeValue={(value) => onEqChange?.({ ...eqParams, highGainDb: value })}
         />
     </div>
 
@@ -323,8 +299,7 @@
             onpointerleave={handleCuePointerUp}
             disabled={playerStoreState.isLoading ||
                 playerStoreState.duration <= 0 ||
-                !!playerStoreState.error ||
-                !originalBpm}
+                !!playerStoreState.error}
             aria-label="Set or return to Cue point"
         >
             CUE
@@ -337,8 +312,7 @@
             onclick={handleSyncToggle}
             disabled={playerStoreState.isLoading ||
                 playerStoreState.duration <= 0 ||
-                !!playerStoreState.error ||
-                !originalBpm}
+                !!playerStoreState.error}
             aria-label={syncButtonStatus === "off"
                 ? "Enable Sync"
                 : "Disable Sync"}
@@ -479,8 +453,8 @@
     }
 
     .play-pause-button {
-        min-width: 100px !important;
         width: 100px !important;
+        min-width: 100px !important;
         font-weight: 500;
         background-color: #eee;
         display: flex;
@@ -535,7 +509,7 @@
         background-color: var(--sync-button-off-bg, #777);
         color: var(--sync-button-off-text, #eee);
         border-color: var(--sync-button-off-border, #666);
-        width: 130px !important;
+        width: 120px !important;
         padding: 0.5em 0.8em !important;
         transition:
             background-color 0.2s ease,

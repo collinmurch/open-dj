@@ -1,6 +1,4 @@
 <script lang="ts">
-    import { onDestroy } from "svelte";
-
     // --- Props --- A versatile Slider component
     let {
         id,
