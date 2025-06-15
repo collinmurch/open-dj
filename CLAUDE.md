@@ -37,6 +37,25 @@ bun run build        # Build for production
 
 **This project uses Svelte 5 with runes.** Never use Svelte 4 syntax. Refer to `src/CLAUDE.md` for detailed Svelte 5 guidelines.
 
+## Frontend Architecture
+
+### State Management
+- **Library Store**: Manages music folder selection, file discovery, and BPM analysis
+- **Deck Stores**: Individual stores for each deck (A/B) handling track loading and audio controls
+- **Player Stores**: Handle audio playback state, timing, and backend communication
+- **Sync Store**: Manages crossfader and deck synchronization
+
+### Component Structure
+- **Main Page**: Orchestrates deck controllers, waveforms, and library
+- **Deck Controllers**: Handle individual deck state and controls
+- **Waveform Components**: WebGL-based audio visualization with beat lines
+- **Library Components**: File browsing and track selection
+
+### Data Flow
+1. **Library loads** → metadata analysis (BPM, firstBeatSec) → store updates
+2. **Track selection** → deck loading → player store updates → waveform props
+3. **Beat lines rendering** → metadata lookup via runes → WebGL visualization
+
 ## Audio System
 
 ### Cue Audio (Headphone Monitoring)
@@ -48,6 +67,11 @@ bun run build        # Build for production
 ### Audio Routing
 - Main output: Both decks mixed through crossfader to main speakers
 - Cue output: Selected deck's post-processed audio to chosen headphone device
+
+### Beat Synchronization
+- **Beat Detection**: Automatic BPM analysis and first beat detection via Rust backend
+- **Beat Lines**: Orange grid lines rendered in waveforms at detected beat positions
+- **Sync Controls**: Manual BPM adjustment and automatic beat matching between decks
 
 ## Inter-Process Communication
 

@@ -1,12 +1,12 @@
-import { writable } from 'svelte/store';
-import type { TrackInfo, LibraryState, BasicMetadataBatchResult, TrackBasicMetadata } from '$lib/types';
+import type { BasicMetadataBatchResult, LibraryState, TrackBasicMetadata, TrackInfo } from '$lib/types';
+import { invoke } from '@tauri-apps/api/core';
+import { join } from '@tauri-apps/api/path';
 import { open } from '@tauri-apps/plugin-dialog';
 import { readDir } from '@tauri-apps/plugin-fs';
-import { join } from '@tauri-apps/api/path';
-import { invoke } from '@tauri-apps/api/core';
+import { writable } from 'svelte/store';
 
 function createLibraryStore() {
-    const { subscribe, set, update } = writable<LibraryState>({
+    const { subscribe, update } = writable<LibraryState>({
         selectedFolder: null,
         audioFiles: [],
         selectedTrack: null,
@@ -88,10 +88,10 @@ function createLibraryStore() {
 
                     console.log("[LibraryStore] Invoking BPM analysis with cache...");
                     const results = await invoke<BasicMetadataBatchResult>(
-                        'analyze_features_batch_with_cache', 
-                        { 
+                        'analyze_features_batch_with_cache',
+                        {
                             paths: filePaths,
-                            cacheDir: cacheDir 
+                            cacheDir: cacheDir
                         }
                     );
                     console.log("[LibraryStore] Batch BPM analysis finished.");
@@ -114,8 +114,8 @@ function createLibraryStore() {
                                 trackMetadata = null;
                             }
 
-                            return { 
-                                ...file, 
+                            return {
+                                ...file,
                                 metadata: trackMetadata,
                                 volumeAnalysisData: undefined // Will be loaded on-demand when track is loaded to deck
                             };
@@ -170,4 +170,4 @@ function createLibraryStore() {
     };
 }
 
-export const libraryStore = createLibraryStore(); 
+export const libraryStore = createLibraryStore();
