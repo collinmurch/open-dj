@@ -109,10 +109,12 @@ export interface PlayerComponent {
 
 // --- Audio Device Types ---
 
-export enum AudioDeviceType {
-    Input = "input",
-    Output = "output",
-}
+export const AudioDeviceType = {
+    Input: "input",
+    Output: "output",
+} as const;
+
+export type AudioDeviceType = typeof AudioDeviceType[keyof typeof AudioDeviceType];
 
 export interface AudioDevice {
     name: string;

@@ -5,6 +5,7 @@
     import { syncStore } from "$lib/stores/syncStore";
     import type { EqParams, TrackInfo } from "$lib/types";
     import { invoke } from "@tauri-apps/api/core";
+    import { AUDIO_CONSTANTS } from "$lib/constants";
     import DeckControls from "./DeckControls.svelte";
 
     let {
@@ -50,6 +51,7 @@
 
     // Effect to update backend fader level based on individual fader and crossfader
     let lastFaderLevel = 0;
+    let lastCrossfaderEffect = $state<number | null>(null);
     $effect(() => {
         const individualLevel = deckState.faderLevel;
         const crossfadeEffect = deckId === 'A'
@@ -58,15 +60,25 @@
 
         const finalLevel = Math.max(0.0, Math.min(1.0, individualLevel * crossfadeEffect));
 
+        // Check if crossfader effect changed significantly to reduce micro-movement updates
+        const crossfaderChangedSignificantly = lastCrossfaderEffect === null || 
+            Math.abs(crossfadeEffect - lastCrossfaderEffect) > AUDIO_CONSTANTS.FADER_LEVEL_CHANGE_THRESHOLD;
+
         // Only update if level changed significantly and deck is ready
-        if (playerStoreState.duration > 0 && Math.abs(finalLevel - lastFaderLevel) > 0.01) {
+        if (playerStoreState.duration > 0 && 
+            (Math.abs(finalLevel - lastFaderLevel) > AUDIO_CONSTANTS.FADER_LEVEL_CHANGE_THRESHOLD || crossfaderChangedSignificantly)) {
             lastFaderLevel = finalLevel;
-            invoke("set_fader_level", {
-                deckId,
-                level: finalLevel,
-            }).catch((err) =>
-                console.error(`[DeckController ${deckId}] Error setting fader level:`, err)
-            );
+            lastCrossfaderEffect = crossfadeEffect;
+            (async () => {
+                try {
+                    await invoke("set_fader_level", {
+                        deckId,
+                        level: finalLevel,
+                    });
+                } catch (err) {
+                    console.error(`[DeckController ${deckId}] Error setting fader level:`, err);
+                }
+            })();
         }
     });
 
@@ -87,10 +99,16 @@
     });
 
     // Effect to update sync store when player store sync flags change
+    let lastSyncState = $state<{isSync: boolean, isMaster: boolean} | null>(null);
     $effect(() => {
         const isSync = playerStoreState.isSyncActive;
         const isMaster = playerStoreState.isMaster;
-        syncStore.updateDeckSyncFlags(deckId, isSync, isMaster);
+        
+        // Only update sync store if sync state actually changed
+        if (!lastSyncState || lastSyncState.isSync !== isSync || lastSyncState.isMaster !== isMaster) {
+            lastSyncState = { isSync, isMaster };
+            syncStore.updateDeckSyncFlags(deckId, isSync, isMaster);
+        }
     });
 
     // Effect to update EQ parameters in backend
@@ -109,12 +127,16 @@
 
         if (paramsChanged) {
             lastEqParams = { ...paramsToSend };
-            invoke("set_eq_params", {
-                deckId: deckId,
-                params: paramsToSend,
-            }).catch((err) => {
-                console.error(`[DeckController ${deckId}] Failed to set EQ:`, err);
-            });
+            (async () => {
+                try {
+                    await invoke("set_eq_params", {
+                        deckId: deckId,
+                        params: paramsToSend,
+                    });
+                } catch (err) {
+                    console.error(`[DeckController ${deckId}] Failed to set EQ:`, err);
+                }
+            })();
         }
     });
 
