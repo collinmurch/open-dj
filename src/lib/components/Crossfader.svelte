@@ -10,13 +10,14 @@
 
     const CROSSFADER_TOLERANCE = 1e-5;
     
-    // Simplified sync - only sync from local to store, no bidirectional sync
+    // Prevent circular updates by tracking last synced value
+    let lastSyncedValue = $state<number | null>(null);
     $effect(() => {
         const localValue = value;
-        const storeValue = $syncStore.crossfaderValue;
         
-        // Only update store if local value differs significantly
-        if (Math.abs(localValue - storeValue) > CROSSFADER_TOLERANCE) {
+        // Only sync if value actually changed from our side (not from store updates)
+        if (lastSyncedValue !== localValue && Math.abs(localValue - ($syncStore.crossfaderValue ?? 0.5)) > CROSSFADER_TOLERANCE) {
+            lastSyncedValue = localValue;
             syncStore.setCrossfader(localValue);
         }
     });

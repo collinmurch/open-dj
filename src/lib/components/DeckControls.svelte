@@ -4,6 +4,7 @@
     import type { EqParams, PlayerState } from "$lib/types";
     import { formatTime } from "$lib/utils/timeUtils";
     import { invoke } from "@tauri-apps/api/core";
+    import { AUDIO_CONSTANTS, SYNC_CONSTANTS, EQ_CONSTANTS, TRIM_CONSTANTS, FADER_CONSTANTS } from "$lib/constants";
     import Slider from "./Slider.svelte";
 
     let {
@@ -64,7 +65,7 @@
     const isAtCuePoint = $derived.by(() => {
         const cueTime = playerStoreState.cuePointTime;
         const currentTime = playerStoreState.currentTime;
-        return cueTime !== null && Math.abs(currentTime - cueTime) < 0.1; // Tolerance of 100ms
+        return cueTime !== null && Math.abs(currentTime - cueTime) < AUDIO_CONSTANTS.CUE_POINT_TOLERANCE_SECONDS;
     });
 
     // --- Sync State Access ---
@@ -85,24 +86,40 @@
                 clearTimeout(faderDebounceTimeout);
             if (eqDebounceTimeout !== undefined)
                 clearTimeout(eqDebounceTimeout);
+            if (trimUpdateTimeout !== undefined)
+                clearTimeout(trimUpdateTimeout);
         };
     });
 
-    // Effect to update Trim Gain in Rust
+    // Effect to update Trim Gain in Rust with debouncing
+    let lastTrimDb = $state<number | null>(null);
+    let trimUpdateTimeout: number | undefined = undefined;
     $effect(() => {
         const currentTrimDb = trimDb;
-        invoke("set_trim_gain", {
-            deckId,
-            gainDb: currentTrimDb,
-        }).catch((err) => {
-            console.error(
-                `[TrackPlayer ${deckId}] Error invoking set_trim_gain:`,
-                err,
-            );
-        });
+        
+        // Skip micro-adjustments to prevent excessive calls
+        if (lastTrimDb !== null && Math.abs(currentTrimDb - lastTrimDb) < 0.1) {
+            return;
+        }
+        
+        // Debounce the backend call to prevent excessive IPC during slider dragging
+        clearTimeout(trimUpdateTimeout);
+        trimUpdateTimeout = setTimeout(async () => {
+            try {
+                await invoke("set_trim_gain", {
+                    deckId,
+                    gainDb: currentTrimDb,
+                });
+                lastTrimDb = currentTrimDb;
+            } catch (err) {
+                console.error(
+                    `[TrackPlayer ${deckId}] Error invoking set_trim_gain:`,
+                    err,
+                );
+            }
+        }, 16); // 60fps debouncing - smooth but not excessive
     });
 
-    const SEEK_AMOUNT = 5; // Seek 5 seconds
 
     // Event handler for pitch slider changes from Slider's onchangeValue event
     function handlePitchSliderChange(newPitchValue: number) {
@@ -111,56 +128,49 @@
     }
 
     // --- Event Handlers for Buttons (use playerActions props) ---
-    function handlePlayPause() {
-        if (playerStoreState.isPlaying) {
-            playerActions
-                .pause()
-                .catch((err) =>
-                    console.error(
-                        `[TrackPlayer ${deckId}] Error invoking pause prop:`,
-                        err,
-                    ),
-                );
-        } else {
-            playerActions
-                .play()
-                .catch((err) =>
-                    console.error(
-                        `[TrackPlayer ${deckId}] Error invoking play prop:`,
-                        err,
-                    ),
-                );
+    async function handlePlayPause() {
+        try {
+            if (playerStoreState.isPlaying) {
+                await playerActions.pause();
+            } else {
+                await playerActions.play();
+            }
+        } catch (err) {
+            console.error(
+                `[TrackPlayer ${deckId}] Error invoking ${playerStoreState.isPlaying ? 'pause' : 'play'} prop:`,
+                err,
+            );
         }
     }
 
-    function handleSeekBackward() {
+    async function handleSeekBackward() {
         const currentTime = playerStoreState.currentTime;
         const duration = playerStoreState.duration;
         if (duration <= 0) return;
-        const newTime = Math.max(0, currentTime - SEEK_AMOUNT);
-        playerActions
-            .seek(newTime)
-            .catch((err) =>
-                console.error(
-                    `[TrackPlayer ${deckId}] Error invoking seek backward prop:`,
-                    err,
-                ),
+        const newTime = Math.max(0, currentTime - AUDIO_CONSTANTS.SEEK_AMOUNT_SECONDS);
+        try {
+            await playerActions.seek(newTime);
+        } catch (err) {
+            console.error(
+                `[TrackPlayer ${deckId}] Error invoking seek backward prop:`,
+                err,
             );
+        }
     }
 
-    function handleSeekForward() {
+    async function handleSeekForward() {
         const currentTime = playerStoreState.currentTime;
         const duration = playerStoreState.duration;
         if (duration <= 0) return;
-        const newTime = Math.min(duration, currentTime + SEEK_AMOUNT);
-        playerActions
-            .seek(newTime)
-            .catch((err) =>
-                console.error(
-                    `[TrackPlayer ${deckId}] Error invoking seek forward prop:`,
-                    err,
-                ),
+        const newTime = Math.min(duration, currentTime + AUDIO_CONSTANTS.SEEK_AMOUNT_SECONDS);
+        try {
+            await playerActions.seek(newTime);
+        } catch (err) {
+            console.error(
+                `[TrackPlayer ${deckId}] Error invoking seek forward prop:`,
+                err,
             );
+        }
     }
 
     // --- CUE Button Handlers ---
@@ -222,19 +232,19 @@
             id="trim-slider-{deckId}"
             label="Trim (dB)"
             orientation="vertical"
-            outputMin={-12}
-            outputMax={12}
-            centerValue={0}
-            step={1}
+            outputMin={TRIM_CONSTANTS.TRIM_GAIN_MIN_DB}
+            outputMax={TRIM_CONSTANTS.TRIM_GAIN_MAX_DB}
+            centerValue={TRIM_CONSTANTS.TRIM_GAIN_DEFAULT_DB}
+            step={TRIM_CONSTANTS.TRIM_STEP_DB}
             bind:value={trimDb}
         />
         <Slider
             id="fader-slider-{deckId}"
             label="Fader"
             orientation="vertical"
-            outputMin={0}
-            outputMax={1}
-            step={0.01}
+            outputMin={FADER_CONSTANTS.FADER_MIN}
+            outputMax={FADER_CONSTANTS.FADER_MAX}
+            step={FADER_CONSTANTS.FADER_STEP}
             value={faderLevel}
             onchangeValue={onFaderChange}
         />
@@ -243,10 +253,10 @@
                 id="{deckId}-pitch"
                 label="Pitch"
                 orientation="vertical"
-                outputMin={0.75}
-                outputMax={1.25}
-                centerValue={1.0}
-                step={0.0001}
+                outputMin={SYNC_CONSTANTS.PITCH_RATE_MIN}
+                outputMax={SYNC_CONSTANTS.PITCH_RATE_MAX}
+                centerValue={SYNC_CONSTANTS.PITCH_RATE_DEFAULT}
+                step={SYNC_CONSTANTS.PITCH_SLIDER_STEP}
                 value={pitchRate}
                 onchangeValue={handlePitchSliderChange}
                 disabled={playerStoreState.isSyncActive &&
@@ -257,10 +267,10 @@
             id="low-eq-slider-{deckId}"
             label="Low"
             orientation="vertical"
-            outputMin={-26}
-            outputMax={6}
-            centerValue={0}
-            step={1}
+            outputMin={EQ_CONSTANTS.EQ_GAIN_MIN_DB}
+            outputMax={EQ_CONSTANTS.EQ_GAIN_MAX_DB}
+            centerValue={EQ_CONSTANTS.EQ_GAIN_DEFAULT_DB}
+            step={EQ_CONSTANTS.EQ_STEP_DB}
             value={eqParams.lowGainDb}
             onchangeValue={(value) => onEqChange?.({ ...eqParams, lowGainDb: value })}
         />
@@ -268,10 +278,10 @@
             id="mid-eq-slider-{deckId}"
             label="Mid"
             orientation="vertical"
-            outputMin={-26}
-            outputMax={6}
-            centerValue={0}
-            step={1}
+            outputMin={EQ_CONSTANTS.EQ_GAIN_MIN_DB}
+            outputMax={EQ_CONSTANTS.EQ_GAIN_MAX_DB}
+            centerValue={EQ_CONSTANTS.EQ_GAIN_DEFAULT_DB}
+            step={EQ_CONSTANTS.EQ_STEP_DB}
             value={eqParams.midGainDb}
             onchangeValue={(value) => onEqChange?.({ ...eqParams, midGainDb: value })}
         />
@@ -279,10 +289,10 @@
             id="high-eq-slider-{deckId}"
             label="High"
             orientation="vertical"
-            outputMin={-26}
-            outputMax={6}
-            centerValue={0}
-            step={1}
+            outputMin={EQ_CONSTANTS.EQ_GAIN_MIN_DB}
+            outputMax={EQ_CONSTANTS.EQ_GAIN_MAX_DB}
+            centerValue={EQ_CONSTANTS.EQ_GAIN_DEFAULT_DB}
+            step={EQ_CONSTANTS.EQ_STEP_DB}
             value={eqParams.highGainDb}
             onchangeValue={(value) => onEqChange?.({ ...eqParams, highGainDb: value })}
         />
